@@ -36,6 +36,8 @@ import { OWNER_TAG_ENV, ownerTagForChildren } from "../process-snapshot.js";
 import { redactSecrets } from "../redact/secrets.js";
 import {
 	classifySpawnFailure,
+	getPathExts,
+	isAcceptedCommandFile,
 	holdOwnChildPid,
 	isOwnLiveChild,
 	resolveWindowsCommandForEnvironment,
@@ -560,17 +562,13 @@ function recordUnresolvedTypeScriptCompiler(
 	const refusedEntries: string[] = [];
 	trustScopedPath(resolvePathValue(process.env), cwd, refusedEntries);
 	const compilerNames = isWindows
-		? [
-				"tsc",
-				...(process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
-					.split(";")
-					.filter(Boolean)
-					.map((ext) => `tsc${ext}`),
-			]
+		? ["tsc", ...getPathExts(process.env).map((ext) => `tsc${ext}`)]
 		: ["tsc"];
 	if (
 		refusedEntries.some((entry) =>
-			compilerNames.some((name) => fs.existsSync(path.resolve(entry, name))),
+			compilerNames.some((name) =>
+				isAcceptedCommandFile(path.resolve(entry, name)),
+			),
 		)
 	)
 		return;

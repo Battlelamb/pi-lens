@@ -1141,13 +1141,25 @@ function cacheWindowsCommandResult(
 	windowsCommandCache.set(key, { resolved, checkedAt: Date.now() });
 }
 
-function getPathExts(env: NodeJS.ProcessEnv): string[] {
+export function getPathExts(env: NodeJS.ProcessEnv): string[] {
 	const raw =
 		getWindowsEnvironmentValue(env, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD";
 	return raw
 		.split(";")
 		.map((ext) => ext.trim().toLowerCase())
 		.filter(Boolean);
+}
+
+/** Filesystem-only command acceptance; stat follows links and rejects dangling ones. */
+export function isAcceptedCommandFile(candidate: string): boolean {
+	if (!statIsFile(candidate)) return false;
+	if (process.platform === "win32") return true;
+	try {
+		fs.accessSync(candidate, fs.constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function statIsFile(candidate: string): boolean {

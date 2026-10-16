@@ -736,6 +736,43 @@ describe.skipIf(process.platform === "win32")(
 			},
 		);
 
+		// #4530 F4: filesystem presence must not hide advice for rejected commands.
+		it.each(["directory", "non-executable"] as const)(
+			"retains both notices for a refused %s tsc candidate",
+			async (kind) => {
+				const tree = buildPathTscTree("rejected-candidate");
+				process.chdir(tree.project);
+				const refused = path.join(tree.project, "refused-tools");
+				fs.mkdirSync(refused);
+				const candidate = path.join(refused, "tsc");
+				if (kind === "directory") fs.mkdirSync(candidate);
+				else fs.writeFileSync(candidate, "#!/bin/sh\n", { mode: 0o644 });
+				process.env.PATH = refused;
+				const { setProjectTrustState } =
+					await import("../../../clients/project-trust.js");
+				setProjectTrustState("unknown");
+				const { TypeScriptServer } =
+					await import("../../../clients/lsp/server.js");
+				expect(
+					await TypeScriptServer.spawn(tree.project, { allowInstall: false }),
+				).toBeUndefined();
+				expect(launchLSPMock).not.toHaveBeenCalled();
+				const warnings = warnMessages();
+				expect(
+					warnings.filter((message) => TRUST_WORDING.test(message)),
+				).toHaveLength(1);
+				expect(
+					warnings.filter((message) => /install typescript/.test(message)),
+				).toHaveLength(1);
+				const ledger = await import("../../../clients/degradation-ledger.js");
+				const rows = ledger.getDegradationSummary();
+				expect(rows.find((row) => row.kind === "trust-refusal")?.count).toBe(1);
+				expect(
+					rows.find((row) => row.kind === "lsp-registry-decision")?.count,
+				).toBe(1);
+			},
+		);
+
 		it("names the compiler, not trust, when the PATH tsc ships no tsserver.js", async () => {
 			const tree = buildPathTscTree("no-tsserver", false);
 			process.chdir(tree.project);
