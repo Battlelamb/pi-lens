@@ -661,6 +661,81 @@ describe.skipIf(process.platform === "win32")(
 			},
 		);
 
+		// #4530 F3 round 5: refusing an unrelated PATH directory is not evidence
+		// that a compiler was refused. Cover every family in the state table.
+		it.each(
+			(["trusted", "unknown"] as const).flatMap((trust) =>
+				(["project only", "outside only", "both", "nowhere"] as const).flatMap(
+					(placement) =>
+						[false, true].map((extra) => ({ trust, placement, extra })),
+				),
+			),
+		)(
+			"compiler notice table: $trust / $placement / unrelated-tools=$extra",
+			async ({ trust, placement, extra }) => {
+				const tree = buildPathTscTree("notice-table");
+				process.chdir(tree.project);
+				const projectBin = path.join(tree.project, "compiler-tools");
+				const unrelated = path.join(tree.project, "unrelated-tools");
+				const finderBin = path.join(path.dirname(tree.project), "finder-bin");
+				fs.mkdirSync(finderBin);
+				fs.symlinkSync("/usr/bin/which", path.join(finderBin, "which"));
+				fs.mkdirSync(projectBin);
+				fs.mkdirSync(unrelated);
+				const projectCompiler =
+					placement === "project only" || placement === "both";
+				const outsideCompiler =
+					placement === "outside only" || placement === "both";
+				if (projectCompiler)
+					fs.symlinkSync(
+						path.join(tree.pathBin, "tsc"),
+						path.join(projectBin, "tsc"),
+					);
+				process.env.PATH = [
+					...(projectCompiler ? [projectBin] : []),
+					...(outsideCompiler ? [tree.pathBin] : []),
+					...(extra ? [unrelated] : []),
+					...(placement !== "nowhere" ? [finderBin] : []),
+					// Avoid the empty PATH entry (cwd) in the no-entry cell.
+					...(placement === "nowhere" && extra
+						? []
+						: [path.join(path.dirname(tree.project), "missing-bin")]),
+				].join(path.delimiter);
+				const { setProjectTrustState } =
+					await import("../../../clients/project-trust.js");
+				setProjectTrustState(trust);
+				const { TypeScriptServer } =
+					await import("../../../clients/lsp/server.js");
+				const spawned = await TypeScriptServer.spawn(tree.project, {
+					allowInstall: false,
+				});
+				const launches =
+					outsideCompiler || (trust === "trusted" && projectCompiler);
+				expect(launchLSPMock).toHaveBeenCalledTimes(launches ? 1 : 0);
+				if (launches) expect(tsserverPathOf(spawned)).toBe(tree.tsserver);
+				else expect(spawned).toBeUndefined();
+				const warnings = warnMessages();
+				const refusals =
+					trust === "unknown" ? Number(projectCompiler) + Number(extra) : 0;
+				expect(
+					warnings.filter((message) => TRUST_WORDING.test(message)),
+				).toHaveLength(refusals);
+				const resolution =
+					!launches && !(trust === "unknown" && projectCompiler);
+				expect(
+					warnings.filter((message) => /install typescript/.test(message)),
+				).toHaveLength(resolution ? 1 : 0);
+				const ledger = await import("../../../clients/degradation-ledger.js");
+				const rows = ledger.getDegradationSummary();
+				expect(
+					rows.find((row) => row.kind === "trust-refusal")?.count ?? 0,
+				).toBe(refusals);
+				expect(
+					rows.find((row) => row.kind === "lsp-registry-decision")?.count ?? 0,
+				).toBe(launches ? 0 : 1);
+			},
+		);
+
 		it("names the compiler, not trust, when the PATH tsc ships no tsserver.js", async () => {
 			const tree = buildPathTscTree("no-tsserver", false);
 			process.chdir(tree.project);

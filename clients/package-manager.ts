@@ -689,11 +689,12 @@ export function commandSearchReachesProject(cwd: string): boolean {
  * project gets `pathValue` back unchanged. pi-lens's own lookups, and the
  * tools they start, resolve names through this PATH, so a binary inside the
  * project never answers for a global one. Each ignored entry is recorded once
- * per session.
+ * per session. `refusedEntries`, when supplied, receives those path spellings.
  */
 export function trustScopedPath(
 	pathValue: string,
 	cwd: string = process.cwd(),
+	refusedEntries?: string[],
 ): string {
 	const trust = getProjectTrustState();
 	if (trust === "trusted") return pathValue;
@@ -707,6 +708,7 @@ export function trustScopedPath(
 			kept.push(entry);
 			continue;
 		}
+		refusedEntries?.push(entry);
 		if (
 			recordDegradationOnce({
 				kind: "trust-refusal",

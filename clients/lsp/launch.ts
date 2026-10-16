@@ -554,10 +554,26 @@ function recordUnresolvedTypeScriptCompiler(
 			"LSP not started: no absolute TypeScript compiler (tsserver.js) was resolved",
 		metadata: { field: "typescript-compiler", trust },
 	});
-	// #4530 F3: a scoped lookup that excluded project entries already explains
-	// the refusal. Reuse the shared PATH filter; never probe the unscoped PATH.
-	const lookupPath = resolvePathValue(process.env);
-	if (trustScopedPath(lookupPath, cwd) !== lookupPath) return;
+	// #4530 F3: only a refused compiler candidate explains the miss. An
+	// unrelated refused directory must not hide installation advice. Inspect
+	// filenames only; never execute a finder against the ambient PATH.
+	const refusedEntries: string[] = [];
+	trustScopedPath(resolvePathValue(process.env), cwd, refusedEntries);
+	const compilerNames = isWindows
+		? [
+				"tsc",
+				...(process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+					.split(";")
+					.filter(Boolean)
+					.map((ext) => `tsc${ext}`),
+			]
+		: ["tsc"];
+	if (
+		refusedEntries.some((entry) =>
+			compilerNames.some((name) => fs.existsSync(path.resolve(entry, name))),
+		)
+	)
+		return;
 	if (unknownProjectLocalNoticeGeneration === generation) return;
 	unknownProjectLocalNoticeGeneration = generation;
 	logExtension({
