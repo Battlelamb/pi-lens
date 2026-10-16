@@ -554,6 +554,10 @@ function recordUnresolvedTypeScriptCompiler(
 			"LSP not started: no absolute TypeScript compiler (tsserver.js) was resolved",
 		metadata: { field: "typescript-compiler", trust },
 	});
+	// #4530 F3: a scoped lookup that excluded project entries already explains
+	// the refusal. Reuse the shared PATH filter; never probe the unscoped PATH.
+	const lookupPath = resolvePathValue(process.env);
+	if (trustScopedPath(lookupPath, cwd) !== lookupPath) return;
 	if (unknownProjectLocalNoticeGeneration === generation) return;
 	unknownProjectLocalNoticeGeneration = generation;
 	logExtension({

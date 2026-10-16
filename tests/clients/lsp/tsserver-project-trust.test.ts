@@ -618,45 +618,48 @@ describe.skipIf(process.platform === "win32")(
 			expect(warnMessages()).toEqual([]);
 		});
 
-		it("names the missing compiler, not trust, when tsc is on no PATH entry", async () => {
-			const tree = buildPathTscTree("missing");
-			process.chdir(tree.project);
-			// tsc stays unresolvable: the fixture bin dir is deliberately not on PATH.
-			process.env.PATH = path.join(os.tmpdir(), "pi-lens-no-such-bin");
-			const { setProjectTrustState } =
-				await import("../../../clients/project-trust.js");
-			setProjectTrustState("trusted");
-			const ledger = await import("../../../clients/degradation-ledger.js");
-			const { TypeScriptServer } =
-				await import("../../../clients/lsp/server.js");
+		it.each(["trusted", "unknown"] as const)(
+			"names the missing compiler, not trust, when tsc is on no PATH entry (%s)",
+			async (trust) => {
+				const tree = buildPathTscTree("missing");
+				process.chdir(tree.project);
+				// tsc stays unresolvable: the fixture bin dir is deliberately not on PATH.
+				process.env.PATH = path.join(os.tmpdir(), "pi-lens-no-such-bin");
+				const { setProjectTrustState } =
+					await import("../../../clients/project-trust.js");
+				setProjectTrustState(trust);
+				const ledger = await import("../../../clients/degradation-ledger.js");
+				const { TypeScriptServer } =
+					await import("../../../clients/lsp/server.js");
 
-			const spawned = await TypeScriptServer.spawn(tree.project, {
-				allowInstall: false,
-			});
-			// A spawn for another root in the same generation records its own
-			// ledger subject but must not repeat the warn.
-			const nested = path.join(tree.project, "sub");
-			fs.mkdirSync(nested);
-			await TypeScriptServer.spawn(nested, { allowInstall: false });
+				const spawned = await TypeScriptServer.spawn(tree.project, {
+					allowInstall: false,
+				});
+				// A spawn for another root in the same generation records its own
+				// ledger subject but must not repeat the warn.
+				const nested = path.join(tree.project, "sub");
+				fs.mkdirSync(nested);
+				await TypeScriptServer.spawn(nested, { allowInstall: false });
 
-			expect(spawned).toBeUndefined();
-			expect(launchLSPMock).not.toHaveBeenCalled();
-			const warns = warnMessages();
-			expect(warns).toHaveLength(1);
-			expect(warns[0]).toMatch(/no absolute TypeScript compiler/);
-			expect(warns[0]).not.toMatch(TRUST_WORDING);
-			const rows = ledger
-				.getDegradationSummary()
-				.filter((entry) => entry.kind === "lsp-registry-decision");
-			expect(rows).toHaveLength(1);
-			expect(rows[0]?.count).toBe(2);
-			expect(rows[0]?.latestReasons[0]?.reason).toMatch(
-				/no absolute TypeScript compiler/,
-			);
-			expect(rows[0]?.latestReasons[0]?.subject).toMatch(
-				/^typescript-compiler:/,
-			);
-		});
+				expect(spawned).toBeUndefined();
+				expect(launchLSPMock).not.toHaveBeenCalled();
+				const warns = warnMessages();
+				expect(warns).toHaveLength(1);
+				expect(warns[0]).toMatch(/no absolute TypeScript compiler/);
+				expect(warns[0]).not.toMatch(TRUST_WORDING);
+				const rows = ledger
+					.getDegradationSummary()
+					.filter((entry) => entry.kind === "lsp-registry-decision");
+				expect(rows).toHaveLength(1);
+				expect(rows[0]?.count).toBe(2);
+				expect(rows[0]?.latestReasons[0]?.reason).toMatch(
+					/no absolute TypeScript compiler/,
+				);
+				expect(rows[0]?.latestReasons[0]?.subject).toMatch(
+					/^typescript-compiler:/,
+				);
+			},
+		);
 
 		it("names the compiler, not trust, when the PATH tsc ships no tsserver.js", async () => {
 			const tree = buildPathTscTree("no-tsserver", false);
@@ -879,12 +882,25 @@ describe.skipIf(process.platform === "win32")(
 			expect(spawned).toBeUndefined();
 			expect(launchLSPMock).not.toHaveBeenCalled();
 			// #4530 scopes PATH before discovery: #4414 still forbids using the
-			// project compiler as a global. Record the excluded entry and the
-			// resulting lack of an eligible compiler.
+			// project compiler as a global. The trust notice must suppress the
+			// misleading resolution notice (#4530 F3).
 			expect(warnMessages()).toEqual([
 				"lookup dir inside the project ignored: mark the project trusted in pi or upgrade pi",
-				"TypeScript language server not started: no absolute TypeScript compiler (tsserver.js) could be resolved; install typescript in the project or let pi-lens install it",
 			]);
+			const ledger = await import("../../../clients/degradation-ledger.js");
+			expect(ledger.getDegradationSummary()).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ kind: "trust-refusal" }),
+					expect.objectContaining({
+						kind: "lsp-registry-decision",
+						latestReasons: expect.arrayContaining([
+							expect.objectContaining({
+								subject: expect.stringMatching(/^typescript-compiler:/),
+							}),
+						]),
+					}),
+				]),
+			);
 		});
 	},
 );
