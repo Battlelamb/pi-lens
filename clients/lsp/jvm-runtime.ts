@@ -22,6 +22,7 @@ import {
 	startHostStallSampler,
 } from "../dispatch/runners/utils/availability-policy.js";
 import { getGlobalPiLensDir } from "../file-utils.js";
+import { trustScopedSpawnEnv } from "../package-manager.js";
 import { safeSpawnAsync } from "../safe-spawn.js";
 
 const JAVA_EXE = process.platform === "win32" ? "java.exe" : "java";
@@ -240,6 +241,7 @@ async function runJavaProbe(): Promise<boolean | undefined> {
 	try {
 		result = await safeSpawnAsync(finder, ["java"], {
 			timeout: JAVA_PROBE_TIMEOUT_MS,
+			env: trustScopedSpawnEnv(),
 		});
 	} finally {
 		hostStallMs = sampler.stop();

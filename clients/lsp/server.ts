@@ -1983,11 +1983,12 @@ export const createRootDetector = NearestRoot;
  * Async (was a blocking `spawnSync("where"/"which")`): runs on the spawn
  * fall-through path (Step 4, runtime-install gate). The shared
  * `isCommandAvailableAsync` spawns the same finder via `safeSpawnAsync` with a
- * 5s timeout, so a stalled finder can no longer freeze the loop. Semantics are
- * preserved: true iff the finder exits 0.
+ * 5s timeout and a trust-scoped environment, so a stalled finder cannot freeze
+ * the loop and a project-local finder cannot answer under unknown trust.
+ * Returns true iff the finder exits 0.
  */
 function isOnPath(command: string): Promise<boolean> {
-	return isCommandAvailableAsync(command);
+	return isCommandAvailableAsync(command, trustScopedSpawnEnv());
 }
 
 /**
@@ -2208,7 +2209,7 @@ async function absoluteCommandPath(
 	command: string | undefined,
 ): Promise<string | undefined> {
 	if (!command || path.isAbsolute(command)) return command;
-	const found = await findCommandAsync(command);
+	const found = await findCommandAsync(command, trustScopedSpawnEnv());
 	return found ? realpath(found).catch(() => undefined) : undefined;
 }
 

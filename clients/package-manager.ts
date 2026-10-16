@@ -39,6 +39,7 @@ import {
 	isUnderDir,
 	normalizeFilePath,
 	pathsEqual,
+	realpathOrResolve,
 	walkUpDirs,
 } from "./path-utils.js";
 import { getProjectTrustState } from "./project-trust.js";
@@ -661,18 +662,18 @@ export function isProjectLocalBinPath(
  * relative: a relative entry follows each spawn's cwd, and on POSIX an empty
  * entry is the cwd. A `cwd` at or above HOME is no project, the ceiling the
  * project-local walk already stops at (#4530), so HOME's own tool dirs stay
- * usable there. Each directory is canonicalized once per test, not per entry.
+ * usable there. Each directory is filesystem-resolved once per test, not per entry.
  */
 function projectReach(cwd: string): (entry: string) => boolean {
 	const posix = process.platform !== "win32";
 	const dirs = [
 		...(isAtOrAboveHomeDir(cwd, os.homedir()) ? [] : [cwd]),
 		...projectLocalBinDirs(cwd),
-	].map(normalizeFilePath);
+	].map((dir) => normalizeFilePath(realpathOrResolve(dir)));
 	return (entry) => {
 		if (entry === "") return posix;
 		if (!path.isAbsolute(entry)) return true;
-		const canonical = normalizeFilePath(entry);
+		const canonical = normalizeFilePath(realpathOrResolve(entry));
 		return dirs.some((dir) => isUnderCanonicalDir(canonical, dir));
 	};
 }

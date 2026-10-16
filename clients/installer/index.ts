@@ -2545,7 +2545,7 @@ function installerSearchPath(): string {
 export async function isCommandAvailable(
 	command: string,
 	_args?: string[],
-	pathEnv: string = ambientPath(),
+	pathEnv: string = installerSearchPath(),
 ): Promise<boolean> {
 	const isWindows = installerPlatform() === "win32";
 	const dirs = pathEnv.split(path.delimiter);
@@ -2589,9 +2589,10 @@ export async function isSpawnableCommand(command: string): Promise<boolean> {
 			return false;
 		}
 	}
-	const memoKey = `${command}:${hashSync(process.env.PATH || "")}`;
+	const searchPath = installerSearchPath();
+	const memoKey = `${command}:${hashSync(searchPath)}`;
 	if (pathWalkMemo.has(memoKey)) return pathWalkMemo.get(memoKey) ?? false;
-	const isSpawnable = await isCommandAvailable(command);
+	const isSpawnable = await isCommandAvailable(command, undefined, searchPath);
 	pathWalkMemo.set(memoKey, isSpawnable);
 	return isSpawnable;
 }
@@ -4015,6 +4016,7 @@ function runCommand(
 		try {
 			proc = spawn(command, args, {
 				cwd,
+				env: trustScopedSpawnEnv(cwd),
 				stdio: "ignore",
 				shell: process.platform === "win32",
 			});

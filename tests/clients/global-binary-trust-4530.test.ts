@@ -14,10 +14,12 @@
  * a lookup outside the project-local walk (#4248, #4515) still reaching into
  * the project.
  */
+import https from "node:https";
+import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	getDegradationSummary,
 	resetDegradationLedger,
@@ -25,6 +27,8 @@ import {
 import { getGlobalPiLensDir } from "../../clients/file-utils.js";
 import {
 	checkProbeCache,
+	isCommandAvailable,
+	isSpawnableCommand,
 	ensureTool,
 	getAllToolStatuses,
 	getInstallAttempt,
@@ -34,6 +38,8 @@ import {
 	resetProbeCacheStateForTesting,
 } from "../../clients/installer/index.js";
 import {
+	resolveAndLaunch,
+	TypeScriptServer,
 	tryDotnetToolInstall,
 	tryGemInstall,
 	tryGoInstallGopls,
@@ -47,6 +53,15 @@ import {
 	resetProjectTrust,
 	setProjectTrustState,
 } from "../../clients/project-trust.js";
+import {
+	isCommandAvailableAsync,
+	findCommandAsync,
+} from "../../clients/safe-spawn.js";
+import { trustScopedSpawnEnv } from "../../clients/package-manager.js";
+import {
+	resolveJavaRuntimeEnv,
+	_resetJvmRuntimeCacheForTests,
+} from "../../clients/lsp/jvm-runtime.js";
 import { removeTempDirSync } from "./test-utils.js";
 
 const FIXTURE_TOOL = "pi-lens-4530-fixture-ls";
@@ -151,6 +166,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	process.chdir(originalCwd);
 	for (const [key, value] of savedEnv) {
 		if (value === undefined) delete process.env[key];
@@ -611,5 +627,216 @@ describe("trustScopedPath (#4530)", () => {
 				other.root,
 			),
 		).toBe(outside);
+	});
+});
+
+describe.skipIf(process.platform === "win32")(
+	"round 2 real lookup regressions",
+	() => {
+		it("resolves symlink identities without dropping outside links", () => {
+			const project = makeProject();
+			fs.mkdirSync(project.bin, { recursive: true });
+			const outside = tempDir("pi-lens-4530-links-");
+			const insideLink = path.join(outside, "inside");
+			const outsideLink = path.join(outside, "outside");
+			fs.symlinkSync(project.bin, insideLink);
+			fs.symlinkSync(outside, outsideLink);
+			process.chdir(project.root);
+			const input = [insideLink, outsideLink].join(path.delimiter);
+			setProjectTrustState("untrusted");
+			expect(trustScopedPath(input)).toBe(outsideLink);
+			expect(trustRows(`project-path-entry:${insideLink}`)).toHaveLength(1);
+			setProjectTrustState("trusted");
+			expect(trustScopedPath(input)).toBe(input);
+		});
+		it("defaults availability to scoped PATH while trusted and MCP retain ambient PATH", async () => {
+			const project = makeProject();
+			plant(path.join(project.bin, FIXTURE_TOOL), project.marker);
+			const outside = tempDir("pi-lens-4530-available-");
+			plant(path.join(outside, "outside-tool"), project.marker);
+			process.env.PATH = [project.bin, outside].join(path.delimiter);
+			process.chdir(project.root);
+			for (const trust of [
+				"trusted",
+				"unknown",
+				"untrusted",
+				"trusted",
+			] as const) {
+				setProjectTrustState(trust);
+				expect(await isCommandAvailable(FIXTURE_TOOL)).toBe(
+					trust === "trusted",
+				);
+				expect(await isSpawnableCommand(FIXTURE_TOOL)).toBe(
+					trust === "trusted",
+				);
+				expect(await isCommandAvailable("outside-tool")).toBe(true);
+			}
+			expect(await isCommandAvailable(FIXTURE_TOOL, [], project.bin)).toBe(
+				true,
+			);
+		});
+	},
+);
+
+// lane: Linux/macOS existing real-child fixture lane; every child exits immediately.
+describe.skipIf(process.platform === "win32")("round 2 child lookups", () => {
+	it("checks LSP runtime availability with a scoped finder", async () => {
+		const project = makeProject();
+		plant(path.join(project.bin, FIXTURE_TOOL), project.marker);
+		plant(path.join(project.bin, "which"), project.marker);
+		process.env.PATH = [project.bin, dirOf("which")].join(path.delimiter);
+		process.chdir(project.root);
+		process.env.PI_LENS_DISABLE_TOOL_INSTALL = "0";
+		const install = vi.fn(async () => false);
+		for (const trust of ["unknown", "trusted"] as const) {
+			setProjectTrustState(trust);
+			await resolveAndLaunch(
+				{
+					candidates: [],
+					args: [],
+					cwd: project.root,
+					runtimeInstall: { runtimeCommand: FIXTURE_TOOL, install },
+				},
+				true,
+			);
+			expect(install).toHaveBeenCalledTimes(trust === "trusted" ? 1 : 0);
+			if (trust === "unknown") expect(project.ran()).toBe("");
+		}
+	});
+	it("extracts GitHub archives through an outside utility until trusted", async () => {
+		const project = makeProject();
+		const outside = tempDir("pi-lens-4530-extractor-");
+		const outsideMarker = path.join(outside, "ran");
+		plant(path.join(project.bin, "tar"), project.marker);
+		writeScript(
+			path.join(outside, "tar"),
+			`#!/bin/sh\necho ran >> ${JSON.stringify(outsideMarker)}\nexit 1\n`,
+		);
+		const { resolveGitHubAsset } =
+			await import("../../clients/installer/index.js");
+		const name = `shellcheck-${resolveGitHubAsset("shellcheck", process.platform, process.arch)}`;
+		// SAFETY: httpsGet only consumes the response events and request timeout/error methods supplied below.
+		vi.spyOn(https, "get").mockImplementation(((
+			url: string,
+			_opts: unknown,
+			callback?: (response: EventEmitter) => void,
+		) => {
+			const response = Object.assign(new EventEmitter(), {
+				statusCode: 200,
+				headers: {},
+			});
+			const req = Object.assign(new EventEmitter(), {
+				setTimeout: () => req,
+				destroy: () => req,
+			});
+			queueMicrotask(() => {
+				callback?.(response);
+				response.emit(
+					"data",
+					Buffer.from(
+						String(url).includes("api.github.com")
+							? JSON.stringify({
+									tag_name: "v-fixture",
+									assets: [
+										{
+											name,
+											browser_download_url: "https://fixture.invalid/archive",
+										},
+									],
+								})
+							: "fixture bytes",
+					),
+				);
+				response.emit("end");
+			});
+			return req;
+		}) as unknown as typeof https.get);
+		process.env.PATH = [project.bin, outside].join(path.delimiter);
+		process.chdir(project.root);
+		process.env.PI_LENS_DISABLE_TOOL_INSTALL = "0";
+		process.env.PI_LENS_TEST_MODE = "0";
+		setProjectTrustState("unknown");
+		await ensureTool("shellcheck", { forceReinstall: true });
+		expect(project.ran()).toBe("");
+		expect(fs.readFileSync(outsideMarker, "utf8")).toContain("ran");
+		setProjectTrustState("trusted");
+		await ensureTool("shellcheck", { forceReinstall: true });
+		expect(project.ran()).toContain("tar");
+	});
+});
+
+describe.skipIf(process.platform === "win32")(
+	"round 2 finder environments",
+	() => {
+		it("passes scoped environments to boolean and path-returning finders", async () => {
+			const project = makeProject();
+			plant(path.join(project.bin, FIXTURE_TOOL), project.marker);
+			plant(path.join(project.bin, "which"), project.marker);
+			process.env.PATH = [project.bin, dirOf("which")].join(path.delimiter);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+			expect(
+				await isCommandAvailableAsync(FIXTURE_TOOL, trustScopedSpawnEnv()),
+			).toBe(false);
+			expect(
+				await findCommandAsync(FIXTURE_TOOL, trustScopedSpawnEnv()),
+			).toBeNull();
+			expect(project.ran()).toBe("");
+			setProjectTrustState("trusted");
+			expect(
+				await isCommandAvailableAsync(FIXTURE_TOOL, trustScopedSpawnEnv()),
+			).toBe(true);
+			expect(
+				await findCommandAsync(FIXTURE_TOOL, trustScopedSpawnEnv()),
+			).not.toBeNull();
+		});
+		it("scopes the JVM PATH finder before consulting installed JDKs", async () => {
+			const project = makeProject();
+			plant(path.join(project.bin, "which"), project.marker);
+			process.env.PATH = [project.bin, dirOf("which")].join(path.delimiter);
+			process.chdir(project.root);
+			_resetJvmRuntimeCacheForTests();
+			setProjectTrustState("unknown");
+			await resolveJavaRuntimeEnv();
+			expect(project.ran()).toBe("");
+			_resetJvmRuntimeCacheForTests();
+			setProjectTrustState("trusted");
+			await resolveJavaRuntimeEnv();
+			expect(project.ran()).toContain("which");
+			_resetJvmRuntimeCacheForTests();
+		});
+		it("compares a symlinked root using the same filesystem identity as its entries", () => {
+			const session = makeProject();
+			const project = makeProject();
+			const links = tempDir("pi-lens-4530-root-link-");
+			const alias = path.join(links, "root");
+			fs.symlinkSync(project.root, alias);
+			fs.mkdirSync(project.bin, { recursive: true });
+			process.chdir(session.root);
+			setProjectTrustState("unknown");
+			expect(trustScopedPath(project.bin, alias)).toBe("");
+		});
+	},
+);
+
+describe.skipIf(process.platform === "win32")("round 2 compiler lookup", () => {
+	it("resolves a discovered bare compiler through the scoped path finder", async () => {
+		const project = makeProject();
+		const outside = tempDir("pi-lens-4530-compiler-");
+		plant(path.join(project.bin, "which"), project.marker);
+		writeScript(
+			path.join(outside, "typescript-language-server"),
+			"#!/bin/sh\necho 5.3.0\n",
+		);
+		writeScript(path.join(outside, "tsc"), '#!/bin/sh\necho "Version 5.9.3"\n');
+		process.env.PATH = [project.bin, outside, dirOf("which")].join(
+			path.delimiter,
+		);
+		process.chdir(project.root);
+		setProjectTrustState("unknown");
+		expect(
+			await TypeScriptServer.spawn(project.root, { allowInstall: false }),
+		).toBeUndefined();
+		expect(project.ran()).toBe("");
 	});
 });
