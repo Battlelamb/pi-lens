@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // #2436: parent-death watchdog. A test that spawns this fixture and then
 // dies without running its own cleanup (a SIGKILLed vitest worker fork, a
@@ -285,6 +285,127 @@ function publishModuleLookups(uri) {
 	});
 }
 
+// #4476/#4507: a checker whose view of a CLOSED file is what it read first, as
+// TypeScript 7's native server behaves (measured with a raw JSON-RPC probe of
+// `tsc --lsp --stdio`, TS 7.0.2): it registers `<root>/**/*` and
+// `<root>/node_modules/**/*` as client watchers and re-reads a closed file
+// only when a watched-files event names that exact file (a directory or
+// manifest event changes nothing), or when it restarts. An open document's
+// view is the bytes it was sent. With `FAKE_LSP_NO_DIAGNOSTIC_PROVIDER=1`
+// every change to a view republishes every open document (push, version-less),
+// as the real server republishes dependents; otherwise each pull is answered
+// from the views held then. Opt in with `FAKE_LSP_CLOSED_FILE_CACHE=1`; off by
+// default.
+//
+// The checks, on each open document:
+// - `import { A, B } from "./m"` (`m.ts`, then `m.d.ts`) or `from "pkg"`
+//   (`<root>/node_modules/pkg/index.d.ts`): a name the module's view does not
+//   export is `Module '"m"' has no exported member 'A'.` (2305); a module with
+//   no view is `Cannot find module 'm'.` (2307);
+// - a `G_NAME` token no ambient declaration declares (`declare const G_NAME`
+//   in a `.d.ts` outside node_modules, seen at initialize or announced by a
+//   Created event since) is `Cannot find name 'G_NAME'.` (2304).
+const CLOSED_FILE_CACHE = process.env.FAKE_LSP_CLOSED_FILE_CACHE === "1";
+const closedViews = new Map();
+const ambientFiles = new Set();
+let checkerRoot;
+
+function viewOf(filePath) {
+	const open = openDocuments.get(pathToFileURL(filePath).href);
+	if (open !== undefined) return open;
+	if (!closedViews.has(filePath)) {
+		let text;
+		try {
+			text = fs.readFileSync(filePath, "utf8");
+		} catch {
+			text = undefined;
+		}
+		closedViews.set(filePath, text);
+	}
+	return closedViews.get(filePath);
+}
+
+function walkAmbient(dir) {
+	let entries;
+	try {
+		entries = fs.readdirSync(dir, { withFileTypes: true });
+	} catch {
+		return;
+	}
+	for (const entry of entries) {
+		const full = path.join(dir, entry.name);
+		if (entry.isDirectory()) {
+			if (entry.name !== "node_modules" && entry.name !== ".git")
+				walkAmbient(full);
+		} else if (entry.name.endsWith(".d.ts")) {
+			ambientFiles.add(full);
+		}
+	}
+}
+
+function checkerDiagnostics(uri) {
+	const text = openDocuments.get(uri) ?? "";
+	const dir = path.dirname(fileURLToPath(uri));
+	const diagnostics = [];
+	const range = {
+		start: { line: 0, character: 0 },
+		end: { line: 0, character: 1 },
+	};
+	const report = (code, message) =>
+		diagnostics.push({ severity: 1, source: "fake-checker", code, message, range });
+	for (const match of text.matchAll(
+		/import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*"([^"]+)"/g,
+	)) {
+		const spec = match[2];
+		const candidates = spec.startsWith(".")
+			? [path.join(dir, `${spec}.ts`), path.join(dir, `${spec}.d.ts`)]
+			: [path.join(checkerRoot ?? dir, "node_modules", spec, "index.d.ts")];
+		const view = candidates
+			.map((candidate) => viewOf(candidate))
+			.find((candidate) => candidate !== undefined);
+		if (view === undefined) {
+			report(2307, `Cannot find module '${spec}'.`);
+			continue;
+		}
+		const exported = new Set(
+			[
+				...view.matchAll(
+					/export\s+(?:declare\s+)?(?:function|const|let|type|interface|class)\s+(\w+)/g,
+				),
+			].map((m) => m[1]),
+		);
+		for (const name of match[1]
+			.split(",")
+			.map((part) => part.trim())
+			.filter(Boolean)) {
+			if (!exported.has(name))
+				report(2305, `Module '"${spec}"' has no exported member '${name}'.`);
+		}
+	}
+	const declared = new Set();
+	for (const file of ambientFiles) {
+		for (const m of (viewOf(file) ?? "").matchAll(/declare\s+const\s+(G_\w+)/g))
+			declared.add(m[1]);
+	}
+	for (const name of new Set([...text.matchAll(/\bG_\w+\b/g)].map((m) => m[0]))) {
+		if (!declared.has(name)) report(2304, `Cannot find name '${name}'.`);
+	}
+	return diagnostics;
+}
+
+// Push mode republishes every open document on each change to a view; pull
+// mode (`FAKE_LSP_NO_DIAGNOSTIC_PROVIDER` unset) answers each pull from the
+// views it holds at that moment.
+function checkEveryOpenDocument() {
+	if (process.env.FAKE_LSP_NO_DIAGNOSTIC_PROVIDER !== "1") return;
+	for (const uri of openDocuments.keys())
+		send({
+			jsonrpc: "2.0",
+			method: "textDocument/publishDiagnostics",
+			params: { uri, diagnostics: checkerDiagnostics(uri) },
+		});
+}
+
 function publishSequenceFor(uri) {
 	if (PUBLISH_SEQUENCE.length === 0) return false;
 	PUBLISH_SEQUENCE.forEach((shape, index) => {
@@ -393,6 +514,12 @@ process.stdin.on("data", (chunk) => {
 		return;
 	}
 	for (const m of messages) {
+        // #4528 r3: a separate request task can reply before queued notifications.
+        if (process.env.FAKE_LSP_PING_OVERTAKES === "1" &&
+            JSON.parse(m).method === "textDocument/documentSymbol") {
+            handle(m);
+            continue;
+        }
 		if (workQueue.length >= NOTIFY_BACKLOG_WEDGE) {
 			// More work outstanding than this server can hold. It stops reading and
 			// never comes back.
@@ -459,6 +586,10 @@ function handle(raw) {
 	// timeout kill + 2s SIGKILL-backstop path (#1114).
 	if (data.method === "initialize") {
 		if (process.env.FAKE_LSP_IGNORE_INITIALIZE === "1") return;
+		if (CLOSED_FILE_CACHE && typeof data.params?.rootUri === "string") {
+			checkerRoot = fileURLToPath(data.params.rootUri);
+			walkAmbient(checkerRoot);
+		}
 		const clientCapabilities = data.params?.capabilities;
 		const clientCodeAction = clientCapabilities?.textDocument?.codeAction;
 		const clientSupportsCodeActionResolve =
@@ -707,6 +838,7 @@ function handle(raw) {
 		);
 		publishSequenceFor(data.params?.textDocument?.uri);
 		if (STALE_MODULE_LOOKUP) publishModuleLookups(data.params?.textDocument?.uri);
+		if (CLOSED_FILE_CACHE) checkEveryOpenDocument();
 		if (process.env.FAKE_LSP_PUSH_DIAGNOSTIC === "1") {
 			send({
 				jsonrpc: "2.0",
@@ -744,11 +876,17 @@ function handle(raw) {
 	}
 	if (data.method === "textDocument/didChange") {
 		const text = data.params?.contentChanges?.at(-1)?.text;
+		// #4528 r1 F1: a server that dies on reading one change (after the
+		// trace line), so a request queued behind it can never be answered.
+		const exitMarker = process.env.FAKE_LSP_EXIT_ON_CHANGE_TEXT;
+		if (exitMarker && typeof text === "string" && text.includes(exitMarker))
+			process.exit(0);
 		if (typeof text === "string") {
 			openDocuments.set(data.params?.textDocument?.uri, text);
 		}
 		publishSequenceFor(data.params?.textDocument?.uri);
 		if (STALE_MODULE_LOOKUP) publishModuleLookups(data.params?.textDocument?.uri);
+		if (CLOSED_FILE_CACHE) checkEveryOpenDocument();
 		// #4493 r2: a scanner that re-parses on every change (ast-grep's live
 		// shape). Synchronous, so a request queued behind the changes is answered
 		// only after all of them: what the #1714 aux pacing barrier waits on.
@@ -824,6 +962,20 @@ function handle(raw) {
 				created = failedModuleLookups.delete(fileURLToPath(change.uri)) || created;
 			}
 			if (created) for (const uri of openDocuments.keys()) publishModuleLookups(uri);
+		}
+		if (CLOSED_FILE_CACHE) {
+			for (const change of data.params?.changes ?? []) {
+				const changed = fileURLToPath(change.uri);
+				closedViews.delete(changed);
+				if (
+					!changed.endsWith(".d.ts") ||
+					changed.includes(`${path.sep}node_modules${path.sep}`)
+				)
+					continue;
+				if (change.type === 3) ambientFiles.delete(changed);
+				else ambientFiles.add(changed);
+			}
+			checkEveryOpenDocument();
 		}
 		if (process.env.FAKE_LSP_ECHO_WATCHED_FILES) {
 			send({
@@ -972,8 +1124,9 @@ function handle(raw) {
 				});
 				return;
 			}
-			const items =
-				PULL_RESPONSE === "empty" ||
+			const items = CLOSED_FILE_CACHE
+				? checkerDiagnostics(uri)
+				: PULL_RESPONSE === "empty" ||
 				(text.includes("fake-lsp-clean") && PULL_RESPONSE !== "items")
 					? []
 					: [
@@ -1018,13 +1171,18 @@ function handle(raw) {
 				return;
 			}
 			const uri = process.env.FAKE_LSP_WORKSPACE_DIAGNOSTIC_URI;
-			send({
-				jsonrpc: "2.0",
-				id: data.id,
-				result: {
-					items: uri ? [{ uri, kind: "full", items: [] }] : [],
-				},
-			});
+			// #4528 r1 F3: the closed-file-cache profile answers a project-wide
+			// pull from the views it holds, one full report per open document.
+			const items = CLOSED_FILE_CACHE
+				? [...openDocuments.keys()].map((open) => ({
+						uri: open,
+						kind: "full",
+						items: checkerDiagnostics(open),
+					}))
+				: uri
+					? [{ uri, kind: "full", items: [] }]
+					: [];
+			send({ jsonrpc: "2.0", id: data.id, result: { items } });
 		};
 		const delay = Number.parseInt(
 			process.env.FAKE_LSP_WORKSPACE_DIAGNOSTIC_DELAY_MS ?? "0",

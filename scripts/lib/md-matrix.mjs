@@ -22,6 +22,22 @@ export const GENERATED_LSP_DOCS = [
 ];
 
 /**
+ * The matrix `clean-behavior` values that are a measurement of anything.
+ * `unknown` is evidence in neither direction (the #240 doctrine), so it never
+ * enters a comparison. Shared by `scripts/probe-clean-signal.mjs` (through
+ * `buildMatrixObservations` and its row filter), `scripts/lib/assert-evaluated.mjs`
+ * (the evaluated count) and `tests/config/lsp-clean-behavior-census.test.ts`
+ * (the marker census), which previously kept independent spellings of the same
+ * set (#3401). Lives here because this file imports nothing: the refresh-PR job
+ * runs the floor script on a checkout with no `dist/` (#4518).
+ */
+export const MEASURED_CLEAN_BEHAVIORS = new Set([
+	"publishes-versioned",
+	"publishes-unversioned",
+	"silent",
+]);
+
+/**
  * Parse a GitHub-flavoured Markdown table into { header, aligns, rows } where
  * rows is an array of cell-string arrays. Only the FIRST table after `afterLine`
  * (a line whose text includes the marker) is parsed. Returns null if not found.
@@ -591,7 +607,7 @@ function isUtcDay(value) {
 }
 
 /** Whole UTC days from `from` to `to` (both `YYYY-MM-DD`); `null` if `from` is not a real date. */
-function elapsedDays(from, to) {
+export function elapsedDays(from, to) {
 	if (!isUtcDay(from)) return null;
 	return Math.round(
 		(Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) /

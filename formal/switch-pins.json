@@ -1200,6 +1200,21 @@
 					"value": "TRUE",
 					"test": "tests/clients/head-move-resync-4493.test.ts",
 					"title": "holds a parallel tool_call until the running look has sent the move's bytes"
+				},
+				"WritesPrimaryFirst": {
+					"value": "TRUE",
+					"test": "tests/clients/head-move-resync-4493.test.ts",
+					"title": "checks a dependent the command rewrote against its rewritten dependency"
+				},
+				"DispatchWaitsPhase": {
+					"value": "TRUE",
+					"test": "tests/clients/head-move-resync-4493.test.ts",
+					"title": "checks a dependent against its rewritten dependency when the primary phase outlasts the read-only bound (%s diagnostics)"
+				},
+				"RequireOrderedDrain": {
+					"value": "TRUE",
+					"test": "tests/clients/head-move-resync-4493.test.ts",
+					"title": "records undrained when %s replies overtake queued changes"
 				}
 			},
 			"notCodeChoice": [
@@ -1221,7 +1236,8 @@
 					"reason": "Environment: a host, OS, server or scheduling behaviour the code must tolerate, not a choice the code makes.",
 					"constants": [
 						"FifoLanding",
-						"Outside"
+						"Outside",
+						"ReplyOrdering"
 					]
 				},
 				{
@@ -1715,7 +1731,25 @@
 						"Dedupe"
 					]
 				}
-			]
+			],
+			"pins": {
+				"Capacity": {
+					"value": "4",
+					"test": "tests/index-4483-first-write-seed-witness.test.ts",
+					"title": "bounds distinct captures and refuses a seed after cancellation"
+				},
+				"CheckCancellation": {
+					"value": "TRUE",
+					"test": "tests/index-4483-first-write-seed-witness.test.ts",
+					"title": "session reset cancels held captures before their unchanged bytes can seed",
+					"also": [
+						{
+							"test": "tests/index-4483-first-write-seed-witness.test.ts",
+							"title": "bounds distinct captures and refuses a seed after cancellation"
+						}
+					]
+				}
+			}
 		},
 		"snapshot-freshness": {
 			"notCodeChoice": [
@@ -2179,7 +2213,13 @@
 				"StaleAnywhere": {
 					"value": "TRUE",
 					"test": "tests/index-4484-unfixed-blocker-witness.test.ts",
-					"title": "keeps a blocker its runner skipped on an unaligned write once the next write aligns (row 6b)"
+					"title": "keeps a blocker its runner skipped on an unaligned write once the next write aligns (row 6b)",
+					"also": [
+						{
+							"test": "tests/index-4484-unfixed-blocker-witness.test.ts",
+							"title": "keeps a blocker carried without a place although its old line number now holds its text (row 34, P29)"
+						}
+					]
 				},
 				"OwedByContent": {
 					"value": "TRUE",
@@ -2193,18 +2233,18 @@
 						{
 							"test": "tests/clients/runtime-coordinator.test.ts",
 							"title": "drops the hashes with the record and keeps the owed line texts"
+						},
+						{
+							"test": "tests/clients/line-alignment.test.ts",
+							"title": "does not owe a line with no word character by its text"
 						}
 					]
 				},
 				"EditScopedKeep": {
 					"value": "TRUE",
 					"test": "tests/index-4484-unfixed-blocker-witness.test.ts",
-					"title": "keeps a napi blocker recorded before the ast-grep server publishes after an edit elsewhere (row 17, P27)",
+					"title": "keeps a napi blocker absorbed during a covered skip's dispatch when it lies outside the edit (row 38)",
 					"also": [
-						{
-							"test": "tests/index-4484-unfixed-blocker-witness.test.ts",
-							"title": "retires the fixed napi blocker and keeps the one outside the edit under Gate B (row 19)"
-						},
 						{
 							"test": "tests/clients/dispatch/runners/ast-grep-napi.test.ts",
 							"title": "says Gate B's verdict covers only the edit on a ranged dispatch, and the whole file otherwise (#4484 round 6)"
@@ -2219,8 +2259,12 @@
 				"LaneVoids": {
 					"value": "TRUE",
 					"test": "tests/index-4484-unfixed-blocker-witness.test.ts",
-					"title": "keeps a napi blocker edited but still violating while the ast-grep server does not answer (row 26, P33)",
+					"title": "keeps napi owed an edit its covered skip saw while the ast-grep server was silent (row 37)",
 					"also": [
+						{
+							"test": "tests/index-4484-unfixed-blocker-witness.test.ts",
+							"title": "keeps a shellcheck blocker when its covering bash server does not answer (row 32, P39)"
+						},
 						{
 							"test": "tests/clients/dispatch/runners/ast-grep-napi.test.ts",
 							"title": "states why Gate B skips, so the skip is a verdict (#4484 round 4)"
@@ -2229,12 +2273,21 @@
 				},
 				"SettleCoverKeep": {
 					"value": "TRUE",
+					"test": "tests/clients/deferred-runner-blockers.test.ts",
+					"title": "retires nothing on a settled skip that defers to a covering lane"
+				},
+				"RecordedRuns": {
+					"value": "TRUE",
 					"test": "tests/index-4484-unfixed-blocker-witness.test.ts",
-					"title": "keeps a napi blocker when its collect-later Gate B skip settles (row 24, P34)",
+					"title": "retires a napi blocker fixed after an edit on its line that the ast-grep server missed (row 31, P42)",
 					"also": [
 						{
-							"test": "tests/clients/deferred-runner-blockers.test.ts",
-							"title": "retires nothing on a settled skip that defers to a covering lane"
+							"test": "tests/index-4484-unfixed-blocker-witness.test.ts",
+							"title": "retires a napi blocker fixed after an unaligned write while the ast-grep server covers the file (row 33, P38)"
+						},
+						{
+							"test": "tests/clients/dispatch/runners/ast-grep-napi.test.ts",
+							"title": "runs under Gate B while it holds a recorded blocker, naming the covering lane (#4509)"
 						}
 					]
 				}

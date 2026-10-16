@@ -637,11 +637,17 @@ jobs:
 
       # `set -o pipefail` is load-bearing: the default shell has none, so
       # `smoke-tools | tee` would take tee's exit code (tool-smoke.yml, #2723).
+      # --min-pass is the floor that keeps a green handshake honest (#4518): an
+      # unavailable server reports a warning, never a failure, so a run where
+      # every install failed would exit 0 having proved nothing. A PR runner
+      # provisions fewer toolchains than the nightly: 41 and 40 passed on the two
+      # measured runs (tests/fixtures/nightly-floors/measurements.json), against
+      # the nightly's 46 with --min-pass=40.
       - name: LSP handshake layer (install + spawn + initialize each server)
         id: handshake
         run: |
           set -o pipefail
-          node scripts/smoke-tools.mjs --lsp --install --verbose 2>&1 | tee "$RUNNER_TEMP/lsp-handshake.log"
+          node scripts/smoke-tools.mjs --lsp --install --verbose --min-pass=35 2>&1 | tee "$RUNNER_TEMP/lsp-handshake.log"
 
       # The failing rows (a line starting with the cross mark, the shape
       # scripts/lib/tool-smoke-drift.mjs parses) go to the check's summary and
@@ -694,6 +700,14 @@ jobs:
   # mise.run curl + npm backend are external-dep-heavy, and a green cell is not proof
   # of #285 coverage.
   mise-repro:
+    # No floor (#4518): a leg either runs the whole pi session through
+    # rpc-load-check.mjs (pi-lens commands registered, warm-up logged, a clean
+    # first turn, trust adopted) or its step exits non-zero, so "evaluated
+    # nothing" has no green spelling: a leg that installed nothing has no `pi`
+    # for the last step to drive. The job-level continue-on-error below keeps
+    # the run green on purpose; the failing leg's check row is the signal, and
+    # no notifier reads it. A notifier is a separate decision (see #4518).
+    #
     # "(advisory)" is load-bearing (#3087): this job is continue-on-error on
     # every event, so its check always concludes success. The suffix is how
     # scripts/lib/ci-checks.mjs and ci-verdict tell advisory from gating.

@@ -17,9 +17,11 @@ import {
 	type SlopScoreSummary,
 } from "../session-summary.js";
 import {
+	checkToolAvailability,
 	clearCoverageNoticeState,
 	clearLatencyReports,
 	createDispatchContext,
+	deltaBaselineFactKey,
 	type DispatchLatencyReport,
 	dispatchForFile,
 	formatLatencyReport,
@@ -28,8 +30,17 @@ import {
 	RunnerRegistry,
 	type RunnerResultSink,
 } from "./dispatcher.js";
+import { spawnAbortScope } from "../safe-spawn.js";
 import { recordDegradationOnce } from "../degradation-ledger.js";
 import { FactStore, setFactStoreEvictionReporter } from "./fact-store.js";
+import { resolveAnalysisRoot } from "../analysis-root.js";
+import { resolveLanguageRootForFile } from "../language-profile.js";
+import { classifyObservedRunner } from "./collect-later-tier.js";
+import {
+	PRE_EDIT_SEED_RUNNER_IDS,
+	preEditSeedFactKey,
+	seedFromCapture,
+} from "./pre-edit-seed.js";
 import { TOOL_PLANS } from "./plan.js";
 import type {
 	DispatchContext,
@@ -207,12 +218,26 @@ export function applyProjectLensConfig(cwd: string): PiLensProjectConfig {
 }
 
 // "dispatch" labels this store's eviction telemetry (#2243 review round 3,
-// F1) — five other production FactStore instances exist (mcp/analyze.ts,
+// F1) — other production FactStore instances exist (mcp/analyze.ts,
 // lens-map.ts, project-diagnostics/scanner.ts, runtime-session.ts's
-// session-start call-graph task, mcp/cli.ts); a shared constant subject let
+// session-start call-graph task, mcp/cli.ts, and the pre-edit capture's store
+// below); a shared constant subject let
 // runtime-session's session-start review-graph walk consume the once-per-
 // session ledger slot before any dispatch ran, misattributing the record.
 const sessionFacts = new FactStore("dispatch");
+/**
+ * #4483: file facts for the pre-edit capture. Its own store, so a capture
+ * the `tool_call` bound abandoned can never write the old bytes' facts over
+ * the ones the file's real dispatch is using. Tool availability still reads
+ * and warms the shared session facts (`hasTool` in
+ * `capturePreEditLinterFindings`): it is keyed by command, not by content.
+ * Cleared with them at `session_start`.
+ */
+const preEditCaptureFacts = new FactStore("pre-edit-capture");
+/** #4543: retain live slots through teardown, including across session reset. */
+const preEditCapturesInFlight = new Map<string, AbortController>();
+const MAX_PRE_EDIT_CAPTURES = 4;
+
 // #2243 item 4: wire the fact-store's capacity-eviction telemetry to the
 // ledger from HERE, not from fact-store.ts. fact-store stays an import leaf so
 // it cannot re-enter the safe-spawn ↔ degradation-ledger cycle (see
@@ -534,6 +559,9 @@ export function resetDispatchBaselines(cwd?: string): void {
 	// shaped rejection is session-scoped state, not process-lifetime state.
 	resetTreeSitterClientLoadState();
 	sessionFacts.clearAll();
+	// #4483: the pre-edit capture's file facts and availability go with them.
+	for (const controller of preEditCapturesInFlight.values()) controller.abort();
+	preEditCaptureFacts.clearAll();
 	resetSessionSlopScore();
 	clearCoverageNoticeState();
 	clearReviewGraphWorkspaceCache();
@@ -3094,6 +3122,8 @@ export async function dispatchLintWithResult(
 		dedupeCoverageNotice?: boolean;
 		/** #4484 round 3: `DispatchContext.owedRanges`. */
 		owedRanges?: ReadonlyMap<string, readonly ModifiedRange[]>;
+		/** #4509: `DispatchContext.recordedRunnerIds`. */
+		recordedRunnerIds?: ReadonlySet<string>;
 	},
 ): Promise<DispatchResult> {
 	// Default true preserves the per-edit fast path (errors only). Callers that
@@ -3114,9 +3144,16 @@ export async function dispatchLintWithResult(
 		options?.sessionId,
 		options?.analysisRootMode,
 	);
-	const ctx: DispatchContext = options?.owedRanges?.size
-		? { ...created, owedRanges: options.owedRanges }
-		: created;
+	const ctx: DispatchContext =
+		options?.owedRanges?.size || options?.recordedRunnerIds?.size
+			? {
+					...created,
+					...(options.owedRanges?.size && { owedRanges: options.owedRanges }),
+					...(options.recordedRunnerIds?.size && {
+						recordedRunnerIds: options.recordedRunnerIds,
+					}),
+				}
+			: created;
 	sessionFacts.clearFileFactsFor(ctx.filePath);
 	// #2243 item 2: release the pin when the dispatch settles.
 	try {
@@ -3180,6 +3217,172 @@ export async function dispatchLintWithResult(
 		return result;
 	} finally {
 		sessionFacts.endDispatchFor(ctx.filePath);
+	}
+}
+
+/** #4483: why a pre-edit capture did not seed the file. */
+export type PreEditCaptureSkip =
+	| "no-delta"
+	| "outside-session-root"
+	| "already-dispatched"
+	/** A capture of the file is still running (one the bound abandoned). */
+	| "in-flight"
+	| "capacity"
+	| "no-kind"
+	| "generated"
+	| "no-linter"
+	| "unreadable";
+
+/** #4483: what one pre-edit capture did, for the `tool_call` record. */
+export type PreEditCaptureOutcome =
+	| {
+			outcome: "seeded";
+			/** Blocking linter findings installed as the seed. */
+			seeded: number;
+			/** Linter runners the capture ran. */
+			runners: string[];
+	  }
+	| { outcome: "skipped"; reason: PreEditCaptureSkip }
+	| {
+			/** The runs finished but their findings no longer describe the file
+			 *  as it is before its first dispatch, so nothing was installed. */
+			outcome: "discarded";
+			reason:
+				| "bytes-changed"
+				| "already-dispatched"
+				| "session-replaced"
+				| "aborted";
+	  };
+
+/**
+ * #4483: run the file's inline linters over the bytes still on disk before
+ * its first edit this session, and install their blocking findings as the
+ * file's pre-edit seed (clients/dispatch/pre-edit-seed.ts).
+ *
+ * Called from the `tool_call` of a classified write or edit, under the
+ * caller's bound, before the host writes. Only linter runners run (no
+ * language server, type checker, gated runner or scanner), and not one the
+ * observed tier has moved to collect-later. The seed is installed only while
+ * it still describes the file before its first dispatch: no delta baseline
+ * or seed exists yet, the file still holds the bytes the runs read, and the
+ * session is the one that started the capture. A capture the caller stopped
+ * waiting for therefore installs nothing once the host has written.
+ */
+export async function capturePreEditLinterFindings(
+	filePath: string,
+	workspaceRoot: string,
+	pi: PiAgentAPI,
+	session: { isCurrent(): boolean },
+	signal?: AbortSignal,
+): Promise<PreEditCaptureOutcome> {
+	if (pi.getFlag("no-delta")) return { outcome: "skipped", reason: "no-delta" };
+	const analysisRootMode = resolveAnalysisRoot(filePath, workspaceRoot);
+	if (analysisRootMode === "none" || analysisRootMode === "adopted")
+		return { outcome: "skipped", reason: "outside-session-root" };
+	const projectRoot = nodePath.resolve(workspaceRoot);
+	const dispatchCwd = resolveLanguageRootForFile(filePath, workspaceRoot);
+	// The dispatch's own key path (`createDispatchContext`'s), so a later write
+	// pays two map lookups here and nothing else.
+	const keyPath = normalizeMapKey(resolveRunnerPath(dispatchCwd, filePath));
+	const baselineKey = deltaBaselineFactKey(keyPath);
+	const seedKey = preEditSeedFactKey(keyPath);
+	const dispatched = () =>
+		sessionFacts.hasBoundedSessionFact(baselineKey) ||
+		sessionFacts.wasBoundedSessionFactEvicted(baselineKey) ||
+		sessionFacts.hasBoundedSessionFact(seedKey);
+	if (dispatched()) return { outcome: "skipped", reason: "already-dispatched" };
+	if (preEditCapturesInFlight.has(keyPath))
+		return { outcome: "skipped", reason: "in-flight" };
+	if (preEditCapturesInFlight.size >= MAX_PRE_EDIT_CAPTURES) {
+		recordDegradationOnce({
+			kind: "pre-edit-capture-incomplete",
+			subject: "pre-edit",
+			reason: "capacity",
+		});
+		return { outcome: "skipped", reason: "capacity" };
+	}
+	const created = createDispatchContext(
+		filePath,
+		dispatchCwd,
+		pi,
+		preEditCaptureFacts,
+		true,
+		undefined,
+		projectRoot,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		analysisRootMode,
+	);
+	const ctx: DispatchContext = {
+		...created,
+		deltaMode: false,
+		preEditCapture: true,
+		hasTool: (command) => checkToolAvailability(command, sessionFacts),
+	};
+	const kind = ctx.kind;
+	if (!kind) return { outcome: "skipped", reason: "no-kind" };
+	if (ctx.fileRole === "generated")
+		return { outcome: "skipped", reason: "generated" };
+	const groups = withSpotbugsGroup(
+		kind,
+		getDispatchGroupsForKind(kind, pi),
+		ctx,
+	).flatMap((group) => {
+		const runnerIds = group.runnerIds.filter(
+			(id) =>
+				PRE_EDIT_SEED_RUNNER_IDS.has(id) &&
+				classifyObservedRunner(projectRoot, id) === "inline",
+		);
+		return runnerIds.length > 0 ? [{ ...group, runnerIds }] : [];
+	});
+	if (groups.length === 0) return { outcome: "skipped", reason: "no-linter" };
+	let before: Buffer;
+	try {
+		before = nodeFs.readFileSync(ctx.filePath);
+	} catch {
+		return { outcome: "skipped", reason: "unreadable" };
+	}
+	const content = before.toString("utf8");
+	const controller = new AbortController();
+	const captureSignal = signal
+		? AbortSignal.any([signal, controller.signal])
+		: controller.signal;
+	preEditCapturesInFlight.set(keyPath, controller);
+	preEditCaptureFacts.clearFileFactsFor(ctx.filePath);
+	preEditCaptureFacts.setFileFact(ctx.filePath, "file.content", content);
+	try {
+		const result = await spawnAbortScope.run(captureSignal, () =>
+			dispatchForFile(ctx, groups, sessionRunnerRegistry, undefined, {
+				dedupeCoverageNotice: false,
+			}),
+		);
+		if (captureSignal.aborted)
+			return { outcome: "discarded", reason: "aborted" };
+		if (!session.isCurrent())
+			return { outcome: "discarded", reason: "session-replaced" };
+		if (dispatched())
+			return { outcome: "discarded", reason: "already-dispatched" };
+		let now: Buffer | undefined;
+		try {
+			now = nodeFs.readFileSync(ctx.filePath);
+		} catch {
+			now = undefined;
+		}
+		if (!now?.equals(before))
+			return { outcome: "discarded", reason: "bytes-changed" };
+		const seed = seedFromCapture(result.blockers, content);
+		sessionFacts.setBoundedSessionFact(seedKey, seed);
+		return {
+			outcome: "seeded",
+			seeded: seed.length,
+			runners: groups.flatMap((g) => g.runnerIds),
+		};
+	} finally {
+		preEditCapturesInFlight.delete(keyPath);
+		preEditCaptureFacts.endDispatchFor(ctx.filePath);
 	}
 }
 

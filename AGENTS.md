@@ -136,6 +136,9 @@ The principles' delegation contract applies. pi-lens adds:
   these rules.
 - Every regroup, merged bug fix, second round on one shape, and incident runs
   the retrospective in `docs/pi-lens-retro.md`.
+- Three open issues on one mechanism, in any seam groups, open a consolidation
+  audit across every consumer of that mechanism before the next one is filed
+  (history: `HISTORY.md`, 2026-10-16).
 - The per-PR loop (review, verify, auto-merge on green), round routing, the
   merge gate and the Common mistakes table live in `docs/pi-lens-merge-policy.md`.
 - Read CI with `node scripts/ci-verdict.mjs <pr|sha>` (exact head, all pages).
@@ -352,7 +355,13 @@ file-scoped worklist and receives no project-wide scanner output.
     never widened to the file. A skip that defers to another source's
     evidence answers only for what that evidence sees, and only when that
     source answered: an edit-gated primary sees the edit, so a recorded
-    finding outside it stays, and a silent primary sees nothing.
+    finding outside it stays, and a silent primary sees nothing. A recorded
+    finding is judged only by a run of its own runner: one that would defer
+    to a source whose copy has another identity runs while it holds a
+    recorded finding there, or nothing could retire one it cannot place. A
+    kept entry with no place in a write's bytes is recorded as such
+    (`positionStale`), never inferred later from one line's hash, and a line
+    with no word character owes nothing by its text.
     Enforced by `tests/clients/dispatch/runners/run-outcome-ratchet.test.ts`,
     `tests/clients/dispatch/runners/parsed-nothing-sweep.test.ts` and
     `tests/clients/delivery-surface-ratchet.test.ts` (partial: no detector
@@ -692,6 +701,13 @@ file-scoped worklist and receives no project-wide scanner output.
     for a join, list the writers that can store the row between the join and
     the next scan, and show the finding survives each.
 
+71. **One signal wired consumer by consumer:** a detector or notifier added on
+    one consumer's seam, while other consumers derive state from the same
+    files. Each detector then picks its own subset, and two tools disagree
+    about one file. Screen: for a new detector, notifier or staleness marker,
+    list every consumer that holds state derived from the same content, and
+    show each one receives the change or record why not.
+
 **Expired successor hand-off:** an expired successor marker may authorize
     its named interrupted successor only for the fixed retention window in
     `clients/session-lifecycle.ts`; the shared slot retires at that boundary
@@ -830,7 +846,16 @@ file-scoped worklist and receives no project-wide scanner output.
   to `scripts/lib/assert-evaluated.mjs` (one pure count function per producer,
   called by the script and by its test); the nightly's floor step fails below
   each measured floor and when a matrix cell classified at HEAD turned
-  `unknown` (`tests/config/nightly-evaluated-floors.test.ts`).
+  `unknown` without a HEAD `firstMissed` stamp at least
+  `FIRST_PUBLISH_EXPIRY_DAYS` old (`tests/config/nightly-evaluated-floors.test.ts`).
+  Every other
+  `continue-on-error` producer either calls the same helper (`--count
+  <producer>=<n> --floor <m>` from a workflow step; `--min-pass`, the
+  complexity file count and the shuffle census's missing starts already do) or
+  carries a `# No floor (<issue>): <reason>` header above its job; a floor comes
+  from a run recorded in `tests/fixtures/nightly-floors/measurements.json`.
+  The helper must stay importable without `dist/` (the refresh-PR job runs it
+  on a fresh checkout).
 - LSP service generations, workspace-sweep holds, and repair latches use
   versioned process singletons. Reset tears down the old generation before a
   replacement can spawn. Idle eviction is lease-guarded and clears ownership
@@ -919,8 +944,12 @@ file-scoped worklist and receives no project-wide scanner output.
 - A capability the client advertises has a sender, or the advertisement states
   why it has none. `textDocument/didSave` follows a landed didOpen/didChange
   only when the server declared `textDocumentSync.save` and the caller declared
-  the touch a save — the post-write sync and the explicit `lsp_diagnostics`
-  query, never a warm-up, cascade or sweep touch.
+  the touch a save — the post-write sync, the explicit `lsp_diagnostics` query
+  and the MCP analysis's first touch (`analyzeFile`, the MCP hosts' post-write
+  route), never a sweep warm-up, cascade or sweep touch. The touch debounce
+  never drops a save: a saved touch whose push it skipped sends the save alone
+  (`notify.save`). Its key is (path, server): the client scope never re-pushes
+  bytes a server holds.
 - `touchFile` freezes content-bound auxiliary coverage at merge time. A later
   publication cannot undo a finding drop. Auxiliary gaps narrow coverage and
   never turn a primary answer inconclusive. When a primary touch is
@@ -1007,6 +1036,23 @@ file-scoped worklist and receives no project-wide scanner output.
   and nothing that holds an entry awaits the restore. Do not add a second
   whole-package fixer without it, and do not await a queue entry while holding
   another.
+- A file's first write in a session blocks on the linter delta, not on every
+  linter error. The `tool_call` of the first classified write or edit
+  runs the file's inline linters (`PRE_EDIT_SEED_RUNNER_IDS`, tied to the
+  edit-scope census's LINTER lanes) over the bytes still on disk, under
+  `bounded()` with `PRE_EDIT_CAPTURE_BUDGET_MS` (500 ms), and installs their blocking
+  findings as `session.preEdit.<file>` beside the delta baseline. The capture
+  admits at most four active captures, aborts their process groups on abandonment
+  or session reset, and retains slots until teardown settles. It
+  only creates that record, and only while no baseline, tombstone or seed
+  exists, the bytes are the ones it read, and its session is current; each
+  dispatch only shrinks it (`classifyPreExisting`, identity plus line text,
+  one current finding per entry). A matched finding is reported as
+  pre-existing, never as a blocker, unless the inline record already holds
+  it. Language servers, type checkers, gated runners and scanners are never
+  seeded (maintainer scope, 2026-10-15). Collect-later linters and the MCP
+  route have no seed. Proven by
+  `tests/index-4483-first-write-seed-witness.test.ts`.
 - `clients/dispatch/runners/runner-spawn-cwd-sweep.test.ts` is the population
   guard for child cwd derivation. Add a reasoned migration row instead of a
   pin-only update.
@@ -1189,8 +1235,9 @@ The four primary host hooks are:
 
 - `session_start`: reset session state, rehydrate snapshots, start bounded
   background work, and defer config/LSP discovery.
-- `tool_call`: classify mutations, apply read-guard preflight, and register
-  reads or pending writes before the host tool runs.
+- `tool_call`: classify mutations, apply read-guard preflight, register
+  reads or pending writes, and capture a file's pre-edit linter seed (below)
+  before the host tool runs.
 - `tool_result`: record observed mutations through
   `RuntimeCoordinator.recordProjectMutation`, then run format, autofix, LSP,
   dispatch, and bounded deferred work.

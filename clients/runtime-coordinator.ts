@@ -14,6 +14,7 @@ import {
 import type { CodeQualityWarningRecord } from "./code-quality-warnings.js";
 import type { Diagnostic } from "./dispatch/types.js";
 import {
+	ANY_POSITION,
 	foldedFindingIdentity,
 	retainRecordedFindings,
 } from "./finding-identity.js";
@@ -1829,12 +1830,13 @@ export class RuntimeCoordinator {
 			return 0;
 		const unconfirmed = new Set(run.unconfirmedServerIds);
 		// #4484 round 3: the run is about the recorded bytes, so a recorded
-		// blocker's position is its own line.
+		// blocker's position is its own line. #4509 (N3): except a stale one,
+		// whose line is from older bytes; it matches its identity anywhere.
 		const { kept, retired } = retainRecordedFindings(
 			existing.diagnostics,
 			run.observed,
 			{
-				positionOf: (d) => d.line,
+				positionOf: (d) => (d.positionStale ? ANY_POSITION : d.line),
 				keepUnobserved: (d) =>
 					d.runnerId !== run.runnerId ||
 					(d.serverId !== undefined && unconfirmed.has(d.serverId)),

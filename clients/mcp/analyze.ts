@@ -442,6 +442,12 @@ async function warmLspForFile(
 			maxClientWaitMs: WARMUP_CLIENT_WAIT_MS,
 			maxDiagnosticsWaitMs: WARMUP_DIAGNOSTICS_WAIT_MS,
 			source: "mcp-warmup",
+			// #3405: every caller of `analyzeFile` (the MCP hosts' post-write hooks,
+			// warm and cold, and `pilens_analyze`) asks about the bytes on disk now,
+			// and this is the analysis's first push of them, so it is the save. A
+			// save-triggered server (Expert compiles on didSave and on nothing else)
+			// answers an MCP host's edit only because of it.
+			saved: true,
 		});
 	} catch {
 		// Best-effort warm-up; the dispatch runner still tries on its own.

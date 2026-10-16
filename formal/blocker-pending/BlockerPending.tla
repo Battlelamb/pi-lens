@@ -153,6 +153,15 @@ later Gate B skip may settle (under GateB and Deferred):
    (`retireSettledRunnerBlockers`). FALSE is the round-6 code: it retired
    a recorded collect-later blocker the skip never saw (verify probe P34).
 
+The #4509 fix switch, pinned TRUE:
+ - RecordedRuns: the gated runner skips as covered only while the record
+   holds none of its blockers (`DispatchContext.recordedRunnerIds`); else it
+   runs, and its own verdict judges its record. A settle of d is then never a
+   covered skip while d is recorded. FALSE is the code before #4509: a failed
+   write kept an entry whose line it edited with no position (P42), and the
+   edit-scoped keep, which never shows an unplaced entry inside the edit,
+   kept it after its fix for the session (`ConclusiveRetires`).
+
 Invariants:
  - GateHonest: the commit gate is open only when no completed observation of
    the current bytes holds a blocker;
@@ -183,7 +192,9 @@ Invariants:
    only when new: no write can block on a finding no run reported, so the
    property is about what was reported;
  - CleanSound: a write's tool result says clean only when nothing reported
-   was still owed when it said so (the ghost `cleanOk`).
+   was still owed when it said so (the ghost `cleanOk`);
+ - ConclusiveRetires (#4509): a write whose run reached a verdict never keeps
+   a recorded blocker its bytes lack (the ghost `pinned`): no pin.
 ***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -219,7 +230,8 @@ CONSTANTS
     EditScopedKeep,    \* round 6 (N1): that skip keeps recorded gated blockers outside the edit
     EditScopedOwed,    \* round 6: that skip keeps the runner's owed lines outside the edit
     LaneVoids,         \* round 7 (O2): a covered skip with a silent lane is no verdict
-    SettleCoverKeep    \* round 7 (O1): a settled covered skip retires nothing
+    SettleCoverKeep,   \* round 7 (O1): a settled covered skip retires nothing
+    RecordedRuns       \* #4509: a runner holding a recorded blocker runs, never skips as covered
 
 Fast == {"a", "b"}
 U == IF Unused THEN {"u"} ELSE {}
@@ -270,17 +282,18 @@ VARIABLES
     held,       \* ghost: findings a write with no alignment kept by identity, undelivered
     unpos,      \* recorded entries with no position (kept unmatched by a write with no alignment)
     adopted,    \* ghost: pre-existing twins delivered or stood in by a write that did not reach them
+    pinned,     \* ghost: recorded blockers a conclusive write kept although its bytes lacked them
     nW, nO, nT
 
 vars == <<disk, ln, base, hasBase, rec, obsF, wobs, dState, toolClean, noted,
           cleared, clearOk, claim, claimSet, claimOk, owed, cleanOk, owe,
-          reported, lost, held, unpos, adopted, nW, nO, nT>>
+          reported, lost, held, unpos, adopted, pinned, nW, nO, nT>>
 
 TypeOK ==
     /\ disk \subseteq AllF /\ rec \subseteq AllF /\ obsF \subseteq Inline
     /\ owed \subseteq AllF /\ owe \subseteq Lined /\ reported \subseteq AllF
     /\ lost \subseteq AllF /\ held \subseteq AllF
-    /\ unpos \subseteq Lined /\ adopted \subseteq Tw
+    /\ unpos \subseteq Lined /\ adopted \subseteq Tw /\ pinned \subseteq Lined
     /\ dState \in {"idle", "flight", "settled", "failed"}
 
 Init ==
@@ -293,7 +306,7 @@ Init ==
     /\ owed = {} /\ cleanOk = TRUE
     /\ owe = {} /\ reported = {}
     /\ lost = {} /\ held = {}
-    /\ unpos = {} /\ adopted = {}
+    /\ unpos = {} /\ adopted = {} /\ pinned = {}
     /\ nW = 0 /\ nO = 0 /\ nT = 0
 
 \* What the fast runners deliver as blocking for bytes `new` when the write
@@ -402,7 +415,8 @@ Write(bytes, shift, edited, o, al) ==
         touched == IF cover THEN sees ELSE Covers(edited, al)
         hid == IF cover THEN Gated \ sees ELSE {}
         \* What the edit-scoped keep holds: the gated entries outside the edit.
-        ks == IF cover /\ EditScopedKeep THEN Gated \ edited ELSE {}
+        \* #4509: an entry with no position is never shown inside it.
+        ks == IF cover /\ EditScopedKeep THEN Gated \ (edited \ unpos) ELSE {}
         l == IF shift THEN [f \in AllF |-> ln[f] + 1] ELSE ln
         obs == Deliv(new, touched, fail)
         ub == UBlock(new, fail, l)
@@ -424,15 +438,27 @@ Write(bytes, shift, edited, o, al) ==
        /\ lost' = IF blind THEN (rec \ current) \cap bytes \cap Lined ELSE {}
        /\ held' = held \cup (IF AnyMatch(blind)
                     THEN StandIn(new, touched, fail, blind, hid) \ delivered ELSE {})
+       \* #4509 (N3): an entry kept unmatched has no position afterwards when
+       \* the write had no alignment or edited its line (P42); one the
+       \* edit-scoped keep holds keeps having none.
        /\ unpos' = IF fail /\ CarryInconclusive
-                     THEN ((IF blind THEN rec ELSE unpos) \cap Lined \cap current)
-                          \ delivered
+                     THEN ((IF blind THEN rec ELSE unpos \cup (rec \cap edited))
+                             \cap Lined \cap current) \ delivered
+                     ELSE IF cover THEN unpos \cap ks \cap current
                      ELSE {}
+       /\ pinned' = pinned \cup (IF fail THEN {} ELSE (rec \cap ks) \ bytes)
        /\ adopted' = adopted \cup
                     (((delivered \cup StandIn(new, touched, fail, blind, hid))
                         \cap Tw \cap Gated) \ Reach(edited))
        /\ dState' = IF Deferred THEN "flight" ELSE "idle"
        /\ claim' = FALSE
+
+\* #4509: under RecordedRuns the gated runner skips as covered only while it
+\* holds no recorded blocker; otherwise it runs and judges its own.
+WriteOutcomes ==
+    IF RecordedRuns /\ rec \cap Gated # {}
+      THEN Outcomes \ {"cover", "silent"}
+      ELSE Outcomes
 
 WriteStep ==
     /\ nW < Writes
@@ -440,6 +466,7 @@ WriteStep ==
           o \in Outcomes, al \in (IF MayUnalign THEN BOOLEAN ELSE {TRUE}) :
         /\ ((new \ disk) \cup (disk \ new)) \cap Lined \subseteq touched
         /\ (shift => \A f \in AllF : ln[f] < MaxShift)
+        /\ o \in WriteOutcomes
         /\ Write(new, shift, touched, o, al)
     /\ nW' = nW + 1
     /\ UNCHANGED <<claimSet, claimOk, nO, nT>>
@@ -471,7 +498,7 @@ OpaqueStep ==
     /\ nO' = nO + 1
     /\ claim' = FALSE
     /\ UNCHANGED <<ln, wobs, toolClean, claimSet, claimOk, cleanOk, reported,
-                   lost, held, adopted, nW, nT>>
+                   lost, held, adopted, pinned, nW, nT>>
 
 \* The collect-later run of the current bytes settles. A conclusive run's
 \* blocker joins the record (recordDeferredInlineBlockers merges and leaves
@@ -491,12 +518,15 @@ SettledOwed(ok) ==
 Retires(ok) == rec # {} /\ SettledRec(ok) = {}
 
 \* A settled covered skip (round 7, `cv`): it observes nothing. Under
-\* SettleCoverKeep it retires nothing; FALSE retires d file-wide.
+\* SettleCoverKeep it retires nothing; FALSE retires d file-wide. #4509:
+\* under RecordedRuns d's runner, holding d, runs, and its run settles as
+\* any run (`retireSettledRunnerBlockers` retires nothing only for a skip).
 CoverRec == IF SettleCoverKeep THEN rec ELSE rec \ {"d"}
 SettleStep ==
     /\ dState = "flight"
     /\ \E ok \in (IF MayFail THEN BOOLEAN ELSE {TRUE}),
-          cv \in (IF GateB THEN BOOLEAN ELSE {FALSE}) :
+          cv \in (IF GateB /\ ~(RecordedRuns /\ "d" \in rec)
+                   THEN BOOLEAN ELSE {FALSE}) :
         LET next == IF cv THEN CoverRec ELSE SettledRec(ok)
             retires == rec # {} /\ next = {}
         IN /\ dState' = IF ok /\ ~cv THEN "settled" ELSE "failed"
@@ -508,7 +538,7 @@ SettleStep ==
            /\ reported' = reported \cup (next \ rec)
     /\ UNCHANGED <<disk, ln, base, hasBase, obsF, wobs, toolClean,
                    claim, claimSet, claimOk, cleanOk, owe, lost, held,
-                   unpos, adopted, nW, nO, nT>>
+                   unpos, adopted, pinned, nW, nO, nT>>
 
 TurnEndStep ==
     /\ nT < Turns
@@ -531,7 +561,7 @@ TurnEndStep ==
            /\ reported' = reported \cup (r \ rec)
     /\ nT' = nT + 1
     /\ UNCHANGED <<disk, ln, base, hasBase, obsF, wobs, toolClean, cleanOk,
-                   owe, lost, held, unpos, adopted, nW, nO>>
+                   owe, lost, held, unpos, adopted, pinned, nW, nO>>
 
 Next == WriteStep \/ OpaqueStep \/ SettleStep \/ TurnEndStep
 
@@ -549,4 +579,5 @@ RecordedReported == rec \subseteq reported \cup held
 UnalignedKept == lost = {}
 TwinNotAdopted == adopted = {}
 CleanSound == cleanOk
+ConclusiveRetires == pinned = {}
 =============================================================================

@@ -38,6 +38,7 @@ import {
 	createLSPClient,
 	handleNotifyChange,
 	handleNotifyOpen,
+	handleNotifySave,
 	type LSPClientState,
 } from "../../../clients/lsp/client.js";
 import { stopLSP } from "../../../clients/lsp/launch.js";
@@ -423,6 +424,73 @@ function notifyRecorder(client: Awaited<ReturnType<typeof createLSPClient>>) {
 		},
 	};
 }
+
+/**
+ * #3405 r1: `notify.save` is the save for bytes the server already holds — the
+ * service sends it when it debounced a saved touch's push (an unsaved push of
+ * the same bytes landed just before). Recurrence: a cold `lsp_diagnostics`
+ * query lost its save that way (clangd 22.1.0 received didOpen, never didSave).
+ */
+describe("a save with no content push (#3405 r1)", () => {
+	let state: LSPClientState;
+
+	beforeEach(() => {
+		state = createMockState();
+		state.saveOptions = { includeText: true };
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	const openUnsaved = (content = "const x = 1;\n") =>
+		handleNotifyOpen(state, TEST_FILE, content, "typescript", false, true);
+
+	it("sends only didSave, without text, for a document the server holds", async () => {
+		await openUnsaved();
+		vi.mocked(state.connection.sendNotification).mockClear();
+		await expect(handleNotifySave(state, TEST_FILE)).resolves.toBe(true);
+		// No re-push: clangd does not republish identical bytes, and a re-push
+		// clears the cached answer the touch then waits on.
+		expect(sentMethods(state)).toEqual(["textDocument/didSave"]);
+		// No text even under includeText: a push queued before this entry may
+		// have replaced the bytes its caller read.
+		expect(sentParams(state, "textDocument/didSave")).toEqual({
+			textDocument: { uri: TEST_URI },
+		});
+	});
+
+	it("hands its save to an unsent push instead of replacing it", async () => {
+		await openUnsaved();
+		vi.mocked(state.connection.sendNotification).mockClear();
+		const push = openUnsaved("const x = 2;\n");
+		const save = handleNotifySave(state, TEST_FILE);
+		await Promise.all([push, save]);
+		// The newer bytes still go, and they carry the save: one didChange, one
+		// didSave, in that order.
+		expect(sentMethods(state)).toEqual([
+			"textDocument/didChange",
+			"textDocument/didSave",
+		]);
+		expect(sentParams(state, "textDocument/didSave")).toEqual({
+			textDocument: { uri: TEST_URI },
+			text: "const x = 2;\n",
+		});
+		await expect(push).resolves.toBe(true);
+	});
+
+	it("sends nothing to a server that declared no save", async () => {
+		state.saveOptions = undefined;
+		await openUnsaved();
+		vi.mocked(state.connection.sendNotification).mockClear();
+		await expect(handleNotifySave(state, TEST_FILE)).resolves.toBe(false);
+		expect(sentMethods(state)).toEqual([]);
+	});
+
+	it("sends nothing for a document the server does not hold", async () => {
+		await expect(handleNotifySave(state, TEST_FILE)).resolves.toBe(false);
+		expect(sentMethods(state)).toEqual([]);
+	});
+});
 
 describe("didSave through the real createLSPClient init path (#3405)", () => {
 	it("a server advertising save: true receives didSave after didOpen", async () => {

@@ -13,6 +13,11 @@
  *   node scripts/assert-evaluated.mjs --docs
  *       tool-smoke-prs job: the regenerated docs in the working tree against
  *       HEAD's, before any refresh PR opens.
+ *   node scripts/assert-evaluated.mjs --count <producer>=<n> --floor <m>
+ *       a workflow step whose producer is not an LSP script (#4518): the count
+ *       the step derived in shell, against a floor the workflow carries next to
+ *       it, the way `--min-pass=N` does. An empty or non-numeric `<n>` is a
+ *       producer that reported nothing.
  *
  * Exit 0 when every record is ok, 1 when any is not (or HEAD cannot be read: a
  * guard that cannot compare must not read green), 2 on a usage error.
@@ -78,8 +83,25 @@ export function checkRecords(dir, headText = gitHeadText) {
 }
 
 /**
+ * Count mode: `spec` is `<producer>=<n>`. A count that is absent, empty or not
+ * a non-negative integer is a producer that never reported (a step that failed
+ * before it could count), never a zero it measured.
+ */
+export function checkCount(spec, floor) {
+	const eq = spec.indexOf("=");
+	const producer = eq < 0 ? spec : spec.slice(0, eq);
+	const raw = eq < 0 ? "" : spec.slice(eq + 1);
+	if (!/^\d+$/.test(raw)) return missingRecord(producer, floor);
+	return assertEvaluated({
+		producer,
+		evaluated: Number(raw),
+		expectedAtLeast: floor,
+	});
+}
+
+/**
  * The per-cell check of a doc whose count margin is too coarse to see a
- * handful of cells go `unknown`: every cell classified at HEAD must still be.
+ * handful of cells go `unknown`: HEAD must justify losses with an expired stamp.
  * Same record shape: `evaluated` is how many of HEAD's classified cells held.
  */
 function cellRecord(producer, doc, head, text) {
@@ -142,9 +164,22 @@ export function main(argv, headText = gitHeadText, root = ".") {
 	const recordsAt = argv.indexOf("--records");
 	const wantRecords = recordsAt >= 0 && Boolean(argv[recordsAt + 1]);
 	const wantDocs = argv.includes("--docs");
-	if (!wantRecords && !wantDocs) {
+	const countAt = argv.indexOf("--count");
+	const floorAt = argv.indexOf("--floor");
+	// `--count` with no value (or another flag in its place) is a usage error,
+	// never a mode that silently does nothing (#4518 review F-nit).
+	const countValue = countAt >= 0 ? argv[countAt + 1] : undefined;
+	const countMalformed =
+		countAt >= 0 && (countValue === undefined || countValue.startsWith("--"));
+	const wantCount = countAt >= 0 && !countMalformed;
+	const floor = floorAt >= 0 ? Number(argv[floorAt + 1]) : Number.NaN;
+	if (
+		countMalformed ||
+		(!wantRecords && !wantDocs && !wantCount) ||
+		(wantCount && !(Number.isInteger(floor) && floor >= 1))
+	) {
 		console.error(
-			"usage: assert-evaluated.mjs --records <dir> [--docs] | --docs (exit 0 ok, 1 below a floor, 2 usage)",
+			"usage: assert-evaluated.mjs --records <dir> [--docs] | --docs | --count <producer>=<n> --floor <m> (exit 0 ok, 1 below a floor, 2 usage)",
 		);
 		return 2;
 	}
@@ -153,6 +188,7 @@ export function main(argv, headText = gitHeadText, root = ".") {
 		records = [
 			...(wantRecords ? checkRecords(argv[recordsAt + 1], headText) : []),
 			...(wantDocs ? checkDocs(root, headText) : []),
+			...(wantCount ? [checkCount(argv[countAt + 1], floor)] : []),
 		];
 	} catch (e) {
 		// Fail closed: with no HEAD to compare against, the drop guard is off.

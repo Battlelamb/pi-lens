@@ -554,11 +554,12 @@ export const SESSION_STATE_REGISTRY: SessionStateEntry[] = [
 	{
 		id: "dispatch-integration:sessionCaches",
 		module: "dispatch/integration.ts",
-		state: "primaryFilesThisTurn, sessionSlopRuleCounts, sessionFacts",
+		state:
+			"primaryFilesThisTurn, sessionSlopRuleCounts, sessionFacts, preEditCaptureFacts",
 		policy: "session_start",
 		resetName: "resetDispatchBaselines",
 		reason:
-			"Every one of these is a claim about the tree as this session found it; `sessionFacts` is cleared by a method call inside this same reset, so the reset is the registered seam.",
+			"Every one of these is a claim about the tree as this session found it; `sessionFacts` and `preEditCaptureFacts` (#4483) are cleared by a method call inside this same reset, so the reset is the registered seam.",
 	},
 	{
 		id: "dispatcher:coverageNoticeSeen",
@@ -869,11 +870,11 @@ export const SESSION_STATE_REGISTRY: SessionStateEntry[] = [
 	{
 		id: "lsp-workspace-diagnostics-cache:fileCreatedAt",
 		module: "lsp/workspace-diagnostics-session.ts",
-		state: "_fileCreations; _evictedCreatedAt",
+		state: "_fileCreations; _allFilesChangedAt",
 		policy: "session_start",
 		resetName: "resetWorkspaceDiagnosticsCacheSession",
 		reason:
-			"#4320, #4346: each client's latest Created send per path refuses older cached entries whose dependency scope holds that path, under that client's root, and `_evictedCreatedAt` holds what the bound evicted; kept across sessions they would refuse every later session's entries.",
+			"#4320, #4346: each client's latest Created send per path refuses older cached entries whose dependency scope holds that path, under that client's root (#4476: or a declaration file pi-lens saw change on disk, for any server), and `_allFilesChangedAt` holds what the bound evicted and the last dependency install; kept across sessions they would refuse every later session's entries.",
 		probe: {
 			arm: () =>
 				noteWorkspaceFileCreated("probe-server", "/", ["/probe-created.ts"], 1),
@@ -1658,7 +1659,12 @@ export const SESSION_STATE_SYMBOL_COUNTS: Readonly<Record<string, number>> = {
 	// file's other constant lookups above — SWEEP_HEURISTIC_LIMITS item 5.
 	// #4485: the recently-clean neighbour cache is deleted (11 -> 10); the
 	// pending record in cascade-format.ts replaces it.
-	"dispatch/integration.ts": 10,
+	// #4483 (10 -> 12): `preEditCaptureFacts`, the pre-edit capture's file
+	// facts, cleared by `resetDispatchBaselines` (the sessionCaches entry); and
+	// `preEditCapturesInFlight`, which holds an entry only while that file's
+	// capture runs (at most four); reset aborts each controller and each capture
+	// releases its slot after teardown, preventing overlap across resets.
+	"dispatch/integration.ts": 12,
 	// #3968: the runner-id identity leaf beside the dispatcher — one Set fed
 	// by `RunnerRegistry.register` and re-derived at every process start
 	// (registration state, not session state); see the file-level exemption
@@ -1765,7 +1771,7 @@ export const SESSION_STATE_SYMBOL_COUNTS: Readonly<Record<string, number>> = {
 	// scan cannot tell from state (1 -> 2). Exempted above, never written.
 	"lsp/workspace-diagnostics-cache.ts": 2,
 	// #4320 r2: `_fileCreations`, the bounded Created markers (per server,
-	// root and path since #4346), registered above with `_evictedCreatedAt`.
+	// root and path since #4346), registered above with `_allFilesChangedAt`.
 	"lsp/workspace-diagnostics-session.ts": 1,
 	"lsp/workspace-sweep-hold.ts": 0,
 	// #2455 fix round 2: `warmGraphFacts` (`new FactStore("mcp-analyze")`) is now

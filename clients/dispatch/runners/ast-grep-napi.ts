@@ -1392,7 +1392,14 @@ const astGrepNapiRunner: RunnerDefinition = {
 		const astGrepLspPublished = astGrepLspEnabled
 			? await hasAuxiliaryLspPublishedForRoot("ast-grep", ctx.filePath)
 			: false;
-		if (astGrepLspEnabled && astGrepLspPublished) {
+		// #4509: a recorded napi blocker is judged only by a napi run. The
+		// server's copy has another identity, so under Gate B nothing could
+		// retire one it cannot place (a fixed line after a cut-off edit, an
+		// unaligned write). napi runs instead and names the server
+		// (`coveredBy` below), whose copy stands for napi's on each line the
+		// server flagged (the dispatcher).
+		const coveredByServer = astGrepLspEnabled && astGrepLspPublished;
+		if (coveredByServer && !ctx.recordedRunnerIds?.has("ast-grep-napi")) {
 			// #2324 F2/R2-C: "has this server EVER published for this file" can go
 			// stale — a LATER touch's aux-grace wait can find the server silent
 			// for the CURRENT content while an OLDER revision's publication still
@@ -1495,8 +1502,8 @@ const astGrepNapiRunner: RunnerDefinition = {
 
 		// #2336: napi is standing in for the ast-grep auxiliary LSP exactly when
 		// that server is expected but has not published for this root. Gate B
-		// above already returned for the published case, so reaching here with
-		// the auxiliary enabled IS the substitute role.
+		// above returned for the published case unless napi holds a recorded
+		// blocker (#4509: then it runs as the server's peer, not its substitute).
 		const runningAsLspSubstitute = astGrepLspEnabled && !astGrepLspPublished;
 
 		if (runningAsLspSubstitute) {
@@ -1604,6 +1611,9 @@ const astGrepNapiRunner: RunnerDefinition = {
 				semantic,
 			}),
 			...(outOfEditScope.length > 0 && { outOfEditScope }),
+			...(coveredByServer && {
+				coveredBy: { runnerId: "lsp", serverId: "ast-grep" },
+			}),
 		};
 	},
 };

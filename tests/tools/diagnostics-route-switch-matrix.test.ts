@@ -942,6 +942,8 @@ const STATUS =
 const NON_ENTRY_MEMBERS: Record<string, string> = {
 	constructor: "builds the service",
 	shutdown: "stops every server",
+	restartPrimaryClientsUnder:
+		"stops the primary servers under a root after a dependency install; the next touch spawns fresh ones, and it returns a count, never diagnostics",
 	checkDestroyed: STATUS,
 	getOpenDocumentPaths: STATUS,
 	getTrackedContent: STATUS,
@@ -953,6 +955,7 @@ const NON_ENTRY_MEMBERS: Record<string, string> = {
 	observeLateAuxiliaryAnswer:
 		"records how late an auxiliary answered; it returns nothing",
 	notifyExternalFileChange: SYNC,
+	notifyOutOfBandFileChanges: SYNC,
 	announceCreatedFiles: SYNC,
 	resyncGitChangedFiles: SYNC,
 	resyncHeldPrimaries: SYNC,

@@ -266,6 +266,21 @@ const REPLAY_EXPECTATIONS: Record<string, ReplayExpectation> = {
 			{ rule: "unused", semantic: "warning", file: "bad.go", line: 9 },
 		],
 	},
+	// ktlint 1.8.0 prints its own `WARN` log line on stdout ahead of the JSON
+	// report; reading that stream whole replayed as a parse error, not the
+	// finding (#4522). The finding is op-spacing on Bad.kt line 3.
+	"ktlint/real": {
+		status: "succeeded",
+		semantic: "warning",
+		findings: [
+			{
+				rule: "standard:op-spacing",
+				semantic: "warning",
+				file: "Bad.kt",
+				line: 3,
+			},
+		],
+	},
 	// helm 4.3.0 prefixes the chart name inside the message; the real template
 	// is `templates/bad.yaml` line 5, not the prose around it.
 	"helm-lint/real": {

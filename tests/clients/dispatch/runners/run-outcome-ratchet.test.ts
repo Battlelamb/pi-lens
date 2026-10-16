@@ -40,7 +40,6 @@ const NOT_YET_ON_PRIMITIVE: Record<string, string> = {
 	"helm-render.ts": "reads its own exit status; #1737 strangler",
 	"psscriptanalyzer.ts": "reads its own exit status; #1737 strangler",
 	"rust-clippy.ts": "reads its own exit status; #1737 strangler",
-	"shfmt.ts": "reads its own exit status; #1737 strangler",
 	"spotbugs.ts": "reads its own exit status; #1737 strangler",
 };
 
@@ -90,11 +89,12 @@ function literalValue(node: SgNode): string | undefined {
  *   its AST: an imported interface or type alias is a TYPE (a type cannot
  *   classify an outcome); an imported function, class, variable or enum is
  *   a VALUE.
- * - the runner USES the primitive only when it references a value it
- *   imported this way somewhere outside the import and outside a type
- *   position (`typeof x` in a type) (#4429 review F4: an import specifier
- *   and a type query are not use sites). A `type`-marked specifier needs no
- *   rule of its own: TypeScript admits it only in type positions.
+ * - the runner USES the primitive only when it calls a value it imported this
+ *   way somewhere outside the import and outside a type position. An import
+ *   alone is not evidence that the runner classifies its spawn result; the
+ *   call requirement closes that false admission (#4540 F-4540-3). A
+ *   `type`-marked specifier needs no rule of its own: TypeScript admits it
+ *   only in type positions.
  *
  * Every other needle hit (a namespace or default import, a bare side-effect
  * import, `export … from`, a dynamic `import()` or `require`, a specifier
@@ -144,19 +144,15 @@ export function primitiveUse(
 		}
 	}
 	result.uses = root
-		.findAll({
-			rule: {
-				any: [
-					{ kind: "identifier" },
-					{ kind: "shorthand_property_identifier" },
-				],
-			},
-		})
-		.some(
-			(node) =>
-				valueLocals.has(node.text()) &&
-				!node.ancestors().some((up) => NON_USE_CONTEXTS.has(String(up.kind()))),
-		);
+		.findAll({ rule: { kind: "call_expression" } })
+		.some((call) => {
+			const callee = call.namedChildren()[0];
+			return (
+				callee !== undefined &&
+				valueLocals.has(callee.text()) &&
+				!call.ancestors().some((up) => NON_USE_CONTEXTS.has(String(up.kind())))
+			);
+		});
 	return result;
 }
 
@@ -393,9 +389,9 @@ describe("run-outcome primitive ratchet", () => {
 		).toBe(true);
 	});
 
-	it("counts a value import only where the runner references it (#4429)", () => {
-		// An import specifier is not a use site: an unreferenced value import
-		// leaves the runner off the primitive; a renamed one used is on it.
+	it("counts only a classifier call, not an import-only plant (#4429)", () => {
+		// Recurrence: an import-only plant must not satisfy the ratchet. A
+		// renamed value is admitted only when the runner actually calls it.
 		expect(
 			usesPrimitive('import { parseToolRun } from "./utils/tool-failure.js";'),
 		).toBe(false);

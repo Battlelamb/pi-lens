@@ -855,6 +855,11 @@ jobs:
             echo "::error title=Windows advisory::${failures:-unknown} Vitest tests failed"
             exit 1
           fi
+          # #4518: a subset whose files all skip (or whose log has no summary) is
+          # green on the outcome alone. 2516 tests ran on the measured leg
+          # (tests/fixtures/nightly-floors/measurements.json); the floor is just over half.
+          executed="$(node scripts/lib/windows-vitest-failure-count.mjs "$RUNNER_TEMP/windows-vitest.log" --executed 2>/dev/null || true)"
+          node scripts/assert-evaluated.mjs --count "windows-vitest=${executed}" --floor 1260
 
   # Simulates pi's real install path: a `git:` install runs `npm install
   # --omit=dev`, which triggers `prepare` → `build:dist` FROM SOURCE with the
@@ -1097,7 +1102,25 @@ jobs:
         run: |
           set -euo pipefail
           npm run build
-          node_modules/.bin/vitest run tests/clients/path-utils.test.ts tests/clients/diagnostic-dispositions.test.ts --configLoader runner
+          node_modules/.bin/vitest run tests/clients/path-utils.test.ts tests/clients/diagnostic-dispositions.test.ts --configLoader runner --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/apfs-anchors.json"
+
+      # #4518: the step above stays advisory about test RESULTS, but a run that
+      # evaluated nothing (a build that did not compile, a file that did not
+      # load, a reporter that wrote no file) read as an ordinary advisory red,
+      # or as green when vitest's filter matched nothing. This step is NOT
+      # continue-on-error: it fails the leg only when fewer than 100 tests ran
+      # (passed plus failed; 223 ran on the measured macOS leg, tests/fixtures/
+      # nightly-floors/measurements.json). The summary table it appends is the
+      # counter the promotion decision above reads. 100 is under half of the
+      # measured 223: the step exists to catch a run that executed nothing, and
+      # a tight margin would red the required leg on a legitimate test removal.
+      - name: APFS anchors evaluated floor
+        if: ${{ !cancelled() && matrix.os == 'macos-latest' }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          count="$(node -e 'try{const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(j.numPassedTests+j.numFailedTests)}catch{}' "$RUNNER_TEMP/apfs-anchors.json")"
+          node scripts/assert-evaluated.mjs --count "apfs-anchors=${count}" --floor 100
 
       - name: Rule catalog report (non-blocking)
         continue-on-error: true

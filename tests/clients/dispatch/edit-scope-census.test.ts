@@ -51,6 +51,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { AUXILIARY_LSP_PROFILES } from "../../../clients/dispatch/auxiliary-lsp.js";
 import { RunnerRegistry } from "../../../clients/dispatch/dispatcher.js";
+import { PRE_EDIT_SEED_RUNNER_IDS } from "../../../clients/dispatch/pre-edit-seed.js";
 import { registerDefaultRunners } from "../../../clients/dispatch/runners/index.js";
 import type { RunnerDefinition } from "../../../clients/dispatch/types.js";
 import {
@@ -217,6 +218,22 @@ describe("edit-scope census (#4481)", () => {
 			"edit-scope classification",
 			Object.keys(CLASSIFICATION),
 		);
+	});
+
+	it("seeds the pre-edit baseline from exactly the linter lanes (#4483)", () => {
+		// Recurrence: a linter registered (or reclassified) here without joining
+		// PRE_EDIT_SEED_RUNNER_IDS would stop the agent on its old errors at a
+		// file's first write again (#4483); a language server or scanner added
+		// to that set would hide its old errors there, against the maintainer's
+		// linters-only scope (2026-10-15).
+		const linters = Object.entries(CLASSIFICATION)
+			.filter(([, c]) => c.scope === "unscoped" && c.kind === "linter")
+			.map(([id]) => id);
+		assertNonEmptyScan("linter lanes", linters.length, 20);
+		expect(
+			[...PRE_EDIT_SEED_RUNNER_IDS].sort(),
+			"PRE_EDIT_SEED_RUNNER_IDS (clients/dispatch/pre-edit-seed.ts) must equal the lanes classified LINTER here",
+		).toEqual(linters.sort());
 	});
 
 	it("finds a runner source for every registered runner", async () => {

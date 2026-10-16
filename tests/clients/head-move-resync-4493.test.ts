@@ -1,5 +1,6 @@
 // flake-shape: real-process-spawn — a clean-tree HEAD move exists only in a real repository that git checks out, rebases or resets; a stubbed git could not rewrite the files the language server holds.
-// flake-shape: in-process-mock — a project lsp.json cannot declare an auxiliary server (its role is reserved and inert), so the catalog lookup adds the auxiliary fake for the repositories registered here; every server is still a real child process on a real stdio wire
+// flake-shape: in-process-mock — a project lsp.json cannot declare an auxiliary server (its role is reserved and inert), so the catalog lookup adds the auxiliary fake for the repositories registered here, and the role lookup (getServerById) answers for it too (#4476); every server is still a real child process on a real stdio wire
+// flake-shape: ungoverned-wait-for — #4528 r1 F3 joins a dependency restart that runs between real server processes and ends after the bounded tool_call hook returns; nothing in it is awaitable.
 /**
  * #4493: a clean-tree HEAD move left held documents stale on the server.
  *
@@ -32,6 +33,7 @@ import {
 } from "vitest";
 import { CacheManager } from "../../clients/cache-manager.js";
 import { hashDiagnosticContent } from "../../clients/lsp/diagnostic-binding.js";
+import { workspaceFileCreatedAtFor } from "../../clients/lsp/workspace-diagnostics-session.js";
 import { flushLatencyLog } from "../../clients/latency-logger.js";
 import { getGlobalPiLensLogDir } from "../../clients/probe-home-state.js";
 import {
@@ -66,6 +68,9 @@ import {
  * catalog lookup adds it for the repositories registered here, the pattern the
  * #1714 real-stream suites use; every other lookup is the real one.
  */
+const primaryOrdering = vi.hoisted(
+	() => new Map<string, "single-task-ordered" | "threaded" | "unmeasured">(),
+);
 const auxiliaries = vi.hoisted(() => new Map<string, unknown>());
 vi.mock("../../clients/lsp/config.js", async (importOriginal) => {
 	const actual =
@@ -74,12 +79,33 @@ vi.mock("../../clients/lsp/config.js", async (importOriginal) => {
 	return {
 		...actual,
 		getServersForFileWithConfig: (filePath: string) => {
-			const servers = actual.getServersForFileWithConfig(filePath);
+			const servers = actual
+				.getServersForFileWithConfig(filePath)
+				.map((server) => {
+					for (const [dir, ordering] of primaryOrdering)
+						if (filePath.startsWith(`${dir}${sep}`))
+							return { ...server, replyOrdering: ordering };
+					return server;
+				});
 			for (const [dir, aux] of auxiliaries)
 				if (filePath.startsWith(`${dir}${sep}`))
 					return [...servers, aux as (typeof servers)[number]];
 			return servers;
 		},
+	};
+});
+
+// #4476: the role lookup the registry's restart asks (`getServerById`) knows
+// the built-in catalog only; it answers for the auxiliaries registered here too.
+vi.mock("../../clients/lsp/server.js", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("../../clients/lsp/server.js")>();
+	return {
+		...actual,
+		getServerById: (id: string) =>
+			[...auxiliaries.values()].find(
+				(aux) => (aux as { id?: string }).id === id,
+			) ?? actual.getServerById(id),
 	};
 });
 
@@ -127,9 +153,11 @@ async function makeRepo(
 	base: Record<string, string>,
 	changed: Record<string, string>,
 	initArgs: string[] = [],
+	profile: Record<string, string> = {},
 ): Promise<Repo> {
 	const dir = path.join(env.tmpDir, `repo-${++repoCount}`);
 	const trace = path.join(env.tmpDir, `repo-${repoCount}.trace`);
+	primaryOrdering.set(dir, "single-task-ordered");
 	fs.mkdirSync(path.join(dir, ".pi-lens"), { recursive: true });
 	const shim = path.join(env.tmpDir, `repo-${repoCount}-server.mjs`);
 	fs.writeFileSync(
@@ -138,6 +166,9 @@ async function makeRepo(
 			'process.env.FAKE_LSP_NO_DIAGNOSTIC_PROVIDER = "1";',
 			'process.env.FAKE_LSP_TRACE_TEXT = "1";',
 			`process.env.FAKE_LSP_TRACE_FILE = ${JSON.stringify(trace)};`,
+			...Object.entries(profile).map(
+				([name, value]) => `process.env.${name} = ${JSON.stringify(value)};`,
+			),
 			`import(${JSON.stringify(pathToFileURL(fakeServer).href)});`,
 			"",
 		].join("\n"),
@@ -295,19 +326,42 @@ function sentDiskBytes(
 	return service.getTrackedContent(file, repo.dir)?.hash === want;
 }
 
+/** The text of a tool_result's content, as the model reads it. */
+function resultText(
+	result: Awaited<ReturnType<typeof handleToolResult>>,
+): string {
+	return (result?.content ?? [])
+		.map((part) => ("text" in part ? String(part.text ?? "") : ""))
+		.join("\n");
+}
+
 /**
  * One pi session's hooks. `shared` passes another session's coordinator: in
  * index.ts one module-level RuntimeCoordinator serves the primary and every
  * concurrent secondary session, so they share its `sessionGeneration`.
  */
-function session(repo: Repo, sessionId: string, shared?: RuntimeCoordinator) {
+/**
+ * A session's hooks. `parent` makes every call nested under that tool call,
+ * as a codemode script's bash is (`parentToolCallId` on both events).
+ */
+function session(
+	repo: Repo,
+	sessionId: string,
+	shared?: RuntimeCoordinator,
+	parent?: string,
+) {
 	const runtime = shared ?? new RuntimeCoordinator();
 	runtime.projectRoot = repo.dir;
 	if (!shared) runtime.setTelemetryIdentity({ sessionId });
 	let n = 0;
 	const callDeps = (toolName: string, input: unknown, toolCallId: string) =>
 		({
-			event: { toolName, toolCallId, input },
+			event: {
+				toolName,
+				toolCallId,
+				input,
+				...(parent !== undefined && { parentToolCallId: parent }),
+			},
 			ctx: { cwd: repo.dir },
 			lensEnabled: true,
 			getFlag: () => false,
@@ -326,6 +380,7 @@ function session(repo: Repo, sessionId: string, shared?: RuntimeCoordinator) {
 				toolCallId,
 				input: { command },
 				content: [{ type: "text", text: "ok" }],
+				...(parent !== undefined && { parentToolCallId: parent }),
 			},
 			getFlag: () => false,
 			dbg: () => {},
@@ -343,20 +398,22 @@ function session(repo: Repo, sessionId: string, shared?: RuntimeCoordinator) {
 	return {
 		runtime,
 		/** The bash tool_call; the returned function is its tool_result. */
-		async bashCall(command: string): Promise<() => Promise<void>> {
+		async bashCall(command: string): Promise<() => Promise<string>> {
 			const id = `${sessionId}-c${++n}`;
 			await runHandlerExpectingNoThrow(() =>
 				handleToolCall(callDeps("bash", { command }, id)),
 			);
-			return async () => {
-				await handleToolResult(resultDeps(command, id));
-			};
+			return async () =>
+				resultText(await handleToolResult(resultDeps(command, id)));
 		},
-		/** One whole bash call: tool_call, the host's run, tool_result. */
-		async bash(command: string, run: () => void): Promise<void> {
+		/**
+		 * One whole bash call: tool_call, the host's run, tool_result. Answers
+		 * the text the tool_result returned to the model.
+		 */
+		async bash(command: string, run: () => void): Promise<string> {
 			const result = await this.bashCall(command);
 			run();
-			await result();
+			return result();
 		},
 		async read(file: string): Promise<void> {
 			await runHandlerExpectingNoThrow(() =>
@@ -867,6 +924,47 @@ describe("a clean-tree HEAD move resyncs held documents (#4493)", () => {
 		});
 	}, 120_000);
 
+	// Recurrence: #4528 r4. The HEAD-move resync ran under the 500 ms
+	// read-only bound, so a primary that read the move's changes slowly was
+	// cut and the tool_result returned before the moved bytes were sent. CI's
+	// shuffle seed 202 hit it with 24 live clients; here the primary pays
+	// 120 ms a change on 120 KB fillers, so the phase outlasts 500 ms on any
+	// host, and the move must still be on the wire when the result returns.
+	it("sends every moved held document before the tool_result returns when the primary phase outlasts the read-only bound", async () => {
+		const fillers = Array.from(
+			{ length: 10 },
+			(_, i) => `lib/h${String(i).padStart(2, "0")}.ts`,
+		);
+		const big = (tag: string) =>
+			`export const s = ${JSON.stringify(tag.repeat(120 * 1024))};\n`;
+		const repo = await makeRepo(
+			{
+				"lib/types.ts": TYPES_A,
+				...Object.fromEntries(fillers.map((name) => [name, big("a")])),
+			},
+			{
+				"lib/types.ts": TYPES_B,
+				...Object.fromEntries(fillers.map((name) => [name, big("b")])),
+			},
+			[],
+			{ FAKE_LSP_CHANGE_COST_MS: "120" },
+		);
+		const moved = [...fillers, "lib/types.ts"];
+		await hold(repo, moved);
+		const service = await lspService();
+		const s = session(repo, "s-4528-r4-cut");
+
+		await s.bash("git checkout B", () => repo.git("checkout", "-q", "B"));
+
+		expect(moved.filter((name) => !sentDiskBytes(service, repo, name))).toEqual(
+			[],
+		);
+		const rows = await settledHeadMovedRows(repo, 1);
+		expect(rows[0]).toMatchObject({
+			metadata: { changed: 11, resynced: 11, deferred: 0, drained: true },
+		});
+	}, 120_000);
+
 	// Recurrence: an unbounded drain would hold the hook for a branch hop of
 	// any size. The forced passes stop at 64 documents, and the one row
 	// states how many the drain left to the paced heartbeat.
@@ -1104,4 +1202,844 @@ describe("opaque recovery from a subdirectory (#4493 residual 3)", () => {
 			normalizeMapKey(path.join(linked, "sub/x.ts")),
 		]);
 	}, 30_000);
+});
+
+/** The bash_write_primary_resync rows of `repo` (#4507). */
+async function primaryResyncRows(repo: Repo) {
+	return (await phaseRows("bash_write_primary_resync")).filter((row) =>
+		row.filePath.includes(repo.dir),
+	) as unknown as Array<{
+		result: string;
+		filePath: string;
+		metadata: Record<string, unknown>;
+	}>;
+}
+
+describe("a bash command's writes reach the primaries before its dispatches (#4507)", () => {
+	// a.ts imports a name the same command adds to z.ts. The checker profile
+	// models TypeScript 7's closed-file view: a.ts is checked against the z.ts
+	// bytes the server holds.
+	const A0 =
+		'import { isChatModel } from "./z";\nexport const v = isChatModel(1);\n';
+	const A1 =
+		'import { isChatModelConfig } from "./z";\nexport const v = isChatModelConfig(1);\n';
+	const CHECKER = { FAKE_LSP_CLOSED_FILE_CACHE: "1" };
+	// makeRepo's branch B must change something; these cases never check it out.
+	const NOTES_A = { "notes.txt": "a\n" };
+	const NOTES_B = { "notes.txt": "b\n" };
+
+	// Recurrence: #4507. The command's files were dispatched one at a time, so
+	// a.ts (first) was checked while the server still held z.ts's old bytes and
+	// the result STOPped on an export the same command had just added.
+	it("checks a dependent the command rewrote against its rewritten dependency", async () => {
+		const repo = await makeRepo(
+			{ "z.ts": TYPES_A, "a.ts": A0, ...NOTES_A },
+			NOTES_B,
+			[],
+			CHECKER,
+		);
+		await hold(repo, ["z.ts", "a.ts"]);
+		const s = session(repo, "s-4507-sed");
+		const service = await lspService();
+
+		const text = await s.bash("sed -i s/a/b/ a.ts z.ts", () => {
+			fs.writeFileSync(repo.file("a.ts"), A1);
+			fs.writeFileSync(repo.file("z.ts"), TYPES_B);
+		});
+
+		expect(text).not.toContain("no exported member");
+		expect(text).not.toContain("STOP");
+		expect(sentDiskBytes(service, repo, "z.ts")).toBe(true);
+		expect(sentDiskBytes(service, repo, "a.ts")).toBe(true);
+		expect(await primaryResyncRows(repo)).toMatchObject([
+			{
+				result: "sent",
+				metadata: { written: 2, opaque: 0, targets: 2, primary: 2 },
+			},
+		]);
+	}, 60_000);
+
+	// Recurrence: #4528 r1 F2. A codemode script's bash is a nested call
+	// (parentToolCallId on both events); nothing may key the primary phase on
+	// a top-level call, or a nested sed brings the phantom STOP back.
+	it("checks a dependent a nested bash rewrote against its rewritten dependency", async () => {
+		const repo = await makeRepo(
+			{ "z.ts": TYPES_A, "a.ts": A0, ...NOTES_A },
+			NOTES_B,
+			[],
+			CHECKER,
+		);
+		await hold(repo, ["z.ts", "a.ts"]);
+		const s = session(repo, "s-4528-nested", undefined, "codemode-1");
+
+		const text = await s.bash("sed -i s/a/b/ a.ts z.ts", () => {
+			fs.writeFileSync(repo.file("a.ts"), A1);
+			fs.writeFileSync(repo.file("z.ts"), TYPES_B);
+		});
+
+		expect(text).not.toContain("no exported member");
+		expect(await primaryResyncRows(repo)).toMatchObject([
+			{ result: "sent", metadata: { written: 2, targets: 2, primary: 2 } },
+		]);
+	}, 60_000);
+
+	// Recurrence: #4528 r1 F1. The 500 ms bound cut the primary phase while it
+	// was still sending, and the dispatch loop then checked a.ts before z.ts's
+	// new bytes were on the wire: the #4507 phantom STOP under load. Here the
+	// primary reads its input slowly (each didChange of a 120 KB filler costs
+	// it 120 ms), so the phase outlasts 500 ms on any host.
+	it.each([
+		["push", {}],
+		["pull", { FAKE_LSP_NO_DIAGNOSTIC_PROVIDER: "0" }],
+	] as const)(
+		"checks a dependent against its rewritten dependency when the primary phase outlasts the read-only bound (%s diagnostics)",
+		async (mode, diagnostics) => {
+			const fillers = Array.from(
+				{ length: 10 },
+				(_, i) => `f${String(i).padStart(2, "0")}.ts`,
+			);
+			const big = (tag: string) =>
+				`export const s = ${JSON.stringify(tag.repeat(120 * 1024))};\n`;
+			const repo = await makeRepo(
+				{
+					"z.ts": TYPES_A,
+					"a.ts": A0,
+					...Object.fromEntries(fillers.map((name) => [name, big("a")])),
+					...NOTES_A,
+				},
+				NOTES_B,
+				[],
+				{ ...CHECKER, FAKE_LSP_CHANGE_COST_MS: "120", ...diagnostics },
+			);
+			const order = ["a.ts", ...fillers, "z.ts"];
+			await hold(repo, order);
+			const s = session(repo, `s-4528-cut-${mode}`);
+			const mark = traceLines(repo).length;
+
+			const text = await s.bash(`sed -i s/a/b/ ${order.join(" ")}`, () => {
+				fs.writeFileSync(repo.file("a.ts"), A1);
+				for (const name of fillers) fs.writeFileSync(repo.file(name), big("b"));
+				fs.writeFileSync(repo.file("z.ts"), TYPES_B);
+			});
+
+			expect(text).not.toContain("no exported member");
+			if (mode === "pull") {
+				// The wire: a.ts's first pull came after z.ts's new bytes.
+				const after = (await wire(repo, "z.ts")).slice(mark);
+				const zSent = after.indexOf(textLine(repo, "z.ts"));
+				const aPull = `recv textDocument/diagnostic ${pathToFileURL(repo.file("a.ts")).href}`;
+				expect(zSent).toBeGreaterThanOrEqual(0);
+				expect(after.indexOf(aPull)).toBeGreaterThan(zSent);
+			}
+			expect(await primaryResyncRows(repo)).toMatchObject([
+				{ result: "sent", metadata: { targets: 12, primary: 12 } },
+			]);
+		},
+		120_000,
+	);
+
+	// Recurrence: #4528 r1 F1, the second half. A send resolves once its bytes
+	// are in the pipe, not once the server read them. This primary reads its
+	// input at once and works through it slowly (150 ms a change), republishing
+	// every open document after each change, so right after the sends it is
+	// still publishing a.ts checked against z.ts's old bytes. The phase ends
+	// with a request each server answers only after the sends before it.
+	it("checks a dependent against its rewritten dependency while the primary is still working through the command's sends", async () => {
+		const fillers = Array.from(
+			{ length: 8 },
+			(_, i) => `g${String(i).padStart(2, "0")}.ts`,
+		);
+		const repo = await makeRepo(
+			{
+				"z.ts": TYPES_A,
+				"a.ts": A0,
+				...Object.fromEntries(
+					fillers.map((name) => [name, "export const v = 0;\n"]),
+				),
+				...NOTES_A,
+			},
+			NOTES_B,
+			[],
+			{
+				...CHECKER,
+				FAKE_LSP_NOTIFY_BACKLOG_WEDGE: "100000",
+				FAKE_LSP_NOTIFY_COST_MS: "0",
+				FAKE_LSP_CHANGE_COST_MS: "150",
+			},
+		);
+		const order = ["a.ts", ...fillers, "z.ts"];
+		await hold(repo, order);
+		const s = session(repo, "s-4528-backlog");
+
+		const text = await s.bash(`sed -i s/0/1/ ${order.join(" ")}`, () => {
+			fs.writeFileSync(repo.file("a.ts"), A1);
+			for (const name of fillers)
+				fs.writeFileSync(repo.file(name), "export const v = 1;\n");
+			fs.writeFileSync(repo.file("z.ts"), TYPES_B);
+		});
+
+		expect(text).not.toContain("no exported member");
+		expect(await primaryResyncRows(repo)).toMatchObject([
+			{ result: "sent", metadata: { targets: 10, primary: 10 } },
+		]);
+	}, 120_000);
+
+	// Recurrence: #4528 r2, a ping overtakes didChange on a threaded primary.
+	it.each(["threaded", "unmeasured"] as const)(
+		"records undrained when %s replies overtake queued changes",
+		async (ordering) => {
+			const repo = await makeRepo(
+				{ "z.ts": TYPES_A, "a.ts": A0, ...NOTES_A },
+				NOTES_B,
+				[],
+				{
+					...CHECKER,
+					FAKE_LSP_NOTIFY_BACKLOG_WEDGE: "100000",
+					FAKE_LSP_NOTIFY_COST_MS: "0",
+					FAKE_LSP_PING_OVERTAKES: "1",
+				},
+			);
+			primaryOrdering.set(repo.dir, ordering);
+			await hold(repo, ["a.ts", "z.ts"]);
+			const s = session(repo, `s-4528-${ordering}`);
+			await s.bash("sed -i s/a/b/ a.ts z.ts", () => {
+				fs.writeFileSync(repo.file("a.ts"), A1);
+				fs.writeFileSync(repo.file("z.ts"), TYPES_B);
+			});
+			expect(await primaryResyncRows(repo)).toMatchObject([
+				{ result: "undrained", metadata: { targets: 2 } },
+			]);
+		},
+		60_000,
+	);
+
+	// Recurrence: the degraded half of #4528 r1 F1. A primary that never
+	// answers the drain request (here it dies on reading the first new bytes) may
+	// still be serving checks from before the sends; that must be on record,
+	// and no check may read clean.
+	it("records an undrained phase and reads nothing clean when the primary dies before answering the drain request", async () => {
+		const repo = await makeRepo(
+			{ "z.ts": TYPES_A, "a.ts": A0, ...NOTES_A },
+			NOTES_B,
+			[],
+			{ ...CHECKER, FAKE_LSP_EXIT_ON_CHANGE_TEXT: "isChatModelConfig" },
+		);
+		await hold(repo, ["a.ts", "z.ts"]);
+		const s = session(repo, "s-4528-undrained");
+
+		const text = await s.bash("sed -i s/a/b/ a.ts z.ts", () => {
+			fs.writeFileSync(repo.file("a.ts"), A1);
+			fs.writeFileSync(repo.file("z.ts"), TYPES_B);
+		});
+
+		expect(await primaryResyncRows(repo)).toMatchObject([
+			{ result: "undrained", metadata: { targets: 2 } },
+		]);
+		expect(text).not.toContain("JavaScript/TypeScript clean");
+	}, 60_000);
+
+	// Recurrence: #4507's opaque half. An unrecognized command's dirty paths
+	// were resent to the servers detached, after the dispatch loop had already
+	// checked them one at a time.
+	it("sends an opaque command's held writes to the primaries before its result returns", async () => {
+		const repo = await makeRepo(
+			{ "z.ts": TYPES_A, "a.ts": A0, ...NOTES_A },
+			NOTES_B,
+			[],
+			CHECKER,
+		);
+		await hold(repo, ["z.ts", "a.ts"]);
+		const s = session(repo, "s-4507-opaque");
+		const service = await lspService();
+
+		await s.bash("node codemod.mjs", () => {
+			fs.writeFileSync(repo.file("z.ts"), TYPES_B);
+			fs.writeFileSync(repo.file("a.ts"), A1);
+		});
+
+		expect(sentDiskBytes(service, repo, "z.ts")).toBe(true);
+		expect(sentDiskBytes(service, repo, "a.ts")).toBe(true);
+		expect(await primaryResyncRows(repo)).toMatchObject([
+			{
+				result: "sent",
+				metadata: { written: 2, opaque: 2, targets: 2, primary: 2 },
+			},
+		]);
+	}, 60_000);
+
+	// Recurrence: #4493 r1 F1's shape on the bash-write path. Awaiting every
+	// holding server would wait out a slow auxiliary and the hook bound would
+	// cut the phase; only the primaries are awaited.
+	it("sends every written held document to the primary before the result returns, however slow the auxiliary", async () => {
+		const names = Array.from(
+			{ length: 12 },
+			(_, i) => `lib/w${String(i).padStart(2, "0")}.ts`,
+		);
+		const repo = await makeRepo(
+			{
+				...Object.fromEntries(
+					names.map((name) => [name, "export const v = 0;\n"]),
+				),
+				...NOTES_A,
+			},
+			NOTES_B,
+		);
+		try {
+			await holdWithAuxiliary(repo, names, 250);
+			const s = session(repo, "s-4507-slow-aux");
+			const service = await lspService();
+
+			await s.bash("node codemod.mjs", () => {
+				for (const name of names)
+					fs.writeFileSync(repo.file(name), "export const v = 1;\n");
+			});
+
+			expect(
+				names.filter((name) => !sentDiskBytes(service, repo, name)),
+			).toEqual([]);
+			expect(await primaryResyncRows(repo)).toMatchObject([
+				{ result: "sent", metadata: { opaque: 12, targets: 12, primary: 12 } },
+			]);
+		} finally {
+			auxiliaries.delete(repo.dir);
+		}
+	}, 90_000);
+
+	// Recurrence: the phase must not open documents no server holds (a write
+	// to an unheld file is the dispatch's to open), nor log a row for them.
+	it("sends nothing and logs no row when no server holds a written file", async () => {
+		const repo = await makeRepo(
+			{ "z.ts": TYPES_A, "a.ts": A0, ...NOTES_A },
+			NOTES_B,
+		);
+		const s = session(repo, "s-4507-unheld");
+
+		await s.bash("node codemod.mjs", () => {
+			fs.writeFileSync(repo.file("z.ts"), TYPES_B);
+		});
+
+		expect(await primaryResyncRows(repo)).toEqual([]);
+	}, 60_000);
+});
+
+/** The `lsp_diagnostics` tool's answer for `file`, as the model reads it. */
+async function diagnose(repo: Repo, file: string): Promise<string> {
+	const { createLspDiagnosticsTool } =
+		await import("../../tools/lsp-diagnostics.js");
+	const result = (await createLspDiagnosticsTool().execute(
+		"probe-4476",
+		{ paths: [file], serverScope: "primary", waitMs: 3000, concurrency: 1 },
+		undefined,
+		null,
+		{ cwd: repo.dir },
+	)) as { content: Array<{ text?: string }> };
+	return result.content.map((part) => String(part.text ?? "")).join("\n");
+}
+
+/** How many times a fake server was initialized for `repo`. */
+const initializeCount = (repo: Repo) =>
+	traceLines(repo).filter((line) => line === "recv initialize").length;
+
+/** The lsp_out_of_band_change rows of `repo` (#4476). */
+async function outOfBandRows(repo: Repo) {
+	return (await phaseRows("lsp_out_of_band_change")).filter(
+		(row) => row.filePath === repo.dir,
+	) as unknown as Array<{ result: string; metadata: Record<string, unknown> }>;
+}
+
+describe("a change pi-lens sees only on disk reaches the servers and the cache (#4476)", () => {
+	// The checker profile models TypeScript 7's native server: a closed file's
+	// view is what it first read, until an exact-URI watched-files event or a
+	// restart. `G_*` names need an ambient declaration; `dep` resolves to
+	// node_modules/dep/index.d.ts.
+	const CHECKER = { FAKE_LSP_CLOSED_FILE_CACHE: "1" };
+	const IGNORE = { ".gitignore": ".pi-lens/\ngen/\nnode_modules/\n" };
+	const NOTES = [{ "notes.txt": "a\n" }, { "notes.txt": "b\n" }] as const;
+	const USES_G = "export const n: number = G_FOO;\n";
+	const USES_DEP = 'import type { Cfg2 } from "dep";\nexport type T = Cfg2;\n';
+	let previousLookMs: string | undefined;
+	beforeAll(() => {
+		// Every tool_call look walks: the interval is pinned in its own case.
+		previousLookMs = process.env.PI_LENS_DECLARATION_LOOK_MS;
+		process.env.PI_LENS_DECLARATION_LOOK_MS = "0";
+	});
+	afterAll(() => {
+		if (previousLookMs === undefined)
+			delete process.env.PI_LENS_DECLARATION_LOOK_MS;
+		else process.env.PI_LENS_DECLARATION_LOOK_MS = previousLookMs;
+	});
+
+	// Recurrence: #4476 R1. A command wrote a declaration file into a gitignored
+	// directory (codegen); no tool result names it, so the server never re-read
+	// it and the cache kept serving the importer's old finding.
+	it("clears a finding when a bash command creates the ambient declaration in a gitignored directory", async () => {
+		const repo = await makeRepo(
+			{ ...IGNORE, "a.ts": USES_G, ...NOTES[0] },
+			NOTES[1],
+			[],
+			CHECKER,
+		);
+		const s = session(repo, "s-4476-create");
+		expect(await diagnose(repo, repo.file("a.ts"))).toContain(
+			"Cannot find name 'G_FOO'",
+		);
+
+		await s.bash("node gen.mjs", () => {
+			fs.mkdirSync(repo.file("gen"));
+			fs.writeFileSync(
+				repo.file("gen/globals.d.ts"),
+				"declare const G_FOO: number;\n",
+			);
+		});
+
+		expect(await diagnose(repo, repo.file("a.ts"))).not.toContain(
+			"Cannot find name",
+		);
+		expect(await outOfBandRows(repo)).toMatchObject([
+			{
+				result: "declarations",
+				metadata: {
+					trigger: "tool_result",
+					created: 1,
+					changed: 0,
+					deleted: 0,
+				},
+			},
+		]);
+	}, 60_000);
+
+	// Recurrence: #4476 with #4507's shape. A command that generates a
+	// declaration and rewrites a file using it: the file's dispatch follows the
+	// look at once, so the watched-files event must be on the wire before it,
+	// not after the debounce window.
+	it.each([
+		["push", CHECKER],
+		["pull", { ...CHECKER, FAKE_LSP_NO_DIAGNOSTIC_PROVIDER: "0" }],
+	] as const)(
+		"checks a file the same command rewrote against the declaration it generated (%s diagnostics)",
+		async (_mode, profile) => {
+			const repo = await makeRepo(
+				{ ...IGNORE, "a.ts": "export const n: number = 1;\n", ...NOTES[0] },
+				NOTES[1],
+				[],
+				profile,
+			);
+			await hold(repo, ["a.ts"]);
+			const s = session(repo, "s-4476-same-command");
+
+			const text = await s.bash("sed -i s/1/G_FOO/ a.ts", () => {
+				fs.mkdirSync(repo.file("gen"));
+				fs.writeFileSync(
+					repo.file("gen/globals.d.ts"),
+					"declare const G_FOO: number;\n",
+				);
+				fs.writeFileSync(repo.file("a.ts"), USES_G);
+			});
+
+			expect(text).not.toContain("Cannot find name");
+			expect(text).not.toContain("STOP");
+		},
+		60_000,
+	);
+
+	// Recurrence: #4476 R2, edit and delete. An ambient declaration changed
+	// outside pi kept its old view on the server, and a clean cache entry kept
+	// answering clean for a file that no longer compiles.
+	const edit = (file: string) =>
+		fs.writeFileSync(file, "declare const G_BAR: number;\n");
+	const remove = (file: string) => fs.rmSync(file);
+	const PULL = { ...CHECKER, FAKE_LSP_NO_DIAGNOSTIC_PROVIDER: "0" };
+	it.each([
+		["edited", "push", edit, { changed: 1 }, CHECKER],
+		["deleted", "push", remove, { deleted: 1 }, CHECKER],
+		["edited", "pull", edit, { changed: 1 }, PULL],
+	] as const)(
+		"reports the finding when the ambient declaration is %s outside pi, at the next tool_call (%s diagnostics)",
+		async (_label, mode, change, counts, profile) => {
+			const repo = await makeRepo(
+				{
+					"a.ts": USES_G,
+					"types/globals.d.ts": "declare const G_FOO: number;\n",
+					...NOTES[0],
+				},
+				NOTES[1],
+				[],
+				profile,
+			);
+			const s = session(repo, `s-4476-${_label}-${mode}`);
+			expect(await diagnose(repo, repo.file("a.ts"))).not.toContain(
+				"Cannot find name",
+			);
+			await s.read(repo.file("a.ts"));
+
+			change(repo.file("types/globals.d.ts"));
+			await s.read(repo.file("a.ts"));
+
+			expect(await diagnose(repo, repo.file("a.ts"))).toContain(
+				"Cannot find name 'G_FOO'",
+			);
+			expect(await outOfBandRows(repo)).toMatchObject([
+				{
+					result: "declarations",
+					metadata: { trigger: "tool_call", ...counts },
+				},
+			]);
+		},
+		60_000,
+	);
+
+	// Recurrence: #4476 R2 for a finding. An edit outside pi that declares the
+	// missing name: the cached finding names the server that reported it, and
+	// a change seen on disk names none, so it must count for every server.
+	it("clears a finding when the ambient declaration is edited outside pi to declare the name", async () => {
+		const repo = await makeRepo(
+			{
+				"a.ts": USES_G,
+				"types/globals.d.ts": "declare const G_BAR: number;\n",
+				...NOTES[0],
+			},
+			NOTES[1],
+			[],
+			CHECKER,
+		);
+		const s = session(repo, "s-4476-edit-fixes");
+		expect(await diagnose(repo, repo.file("a.ts"))).toContain(
+			"Cannot find name 'G_FOO'",
+		);
+		await s.read(repo.file("a.ts"));
+
+		fs.writeFileSync(
+			repo.file("types/globals.d.ts"),
+			"declare const G_FOO: number;\n",
+		);
+		await s.read(repo.file("a.ts"));
+
+		expect(await diagnose(repo, repo.file("a.ts"))).not.toContain(
+			"Cannot find name",
+		);
+	}, 60_000);
+
+	// Recurrence: #4476's install comment. After `npm install` brought a
+	// version with different types, the server kept the old declarations of
+	// the closed dependency files for its whole life.
+	it("restarts the server after a bash dependency install, so the dependent sees the new declarations", async () => {
+		const repo = await makeRepo(
+			{
+				...IGNORE,
+				"a.ts": USES_DEP,
+				"node_modules/dep/index.d.ts": "export type Cfg = { a: string };\n",
+				"node_modules/.package-lock.json": '{"v":1}\n',
+				...NOTES[0],
+			},
+			NOTES[1],
+			[],
+			CHECKER,
+		);
+		// Another project's server, live in the same service.
+		const other = await makeRepo(
+			{ "b.ts": "export {};\n", ...NOTES[0] },
+			NOTES[1],
+		);
+		await hold(other, ["b.ts"]);
+		try {
+			// The repository's auxiliary scanner resolves no dependencies.
+			await holdWithAuxiliary(repo, ["a.ts"], 0);
+			const s = session(repo, "s-4476-install");
+			expect(await diagnose(repo, repo.file("a.ts"))).toContain(
+				"has no exported member 'Cfg2'",
+			);
+			// A command that installs nothing restarts nothing.
+			await s.bash("ls", () => {});
+			expect(initializeCount(repo)).toBe(1);
+
+			await s.bash("npm install dep@2", () => {
+				fs.writeFileSync(
+					repo.file("node_modules/dep/index.d.ts"),
+					"export type Cfg2 = { b: number };\n",
+				);
+				fs.writeFileSync(
+					repo.file("node_modules/.package-lock.json"),
+					'{"v":2}\n',
+				);
+			});
+
+			expect(await diagnose(repo, repo.file("a.ts"))).not.toContain(
+				"no exported member",
+			);
+			expect(initializeCount(repo)).toBe(2);
+			expect(await outOfBandRows(repo)).toMatchObject([
+				{
+					result: "install",
+					metadata: { trigger: "tool_result", restarted: 1 },
+				},
+			]);
+			// Only the primary clients of the installed root restart.
+			expect(initializeCount(other)).toBe(1);
+		} finally {
+			auxiliaries.delete(repo.dir);
+		}
+	}, 60_000);
+
+	// Recurrence: #4528 r1 F2. A codemode script's `npm install` is a nested
+	// bash (parentToolCallId on both events); its result must look for the
+	// install like a top-level one.
+	it("restarts the server after a dependency install a nested bash ran", async () => {
+		const repo = await makeRepo(
+			{
+				...IGNORE,
+				"a.ts": USES_DEP,
+				"node_modules/dep/index.d.ts": "export type Cfg = { a: string };\n",
+				"node_modules/.package-lock.json": '{"v":1}\n',
+				...NOTES[0],
+			},
+			NOTES[1],
+			[],
+			CHECKER,
+		);
+		const s = session(repo, "s-4528-nested-install", undefined, "codemode-2");
+		expect(await diagnose(repo, repo.file("a.ts"))).toContain(
+			"has no exported member 'Cfg2'",
+		);
+		await s.bash("ls", () => {});
+
+		await s.bash("npm install dep@2", () => {
+			fs.writeFileSync(
+				repo.file("node_modules/dep/index.d.ts"),
+				"export type Cfg2 = { b: number };\n",
+			);
+			fs.writeFileSync(
+				repo.file("node_modules/.package-lock.json"),
+				'{"v":2}\n',
+			);
+		});
+
+		expect(await diagnose(repo, repo.file("a.ts"))).not.toContain(
+			"no exported member",
+		);
+		expect(await outOfBandRows(repo)).toMatchObject([
+			{ result: "install", metadata: { trigger: "tool_result", restarted: 1 } },
+		]);
+	}, 60_000);
+
+	// Recurrence: #4476 F5/F12. An install made outside pi is seen at the next
+	// tool_call, and two sessions on one root share the server: the install
+	// restarts it once, not once per session.
+	it("restarts once at the next tool_call after an install outside pi, however many sessions look", async () => {
+		const repo = await makeRepo(
+			{
+				...IGNORE,
+				"a.ts": USES_DEP,
+				"node_modules/dep/index.d.ts": "export type Cfg = { a: string };\n",
+				"pnpm-lock.yaml": "v: 1\n",
+				...NOTES[0],
+			},
+			NOTES[1],
+			[],
+			CHECKER,
+		);
+		const first = session(repo, "s-4476-outside-1");
+		const second = session(repo, "s-4476-outside-2");
+		expect(await diagnose(repo, repo.file("a.ts"))).toContain(
+			"has no exported member 'Cfg2'",
+		);
+		await first.read(repo.file("a.ts"));
+		await second.read(repo.file("a.ts"));
+
+		fs.writeFileSync(
+			repo.file("node_modules/dep/index.d.ts"),
+			"export type Cfg2 = { b: number };\n",
+		);
+		fs.writeFileSync(repo.file("pnpm-lock.yaml"), "v: 2\n");
+		await Promise.all([
+			first.read(repo.file("a.ts")),
+			second.read(repo.file("a.ts")),
+		]);
+
+		expect(await diagnose(repo, repo.file("a.ts"))).not.toContain(
+			"no exported member",
+		);
+		expect(await outOfBandRows(repo)).toMatchObject([
+			{ result: "install", metadata: { trigger: "tool_call", restarted: 1 } },
+		]);
+	}, 60_000);
+
+	// Recurrence: #4528 r1 F3, refuted and pinned. The install moves the cache
+	// clock, then the restart waits on the spawn gate (here behind another
+	// root's restart, whose server ignores shutdown). A project-wide pull
+	// started in that wait reads the old server's view, with a stamp newer
+	// than the clock; the read after the restart must still not serve it.
+	// (lsp_diagnostics' own per-file pulls take their leases through the same
+	// gate, behind the restart, so they get the new server.)
+	it("refuses an entry the old server answered while the restart waited for the spawn gate", async () => {
+		const previousPull = process.env.PI_LENS_LSP_WORKSPACE_PULL;
+		process.env.PI_LENS_LSP_WORKSPACE_PULL = "1";
+		try {
+			const slow = await makeRepo(
+				{
+					...IGNORE,
+					"b.ts": "export {};\n",
+					"pnpm-lock.yaml": "v: 1\n",
+					...NOTES[0],
+				},
+				NOTES[1],
+				[],
+				{ FAKE_LSP_IGNORE_SHUTDOWN: "1" },
+			);
+			const repo = await makeRepo(
+				{
+					...IGNORE,
+					"a.ts": USES_DEP,
+					"node_modules/dep/index.d.ts": "export type Cfg = { a: string };\n",
+					"node_modules/.package-lock.json": '{"v":1}\n',
+					...NOTES[0],
+				},
+				NOTES[1],
+				[],
+				{
+					...CHECKER,
+					FAKE_LSP_NO_DIAGNOSTIC_PROVIDER: "0",
+					FAKE_LSP_WORKSPACE_DIAGNOSTICS: "1",
+				},
+			);
+			await hold(slow, ["b.ts"]);
+			const first = session(slow, "s-4528-f3-slow");
+			const second = session(repo, "s-4528-f3");
+			expect(await diagnose(repo, repo.file("a.ts"))).toContain(
+				"has no exported member 'Cfg2'",
+			);
+			await first.read(slow.file("b.ts"));
+			await second.read(repo.file("a.ts"));
+
+			fs.writeFileSync(slow.file("pnpm-lock.yaml"), "v: 2\n");
+			fs.writeFileSync(
+				repo.file("node_modules/dep/index.d.ts"),
+				"export type Cfg2 = { b: number };\n",
+			);
+			fs.writeFileSync(
+				repo.file("node_modules/.package-lock.json"),
+				'{"v":2}\n',
+			);
+			// The slow root's restart holds the spawn gate through its shutdown.
+			const slowLook = first.read(slow.file("b.ts"));
+			await vi.waitFor(() =>
+				expect(traceLines(slow)).toContain("recv shutdown"),
+			);
+			const clock = () =>
+				workspaceFileCreatedAtFor(
+					() => false,
+					() => false,
+				);
+			const before = clock();
+			const look = second.read(repo.file("a.ts"));
+			await vi.waitFor(() => expect(clock()).toBeGreaterThan(before));
+			// The install is noted; the restart waits behind the slow one.
+			const service = await lspService();
+			const sweep = async () =>
+				JSON.stringify(
+					(
+						await service.runWorkspaceDiagnostics(repo.dir, {
+							files: [repo.file("a.ts")],
+						})
+					).map((result) => result.diagnostics.map((d) => d.message)),
+				);
+			const during = await sweep();
+			await Promise.all([slowLook, look]);
+			// The hooks bound their looks; the restarts finish after them.
+			await vi.waitFor(
+				async () =>
+					expect(await outOfBandRows(repo)).toMatchObject([
+						{ result: "install", metadata: { restarted: 1 } },
+					]),
+				{ timeout: 15_000 },
+			);
+
+			expect(during).toContain("no exported member");
+			expect(await diagnose(repo, repo.file("a.ts"))).not.toContain(
+				"no exported member",
+			);
+		} finally {
+			if (previousPull === undefined)
+				delete process.env.PI_LENS_LSP_WORKSPACE_PULL;
+			else process.env.PI_LENS_LSP_WORKSPACE_PULL = previousPull;
+		}
+	}, 60_000);
+
+	// Recurrence: the walk's cost at every tool_call. Within the interval a
+	// tool_call look reads the install stamps only; a bash result always walks.
+	it("walks the declaration files at most once per interval at tool_calls, and at every bash result", async () => {
+		const repo = await makeRepo(
+			{
+				"a.ts": USES_G,
+				"types/globals.d.ts": "declare const G_FOO: number;\n",
+				...NOTES[0],
+			},
+			NOTES[1],
+			[],
+			CHECKER,
+		);
+		const s = session(repo, "s-4476-interval");
+		process.env.PI_LENS_DECLARATION_LOOK_MS = "600000";
+		try {
+			await s.read(repo.file("a.ts"));
+			fs.rmSync(repo.file("types/globals.d.ts"));
+			await s.read(repo.file("a.ts"));
+			expect(await outOfBandRows(repo)).toEqual([]);
+
+			await s.bash("ls", () => {});
+			expect(await outOfBandRows(repo)).toMatchObject([
+				{
+					result: "declarations",
+					metadata: { trigger: "tool_result", deleted: 1 },
+				},
+			]);
+		} finally {
+			process.env.PI_LENS_DECLARATION_LOOK_MS = "0";
+		}
+	}, 60_000);
+
+	// Recurrence: shape 10. A tree too large to walk must say so, never read as
+	// "no declaration changed".
+	it.each([
+		[
+			"directory",
+			(repo: Repo) => {
+				for (let i = 0; i < 4100; i++)
+					fs.mkdirSync(repo.file(`gen/d${i}`), { recursive: true });
+			},
+		],
+		[
+			"file",
+			(repo: Repo) => {
+				fs.mkdirSync(repo.file("gen"));
+				for (let i = 0; i < 2100; i++)
+					fs.writeFileSync(repo.file(`gen/t${i}.d.ts`), "export {};\n");
+			},
+		],
+	] as const)(
+		"records one degradation when the walk passes its %s cap",
+		async (label, grow) => {
+			// In a gitignored directory: the bash result dispatches none of them.
+			const repo = await makeRepo(
+				{ ...IGNORE, "a.ts": USES_G, ...NOTES[0] },
+				NOTES[1],
+			);
+			grow(repo);
+			const s = session(repo, `s-4476-cap-${label}`);
+			const { getDegradationSummary } =
+				await import("../../clients/degradation-ledger.js");
+			const capped = () =>
+				getDegradationSummary()
+					.find((group) => group.kind === "lsp-declaration-look-capped")
+					?.latestReasons.filter((entry) =>
+						entry.subject.includes(path.basename(repo.dir)),
+					).length ?? 0;
+
+			await s.read(repo.file("a.ts"));
+			await s.bash("ls", () => {});
+
+			expect(capped()).toBe(1);
+			expect(await outOfBandRows(repo)).toEqual([]);
+		},
+		60_000,
+	);
 });

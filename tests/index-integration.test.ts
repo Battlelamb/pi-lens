@@ -2177,6 +2177,10 @@ describe("index.ts integration", () => {
 						return 0;
 					}
 					resetForSession() {}
+					// #4483: the tool_call's pre-edit linter capture asks for it.
+					captureSessionGeneration() {
+						return { isCurrent: () => true };
+					}
 					setTelemetryIdentity() {}
 					telemetrySessionId = "test-session";
 				},
@@ -2285,6 +2289,10 @@ describe("index.ts integration", () => {
 						return 0;
 					}
 					resetForSession() {}
+					// #4483: the tool_call's pre-edit linter capture asks for it.
+					captureSessionGeneration() {
+						return { isCurrent: () => true };
+					}
 					setTelemetryIdentity() {}
 					telemetrySessionId = "test-session";
 				},
@@ -2397,6 +2405,10 @@ describe("index.ts integration", () => {
 						return 0;
 					}
 					resetForSession() {}
+					// #4483: the tool_call's pre-edit linter capture asks for it.
+					captureSessionGeneration() {
+						return { isCurrent: () => true };
+					}
 					setTelemetryIdentity() {}
 					telemetrySessionId = "test-session";
 				},
@@ -2522,6 +2534,10 @@ describe("index.ts integration", () => {
 						return 0;
 					}
 					resetForSession() {}
+					// #4483: the tool_call's pre-edit linter capture asks for it.
+					captureSessionGeneration() {
+						return { isCurrent: () => true };
+					}
 					setTelemetryIdentity() {}
 					telemetrySessionId = "test-session";
 				},
@@ -2630,6 +2646,10 @@ describe("index.ts integration", () => {
 						return 0;
 					}
 					resetForSession() {}
+					// #4483: the tool_call's pre-edit linter capture asks for it.
+					captureSessionGeneration() {
+						return { isCurrent: () => true };
+					}
 					setTelemetryIdentity() {}
 					telemetrySessionId = "test-session";
 				},
@@ -2733,6 +2753,10 @@ describe("index.ts integration", () => {
 						return 0;
 					}
 					resetForSession() {}
+					// #4483: the tool_call's pre-edit linter capture asks for it.
+					captureSessionGeneration() {
+						return { isCurrent: () => true };
+					}
 					setTelemetryIdentity() {}
 					telemetrySessionId = "test-session";
 				},
@@ -2811,6 +2835,10 @@ describe("index.ts integration", () => {
 						return 0;
 					}
 					resetForSession() {}
+					// #4483: the tool_call's pre-edit linter capture asks for it.
+					captureSessionGeneration() {
+						return { isCurrent: () => true };
+					}
 					complexityBaselines = new Set();
 					projectRulesScan = { hasCustomRules: false, rules: [] };
 					cachedExports = new Map();

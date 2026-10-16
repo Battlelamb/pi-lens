@@ -56,6 +56,11 @@ const EXEMPTIONS: Record<string, string> = {
 		"backlog: per-cwd Stop-hook pass (#1274), #1753",
 	"installer/index.ts:_probeCacheWriteInFlight":
 		"backlog: single probe-cache flush, #1753",
+	// Skip, not share: a second pre-edit capture of a file while one runs
+	// returns `in-flight` instead of joining it, so a write never waits out the
+	// remaining bound of a capture the tool_call already abandoned.
+	"dispatch/integration.ts:preEditCapturesInFlight":
+		"skip-not-join by design: a joined capture would make a write wait on an abandoned one, #4483",
 	// Found by review round 1's widened regex: an interface member, which the
 	// modifier-only version of this scan never saw. ClientRegistry's
 	// `ensureClientForServer` (moved out of lsp/index.ts by #2372 slice 3) is

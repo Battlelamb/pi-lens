@@ -30,6 +30,10 @@ const hashes = (text: string) => {
 	if (!h) throw new Error("no hashes");
 	return h;
 };
+const textOf = (text: string) => {
+	const lines = text.split("\n");
+	return (line: number): string | undefined => lines[line - 1];
+};
 const map = (before: string, after: string, maxEdits?: number) =>
 	alignLines(hashes(before), hashes(after), maxEdits);
 
@@ -206,11 +210,44 @@ describe("owed lines by content", () => {
 	it("owes the lines whose text matches an owed line, wherever they moved", () => {
 		const owed = owedContentOf([{ start: 2, end: 2 }], hashes(text));
 		expect(owed).toEqual(Uint32Array.from([lineHashOf("b")]));
-		expect(linesOwedByContent(owed, hashes(`x\n${text}`), 7)).toEqual([
+		expect(
+			linesOwedByContent(owed, hashes(`x\n${text}`), 7, textOf(`x\n${text}`)),
+		).toEqual([
 			{ start: 3, end: 3 },
 			{ start: 5, end: 5 },
 		]);
-		expect(linesOwedByContent(owed, hashes("a\nc\n"), 3)).toEqual([]);
+		expect(
+			linesOwedByContent(owed, hashes("a\nc\n"), 3, textOf("a\nc\n")),
+		).toEqual([]);
+	});
+
+	// #4509 (N2, probe P31b): a write owed the text `}` owed every closing
+	// brace in the file, so an older, untouched finding on any of them came
+	// back as owed and pinned. A line with no word character is not owed by
+	// its text; an unread line (undefined) stays owed.
+	it("does not owe a line with no word character by its text", () => {
+		const braces = "f() {\n}\ng() {\n}\n";
+		const owed = owedContentOf(
+			[{ start: 1, end: 2 }],
+			hashes(braces),
+		) as Uint32Array;
+		expect(linesOwedByContent(owed, hashes(braces), 5, textOf(braces))).toEqual(
+			[{ start: 1, end: 1 }],
+		);
+		expect(
+			linesOwedByContent(owed, hashes(braces), 5, () => undefined),
+		).toEqual([
+			{ start: 1, end: 2 },
+			{ start: 4, end: 4 },
+		]);
+		expect(
+			linesOwedByContent(
+				Uint32Array.from([lineHashOf("$x")]),
+				hashes("$x\n"),
+				2,
+				textOf("$x\n"),
+			),
+		).toEqual([{ start: 1, end: 1 }]);
 	});
 
 	it("owes the whole file when the content is unknown or past the cap", () => {
@@ -222,11 +259,16 @@ describe("owed lines by content", () => {
 		expect(
 			owedContentOf([{ start: 1, end: MAX_OWED_LINE_TEXTS + 1 }], hashes(many)),
 		).toBe("whole-file");
-		expect(linesOwedByContent("whole-file", hashes(text), 6)).toEqual([
-			{ start: 1, end: 6 },
-		]);
 		expect(
-			linesOwedByContent(Uint32Array.from([lineHashOf("b")]), undefined, 6),
+			linesOwedByContent("whole-file", hashes(text), 6, textOf(text)),
+		).toEqual([{ start: 1, end: 6 }]);
+		expect(
+			linesOwedByContent(
+				Uint32Array.from([lineHashOf("b")]),
+				undefined,
+				6,
+				textOf(text),
+			),
 		).toEqual([{ start: 1, end: 6 }]);
 	});
 

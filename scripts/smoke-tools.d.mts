@@ -170,8 +170,12 @@ export interface CreatedModuleWitness {
 	moduleText: string;
 	reportsMissing: (text: string, name: string) => boolean;
 }
-/** Create a module through pi-lens's write path and from outside it; one row
- *  per case, failing while the importer still reports it (#4320/#4346). */
+/** The born-after-start phase's deadline and poll interval (#4521). */
+export const BORN_AFTER_START_DEADLINE_MS: number;
+export const BORN_AFTER_START_POLL_MS: number;
+/** Create a module through pi-lens's write path and from outside it once the
+ *  server reports the importer's missing import; one row per case, failing
+ *  while the importer still reports it at the deadline (#4320/#4346/#4521). */
 export function runCreatedModuleWitness(
 	fixture: LspFixture | undefined,
 	options: {
@@ -179,6 +183,9 @@ export function runCreatedModuleWitness(
 		execute: (...args: never[]) => Promise<unknown>;
 		/** The LSP service whose `touchFile` syncs the pi-written module. */
 		getLSPService: () => unknown;
+		/** Poll deadline and interval; the defaults are the BORN_AFTER_START_* constants. */
+		deadlineMs?: number;
+		intervalMs?: number;
 	},
 ): Promise<SmokeRow[]>;
 /** Run the production LSP clean-gate layer, optionally with test seams. */

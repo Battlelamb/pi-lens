@@ -15,7 +15,7 @@ import {
 	createAvailabilityChecker,
 	resolveAdoptedRootCommand,
 } from "./utils/runner-helpers.js";
-import { parseToolRun } from "./utils/tool-failure.js";
+import { parseToolRun, skipUnlessToolRan } from "./utils/tool-failure.js";
 
 // fish_indent ships with fish — not separately installable, no managed fallback
 const fishIndent = createAvailabilityChecker("fish_indent");
@@ -145,6 +145,15 @@ const fishIndentRunner: RunnerDefinition = {
 
 		if (result.status === 0) {
 			return { status: "succeeded", diagnostics: [], semantic: "none" };
+		}
+
+		// A fish_indent that was killed or timed out reported no exit status and
+		// said nothing: without this the empty stderr below reads as "just needs
+		// formatting" (#4522). The narrow test keeps a nonzero exit with an empty
+		// stderr (an older fish_indent) a format finding.
+		if (result.signal || result.status === null) {
+			const didNotRun = skipUnlessToolRan("fish_indent", { result });
+			if (didNotRun) return didNotRun;
 		}
 
 		// Non-zero exit: either needs formatting or something else was reported on

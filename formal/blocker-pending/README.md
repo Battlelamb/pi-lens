@@ -47,6 +47,15 @@ The seam:
 - Round 7: the skip names its covering lane (`RunnerResult.coveredBy`). The
   dispatcher reads it as no verdict when that lane did not answer, and
   `retireSettledRunnerBlockers` retires nothing on a settled covered skip.
+- #4509: napi skips as covered only while it holds no recorded blocker on
+  the file (`DispatchContext.recordedRunnerIds`); otherwise it runs, and its
+  run names the lane too. Where the lane flagged the same rule on the same
+  line, at least as severely, the lane's copy stands for the run's finding
+  (`laneCopyStandsFor`): the dispatcher drops the run's copy, and the settle
+  neither records nor observes it. Otherwise the settle retires as for any
+  run. A kept entry with no place in the write's bytes is marked
+  `Diagnostic.positionStale` instead of being inferred from one line's hash
+  later, and `linesOwedByContent` skips lines with no word character.
 
 ## What the model covers
 
@@ -163,6 +172,22 @@ The seam:
       let the edit-scoped verdict stand (verify probe P33).
     - `SettleCoverKeep` (O1): a settled covered skip retires nothing. FALSE
       retired the collect-later blocker file-wide (verify probe P34).
+  - #4509 (pinned TRUE). `RecordedRuns`: the gated runner takes no `"cover"`
+    or `"silent"` outcome while the record holds one of its blockers, and a
+    settle of d is never a covered skip while d is recorded. It runs, so its
+    own verdict judges its own record. FALSE is the code before #4509: a
+    failed write kept an entry whose line it edited without a position (P42;
+    a write with no alignment the same, P38), and the edit-scoped keep, which
+    never shows an unplaced entry inside the edit, kept it after its fix for
+    the session. The model abstracts the lane's copy of the run's finding
+    (same rule, same line, at least as severe) as the run's own delivery:
+    both block, under another identity in the code. With it, the round-6 and round-7 switches act only on a file
+    with no gated record (`LaneVoids` still owes the edit there) and on a
+    race the model does not have: a settle absorbed between the dispatch's
+    snapshot of the record and its carry (witness row 38).
+    The as-built carry refines two rules for it: a failed write's kept entry
+    whose line it edited joins `unpos`, and the edit-scoped keep holds an
+    `unpos` entry whatever the edit.
 
 ## Invariants
 
@@ -196,6 +221,9 @@ The seam:
   blocks only when new: no write can block on a finding no run reported.
 - `CleanSound`: a write's tool result says clean only when nothing reported
   was still owed at that moment (the ghost `cleanOk`).
+- `ConclusiveRetires` (#4509): a write whose run reached a verdict never keeps
+  a recorded blocker its bytes lack (the ghost `pinned`). A violation is a
+  pin: fail-closed, but the fixed blocker holds the gate for the session.
 
 ## Configs
 
@@ -216,29 +244,30 @@ States are as TLC reported them with `-workers 1` (generated / distinct).
 | `MutDeferredInFlight` | violated `ResolvedHonest` | 743 / 150 | The round-1 code (`CarryDeferred` FALSE). A later write clears the record while d's re-check is in flight, and the turn end reports F resolved. |
 | `RangeGatedResidual` | pass | 1623 / 310 | The round-2 fix. An edit-range gate decides delivery only, so a recorded E on an unchanged line stays recorded, an unauthored write included. `GateSound` holds. |
 | `MutRangeGated` | violated `GateSound` | 20 / 10 | The round-1 code (`ScopeDeliveryOnly` FALSE). The gated runner never delivers E after an unrelated write, so the gate opens while E is in the bytes. |
-| `CarryInconclusive` | pass | 367275 / 27104 | The round-2 fix. Any fast, unauthored or collect-later run may reach no verdict. A recorded blocker stays until a conclusive run of its source shows it gone, and no clean text or Resolved line rests on a failed run. Since round 3 it also holds `GateSound` and `RecordedReported`. |
+| `CarryInconclusive` | pass | 384003 / 28064 | The round-2 fix. Any fast, unauthored or collect-later run may reach no verdict. A recorded blocker stays until a conclusive run of its source shows it gone, and no clean text or Resolved line rests on a failed run. Since round 3 it also holds `GateSound` and `RecordedReported`. |
 | `MutFailClear` | violated `RecordedKept` | 182 / 26 | The round-1 code (`CarryInconclusive` FALSE). A write whose runner fails observes nothing, so the record clears. |
 | `CarryPromoted` | pass | 4535 / 480 | The round-2 fix. A promoted unused value stays recorded on every later write that still observes it. |
 | `MutPromotedClear` | violated `RecordedKept` | 183 / 46 | The round-1 code (`CarryPromoted` FALSE). The next unrelated write holds u back as already seen, and the record clears. |
 | `CarryTwin` | pass | 66759 / 3926 | The round-3 fix (R2, R3). A pre-existing second occurrence of a recorded blocker's rule never keeps it once it is fixed, across three writes, an unauthored write, a turn end and a line shift. |
 | `MutTwinIdentity` | violated `RecordedReported` | 57 / 27 | The round-2 code (`CarryByPosition` FALSE). The withheld twin p keeps the fixed a, recorded as p, which no run delivered (review F1, probes P9 and P10). |
-| `CarrySkip` | pass | 12709 / 1562 | The round-3 fix (R1). A skip that never read the bytes keeps the record, and nothing reads the skip as clean. |
+| `CarrySkip` | pass | 13241 / 1626 | The round-3 fix (R1). A skip that never read the bytes keeps the record, and nothing reads the skip as clean. |
 | `MutSkipVerdict` | violated `GateSound` | 13 / 6 | The round-2 code (`SkipNoVerdict` FALSE). A skip past a size or line cap clears the record while the blocker is in the bytes (review F2, probes P1 to P3). |
-| `CarryOwed` | pass | 20394 / 1602 | The round-3 fix (R4). A blocker first written while its range-gated runner fails or skips is delivered and recorded by the next authored verdict, an unauthored write between them included. |
+| `CarryOwed` | pass | 21224 / 1666 | The round-3 fix (R4). A blocker first written while its range-gated runner fails or skips is delivered and recorded by the next authored verdict, an unauthored write between them included. |
 | `MutOwedRanges` | violated `GateSound` | 65 / 26 | The round-2 code (`OwedRanges` FALSE). Every later run withholds that blocker, so it is never recorded (residual a). |
 | `CarryUnaligned` | pass | 128805 / 3926 | The round-4 fix, with round 5's. Across three writes that may each lack an alignment, an unauthored write, a turn end and a line shift, no recorded blocker the bytes still hold is retired, and no twin is adopted. |
 | `MutUnaligned` | violated `UnalignedKept` | 93 / 19 | The round-3 code (`UnalignedIdentity` FALSE). A write with no alignment after a line moved retires a withheld blocker still in the bytes (verify probes P11c, P11d, P18). |
-| `CarryStale` | pass | 135001 / 3183 | The round-5 fix. Writes may fail and lack an alignment: an entry kept without a position stays until a run shows it gone, and no twin is adopted. |
-| `MutStaleAnywhere` | violated `RecordedKept` | 2747 / 264 | The round-4 code (`StaleAnywhere` FALSE). An aligned write after a failed write with no alignment retires the blocker while the bytes hold it. |
+| `CarryStale` | pass | 122689 / 2745 | The round-5 fix. Writes may fail and lack an alignment: an entry kept without a position stays until a run shows it gone, and no twin is adopted. |
+| `MutStaleAnywhere` | violated `RecordedKept` | 2747 / 232 | The round-4 code (`StaleAnywhere` FALSE). An aligned write after a failed write with no alignment retires the blocker while the bytes hold it. |
 | `MutUnalignedText` | violated `TwinNotAdopted` | 276 / 53 | The round-4 code (`UnalignedText` FALSE). A pre-existing twin with other text takes over a fixed blocker (verify probe P22). |
 | `MutOwedByContent` | violated `TwinNotAdopted` | 326 / 154 | The round-4 code (`OwedByContent` FALSE). A file with no record owes the whole file after a skip, and a pre-existing twin becomes a STOP (verify probe P23). |
-| `CarryTwinText` | pass | 135649 / 3379 | The #4481 residual. A same-text twin may stand in (`held`); every other invariant holds. |
-| `CarryGateB` | pass | 37829 / 1916 | The round-6 fix. The gated runner may fail, skip or take Gate B: a recorded blocker outside the edit stays, and its owed lines stay owed. |
-| `CarryGateBTwin` | pass | 42229 / 1479 | The round-6 fix with a pre-existing twin: the keep holds only recorded blockers, so no twin is adopted. |
+| `CarryTwinText` | pass | 123337 / 2995 | The #4481 residual. A same-text twin may stand in (`held`); every other invariant holds. |
+| `CarryGateB` | pass | 33555 / 1928 | The round-6 fix. The gated runner may fail, skip or take Gate B: a recorded blocker outside the edit stays, and its owed lines stay owed. |
+| `CarryGateBTwin` | pass | 28729 / 1351 | The round-6 fix with a pre-existing twin: the keep holds only recorded blockers, so no twin is adopted. |
 | `MutEditScopedKeep` | violated `RecordedKept` | 38 / 10 | The round-5 code (`EditScopedKeep` FALSE). Gate B's skip on an edit elsewhere retires a recorded blocker the bytes still hold (verify probe P27). |
 | `MutEditScopedOwed` | violated `GateSound` | 128 / 26 | `EditScopedOwed` FALSE. Gate B's skip discharges the lines a failed write owed, and the blocker written then stays undelivered with no line owed. |
-| `CarryGateBSettle` | pass | 17725 / 1366 | The round-7 fix. A collect-later Gate B skip may settle, and the gated runner's lane may stay silent: nothing retires without a run that read the bytes. |
+| `CarryGateBSettle` | pass | 16437 / 1366 | The round-7 fix. A collect-later Gate B skip may settle, and the gated runner's lane may stay silent: nothing retires without a run that read the bytes. |
 | `MutSettleCover` | violated `RecordedKept` | 967 / 123 | The round-6 code (`SettleCoverKeep` FALSE). A settled Gate B skip retires a collect-later blocker the bytes still hold (verify probe P34). |
+| `MutRecordedRuns` | violated `ConclusiveRetires` | 1208 / 131 | The code before #4509 (`RecordedRuns` FALSE). A failed write keeps a's entry without a position, and Gate B's covered skip then keeps it outside the edit after its fix: a pin (verify probe P42). |
 | `MutLaneVoids` | violated `RecordedKept` | 481 / 65 | The round-6 code (`LaneVoids` FALSE). With the server's host silent, the edit-scoped verdict retires a blocker on an edited line that still holds it (verify probe P33). |
 
 The `MutDeltaClear` trace is write, ignore, write:
@@ -288,6 +317,9 @@ Each switch has a config that flips when it is turned:
 - `EditScopedOwed`: `CarryGateB` to `MutEditScopedOwed`.
 - `LaneVoids`: `CarryGateB` to `MutLaneVoids`.
 - `SettleCoverKeep`: `CarryGateBSettle` to `MutSettleCover`.
+- `RecordedRuns`: `CarryGateB` to `MutRecordedRuns`. `MutEditScopedKeep`,
+  `MutLaneVoids` and `MutSettleCover` set it FALSE: with it TRUE their
+  scenario (a covered skip over a gated record) cannot occur and they pass.
 
 ## Residuals TLC shows
 
@@ -330,6 +362,12 @@ observes only outside the edit, on lines no run owes, is still never recorded
   lines the primary sees. The code keeps one outside the edit's ranges, or
   one it cannot place, so it keeps a superset; the primary also sees the
   language server runner's own owed lines, which the model leaves out.
+- #4509's line evidence. `positionStale` makes the code's stale entry the
+  model's `unpos` (recorded, where round 5 inferred it from one line hash),
+  and a wordless line owed by content (#4509 N2) is a same-text collision
+  the model's one text bit per twin already covers. The settle's match of
+  a stale entry anywhere and the past-EOF sweep's skip of its line are not
+  modelled; witness rows 39 and 35 replay them.
 
 ## Replay on the real code
 
@@ -348,6 +386,13 @@ service and the process spawn are doubled at their host boundary. Its cells:
   outside the edit under Gate B), 18 (one fixed on its own line retires) and
   19 (one fixed, one kept). Round 7: 26 (P33, a silent lane) and 24 (P34,
   a settled collect-later skip).
+- #4509: 31 (P42, a fix after an edit the server missed), 31b (a fix while
+  the server is cut off), 31c (a slow napi's run on the fix settles), 33
+  (P38, a fix after a write with no alignment), 34 (P29, a stale entry whose
+  old line now holds its text), 35 (a stale entry past the end of the file
+  at turn end), 36 (P31b, a lone `}` owed by content), 37 (a covered skip
+  with a silent lane owes the edit), 38 (a settle absorbed mid-dispatch) and
+  39 (a stale entry when its runner's deferred run settles).
 - Round 5 (rows of PR #4491's round-5 table): 4b (P22, a twin with other
   text), 6b (a stale entry), 9 (P23, owed by content) and 13 (P25, one entry
   after a settle).

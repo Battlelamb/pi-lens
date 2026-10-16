@@ -556,6 +556,54 @@ describe("ast-grep-napi runner — aux-runner-findings-lost degradation (#2324 R
 		}
 	});
 
+	// Recurrence (#4509, probes P42 and P38): under Gate B napi never ran
+	// again, and the server's copy has another identity, so a napi blocker
+	// the carry could not place (a fixed line after a cut-off edit, an
+	// unaligned write) stayed pinned for the session. While napi holds a
+	// recorded blocker it runs, and its run names the lane it overlaps.
+	it("runs under Gate B while it holds a recorded blocker, naming the covering lane (#4509)", async () => {
+		const env = setupTestEnvironment("pi-lens-ast-grep-gate-b-recorded-");
+		try {
+			const filePath = path.join(env.tmpDir, "file.ts");
+			fs.writeFileSync(filePath, "const x = 1;\n");
+			mockAuxiliaryLspPublished.mockResolvedValue(true);
+			mockWorkingSgLoad();
+			const mod =
+				await import("../../../../clients/dispatch/runners/ast-grep-napi.js");
+			const recorded = await mod.default.run(
+				createCtx(filePath, {
+					hasTool: async () => false,
+					recordedRunnerIds: new Set(["ast-grep-napi"]),
+				}) as any,
+			);
+			expect(recorded.status).not.toBe("skipped");
+			expect(recorded.coveredBy).toEqual({
+				runnerId: "lsp",
+				serverId: "ast-grep",
+			});
+			// Another runner's record does not make napi run.
+			const other = await mod.default.run(
+				createCtx(filePath, {
+					hasTool: async () => false,
+					recordedRunnerIds: new Set(["lsp"]),
+				}) as any,
+			);
+			expect(other.skipReason).toBe("covered-by-primary");
+			// With the server not covering the file, a run names no lane.
+			mockAuxiliaryLspPublished.mockResolvedValue(false);
+			const alone = await mod.default.run(
+				createCtx(filePath, {
+					hasTool: async () => false,
+					recordedRunnerIds: new Set(["ast-grep-napi"]),
+				}) as any,
+			);
+			expect(alone.status).not.toBe("skipped");
+			expect(alone.coveredBy).toBeUndefined();
+		} finally {
+			env.cleanup();
+		}
+	});
+
 	it("records the loss when Gate B skips on a leftover pending pair", async () => {
 		const env = setupTestEnvironment("pi-lens-ast-grep-loss-");
 		try {

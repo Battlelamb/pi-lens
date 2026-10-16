@@ -311,23 +311,34 @@ export function owedContentOf(
 	return Uint32Array.from(texts).sort();
 }
 
+/** #4509 (N2): a letter, a digit, `_` or `$`: text a finding can anchor on. */
+const WORD_CHARACTER = /[\p{L}\p{N}_$]/u;
+
 /**
  * #4484 round 5: the lines of bytes with `lineHashes` that `owed` names: each
  * line whose text matches an owed line's. A line the write changed is in its
  * edit range anyway, so this covers every place an owed line can be. The
  * whole file when the content is, or the bytes have no hashes.
+ * #4509 (N2): a line with no word character (`}`, `);`, a blank line) is not
+ * owed by its text: it matches such a line anywhere in the file, and a
+ * finding whose span crosses it also spans a line with text. `textAt` reads
+ * a line of the same bytes (undefined: unread, so it stays owed).
  */
 export function linesOwedByContent(
 	owed: OwedContent,
 	lineHashes: Uint32Array | undefined,
 	lineCount: number,
+	textAt: (line: number) => string | undefined,
 ): { start: number; end: number }[] {
 	if (owed === "whole-file" || lineHashes === undefined)
 		return lineCount > 0 ? [{ start: 1, end: lineCount }] : [];
 	const texts = new Set(owed);
 	const lines: number[] = [];
 	lineHashes.forEach((hash, i) => {
-		if (texts.has(hash)) lines.push(i + 1);
+		if (!texts.has(hash)) return;
+		const text = textAt(i + 1);
+		if (text !== undefined && !WORD_CHARACTER.test(text)) return;
+		lines.push(i + 1);
 	});
 	return rangesOfLines(lines);
 }

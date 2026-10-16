@@ -20,6 +20,7 @@ import {
 import {
 	absorbSettledRunnerBlockers,
 	judgeDeferredRunnerFindings,
+	recordDeferredRunnerBlockers,
 	retireSettledRunnerBlockers,
 } from "../../clients/deferred-runner-blockers.js";
 import {
@@ -574,8 +575,133 @@ describe("deferred blocker recording (#3814)", () => {
 				);
 			expect(settled({ runnerId: "lsp", serverId: "ast-grep" })).toBe(0);
 			expect(runtime.getInlineBlockerDiagnostics(filePath)).toEqual([recorded]);
+			// #4509 (row 31c): a run that names its covering lane read the
+			// bytes itself, so it retires what it no longer observes.
+			const ran = retireSettledRunnerBlockers(
+				runtime,
+				{
+					filePath,
+					cwd: env.tmpDir,
+					projectRoot: env.tmpDir,
+					runnerId: RUNNER_ID,
+					markedAtMs: 2_000,
+					result: {
+						status: "succeeded",
+						diagnostics: [],
+						semantic: "none",
+						coveredBy: { runnerId: "lsp", serverId: "ast-grep" },
+					},
+				},
+				{ kept: [] },
+			);
+			expect(ran).toBe(1);
+			runtime.recordInlineBlockers(
+				filePath,
+				"🔴 STOP",
+				1,
+				undefined,
+				[1],
+				{ size: 9, sha256 },
+				[recorded],
+				undefined,
+				1_000,
+			);
 			// Control: the same skip without a lane is a file-wide verdict.
 			expect(settled()).toBe(1);
+		} finally {
+			env.cleanup();
+		}
+	});
+
+	// #4529 review R3 (probe P46): napi's slow run settled beside the
+	// ast-grep server's recorded copy of the same finding. The settle kept
+	// napi's own entry and recorded napi's copy too, so turn end listed one
+	// violation twice.
+	it("lets a covering lane's recorded copy stand for a settled covered run's finding", () => {
+		const env = setupTestEnvironment("pi-lens-4529-settle-lane-");
+		try {
+			const filePath = path.join(env.tmpDir, "app.ts");
+			fs.writeFileSync(filePath, "alpha();\n");
+			const bytes = fs.readFileSync(filePath);
+			const sha256 = createHash("sha256").update(bytes).digest("hex");
+			const napiCopy = { ...blocking(filePath), rule: "no-unknown-returns" };
+			const own = { ...napiCopy, runnerId: RUNNER_ID };
+			const laneCopy = (rule: string, serverId?: string): Diagnostic => ({
+				...blocking(filePath),
+				id: `lsp:${rule}:0`,
+				tool: "lsp",
+				rule,
+				runnerId: "lsp",
+				...(serverId !== undefined && { serverId }),
+			});
+			const settle = (
+				lane: Diagnostic,
+				coveredBy: { runnerId: string; serverId?: string } = {
+					runnerId: "lsp",
+					serverId: "ast-grep",
+				},
+			) => {
+				const pending = {
+					filePath,
+					cwd: env.tmpDir,
+					projectRoot: env.tmpDir,
+					runnerId: RUNNER_ID,
+					markedAtMs: 2_000,
+					result: {
+						status: "succeeded" as const,
+						diagnostics: [napiCopy],
+						semantic: "blocking" as const,
+						coveredBy,
+					},
+				};
+				const runtime = new RuntimeCoordinator();
+				runtime.recordInlineBlockers(
+					filePath,
+					"🔴 STOP",
+					1,
+					undefined,
+					[1],
+					{ size: bytes.byteLength, sha256 },
+					[own, lane],
+					undefined,
+					1_000,
+				);
+				const retired = retireSettledRunnerBlockers(runtime, pending, {
+					kept: [napiCopy],
+				});
+				const recorded = recordDeferredRunnerBlockers(
+					runtime,
+					pending,
+					[napiCopy],
+					bytes,
+				);
+				return {
+					retired,
+					recorded,
+					left: runtime
+						.getInlineBlockerDiagnostics(filePath)
+						?.map((d) => `${d.runnerId}:${d.rule}`),
+				};
+			};
+			expect(
+				settle(laneCopy("ast-grep:no-unknown-returns", "ast-grep")),
+			).toEqual({
+				retired: 1,
+				recorded: 0,
+				left: ["lsp:ast-grep:no-unknown-returns"],
+			});
+			// Control: the lane's copy of another rule is not napi's finding.
+			const kept = {
+				retired: 0,
+				recorded: 0,
+				left: [`${RUNNER_ID}:no-unknown-returns`, "lsp:ast-grep:other-rule"],
+			};
+			expect(settle(laneCopy("ast-grep:other-rule", "ast-grep"))).toEqual(kept);
+			// A cover that names no server (`coveredBy.serverId` is optional)
+			// reads only its runner's entries, never the run's own as its lane's.
+			expect(
+				settle(laneCopy("ast-grep:other-rule"), { runnerId: "lsp" }),
+			).toEqual(kept);
 		} finally {
 			env.cleanup();
 		}

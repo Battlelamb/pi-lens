@@ -61,6 +61,10 @@ real seam. Check that every gate the diff adds is exercised through that path.
   a lifecycle, dispatch, or ownership seam, run EVERY suite that exercises the
   behaviour the seam governs and name the list; a curated file set cannot
   clear what it omits (#3622).
+- **Challenge the population query.** Re-run the fixer's sibling search with
+  a wider query of your own, by primitive or mechanism instead of the fixer's
+  call names. Report what the fixer's query missed; a population that a wider
+  query extends is a finding (#4536).
 - **Generalization verdict.** When a mechanism, policy, guard, or optimisation
   targets N of M members (registry entries, servers, tools, languages,
   stores), name M, why the others are excluded, and their default, and end

@@ -89,10 +89,12 @@ const MAX_FILE_FACT_CONTENT_BYTES = 64 * 1024 * 1024;
 // only, and carry the same cap, so the coldest of them fall off in turn and
 // that key reverts to first-dispatch semantics.
 //
-// Four per-file keys are minted per dispatched file today (diagnostic
-// baseline, cascade baseline, entity snapshot, changed symbols), so 4096
-// records covers roughly 1024 distinct files before the coldest file's
-// baseline starts degrading.
+// Up to five per-file keys are minted per dispatched file today (diagnostic
+// baseline, cascade baseline, the #4483 pre-edit linter seed of a file the
+// tool_call captured, entity snapshot, changed symbols), so 4096 records
+// covers roughly 820 distinct files before the coldest file's baseline starts
+// degrading. An evicted seed leaves the delta baseline alone in charge, which
+// already holds the file's old findings after its first dispatch.
 const MAX_SESSION_FACT_RECORDS = 4096;
 
 export interface ReadonlyFactStore {

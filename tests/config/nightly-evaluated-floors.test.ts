@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import yaml from "../../clients/deps/js-yaml.js";
+import { COMPLEXITY_ANALYZED_FILES_FLOOR } from "../../scripts/complexity-report.mjs";
 import {
 	countEvaluated,
 	EVALUATED_DIR_ENV,
@@ -238,5 +239,173 @@ describe("the floor step and the refresh guard are wired and gating (#4514)", ()
 			"Open/update idle-eviction promotion PR",
 		])
 			expect(steps.indexOf(step(prs, open)), open).toBeGreaterThan(guardAt);
+	});
+});
+
+// Recurrence #4518 (retro P2, the rest of the audit): five more producers sat
+// under continue-on-error with no proof of work (the APFS anchors, the Swift
+// crash-watch, the PR-time LSP handshake, the complexity report, plus the
+// mise-repro and lint jobs that carry a stated reason instead). The floors are
+// MEASURED (tests/fixtures/nightly-floors/measurements.json, nonLspFloors) and
+// pinned here in both directions: at or below what a healthy run reached (a
+// floor above it is a job red forever) and within half of it (a floor of 1 is
+// the "did anything run" guard the job already had, not a measured one).
+const nonLsp = (
+	measurements as unknown as {
+		nonLspFloors: {
+			"apfs-anchors": { healthy: { evaluated: number; line: string } };
+			"install-smoke-lsp-handshake": {
+				healthy: Array<{ passed: number; line: string }>;
+			};
+			"swift-crash-watch": { healthy: { evaluated: number } };
+			"complexity-report": { healthy: { evaluated: number } };
+			"windows-vitest": { healthy: { evaluated: number; line: string } };
+		};
+	}
+).nonLspFloors;
+const withinMeasured = (floor: number, measured: number, fraction = 0.5) => {
+	expect(floor).toBeGreaterThan(0);
+	expect(floor).toBeLessThanOrEqual(measured);
+	expect(floor).toBeGreaterThanOrEqual(measured * fraction);
+};
+const loadWorkflow = (file: string) =>
+	yaml.load(read(`.github/workflows/${file}`)) as {
+		jobs: Record<string, Job>;
+	};
+const floorOf = (run: string | undefined, re: RegExp) =>
+	Number(re.exec(run ?? "")?.[1]);
+
+describe("the floors outside the LSP nightly are measured and wired (#4518)", () => {
+	it("floors the APFS anchors on tests executed, in a step that cannot be continue-on-error", () => {
+		const job = loadWorkflow("ci.yml").jobs["install-test"];
+		const anchors = step(job, "POSIX case-insensitive anchors");
+		const floor = step(job, "APFS anchors evaluated floor");
+		// The results stay advisory; only "nothing ran" is gating.
+		expect(anchors["continue-on-error"]).toBe(true);
+		expect(floor["continue-on-error"]).toBeUndefined();
+		expect(floor.if).toContain("macos-latest");
+		expect(floor.if).toContain("!cancelled()");
+		const steps = job.steps ?? [];
+		expect(steps.indexOf(floor)).toBeGreaterThan(steps.indexOf(anchors));
+		// The reporter file the vitest step writes is the file the floor reads.
+		expect(anchors.run).toContain(
+			'--reporter=json --outputFile.json="$RUNNER_TEMP/apfs-anchors.json"',
+		);
+		expect(floor.run).toContain('"$RUNNER_TEMP/apfs-anchors.json"');
+		expect(floor.run).toContain("j.numPassedTests+j.numFailedTests");
+		expect(floor.run).toMatch(/--count "apfs-anchors=\$\{count\}"/);
+		// 100 of the measured 223 is a decision (review r1 F5): the leg is
+		// required, the step exists to catch a run that executed nothing, and a
+		// 10% margin would red it on a legitimate removal of 24 tests.
+		withinMeasured(
+			floorOf(floor.run, /--floor (\d+)/),
+			nonLsp["apfs-anchors"].healthy.evaluated,
+			0.4,
+		);
+		expect(nonLsp["apfs-anchors"].healthy.line).toContain(
+			`${nonLsp["apfs-anchors"].healthy.evaluated} passed`,
+		);
+	});
+
+	it("turns exactly 'swift was not evaluated' into a red job, and says so when swift can be lifted", () => {
+		const job = loadWorkflow("grammar-health.yml").jobs["swift-crash-watch"];
+		const watch = step(job, "Force-load swift");
+		const floor = step(job, "Swift crash-watch evaluated floor");
+		expect(watch["continue-on-error"]).toBeUndefined();
+		expect(floor["continue-on-error"]).toBeUndefined();
+		const steps = job.steps ?? [];
+		expect(steps.indexOf(floor)).toBeGreaterThan(steps.indexOf(watch));
+		// check-grammar-load.mjs: 2 = runtime unavailable, 3 = grammar did not
+		// load; both evaluated nothing. Exit 0 is the lift signal; any other
+		// status is the known #423 crash and IS an evaluation.
+		expect(watch.run).toMatch(/2\|3\)\s*\n\s*evaluated=0/);
+		expect(watch.run).toMatch(/0\)\s*\n\s*evaluated=1/);
+		expect(watch.run).toMatch(/\*\)\s*\n\s*evaluated=1/);
+		expect(watch.run).toContain("::notice title=Swift crash-watch::");
+		expect(watch.run).toContain(
+			'echo "evaluated=${evaluated}" >> "$GITHUB_OUTPUT"',
+		);
+		expect((floor as { env?: Record<string, string> }).env?.EVALUATED).toBe(
+			"${{ steps.swift.outputs.evaluated }}",
+		);
+		expect(floor.run).toContain(
+			'--count "swift-crash-watch=${EVALUATED}" --floor',
+		);
+		withinMeasured(
+			floorOf(floor.run, /--floor (\d+)/),
+			nonLsp["swift-crash-watch"].healthy.evaluated,
+		);
+	});
+
+	it("gives the PR-time LSP handshake a --min-pass at or below both measured PR runs", () => {
+		const job = loadWorkflow("install-smoke.yml").jobs["lsp-handshake"];
+		const floor = floorOf(
+			step(job, "LSP handshake layer").run,
+			/--min-pass=(\d+)/,
+		);
+		const passes = nonLsp["install-smoke-lsp-handshake"].healthy.map(
+			(h) => h.passed,
+		);
+		withinMeasured(floor, Math.min(...passes));
+		for (const h of nonLsp["install-smoke-lsp-handshake"].healthy)
+			expect(h.line).toContain(`${h.passed} passed`);
+	});
+
+	it("hands the analysed-files floor to assertEvaluated and pins it under the measured count", () => {
+		withinMeasured(
+			COMPLEXITY_ANALYZED_FILES_FLOOR,
+			nonLsp["complexity-report"].healthy.evaluated,
+		);
+	});
+
+	it("floors the Windows subset on tests executed, in the step that already reds a failed outcome", () => {
+		const job = loadWorkflow("ci.yml").jobs["unit-tests-windows"];
+		const failStep = step(job, "Fail Windows advisory");
+		expect(failStep["continue-on-error"]).toBeUndefined();
+		expect(failStep.run).toContain('--count "windows-vitest=${executed}"');
+		withinMeasured(
+			floorOf(failStep.run, /--floor (\d+)/),
+			nonLsp["windows-vitest"].healthy.evaluated,
+		);
+		expect(nonLsp["windows-vitest"].healthy.line).toContain(
+			`${nonLsp["windows-vitest"].healthy.evaluated} passed`,
+		);
+	});
+
+	it("states why each job without a floor needs none, directly above the job", () => {
+		const lint = read(".github/workflows/lint.yml");
+		for (const job of ["jscpd", "strictness", "yamllint", "typos", "taplo"]) {
+			const at = lint.indexOf(`\n  ${job}:\n`);
+			expect(at, job).toBeGreaterThan(0);
+			const above = lint.slice(Math.max(0, at - 700), at);
+			expect(above, job).toMatch(/# No floor \(#4518\): /);
+		}
+		const install = read(".github/workflows/install-smoke.yml");
+		const miseAt = install.indexOf("\n  mise-repro:\n");
+		expect(miseAt).toBeGreaterThan(0);
+		expect(install.slice(miseAt, miseAt + 1500)).toMatch(
+			/# No floor \(#4518\): /,
+		);
+	});
+
+	it("keeps the pass-floor, census-plan and file-count comparisons in the one helper (net-count rule)", () => {
+		const call = /\bassertEvaluated\(/;
+		for (const file of [
+			"scripts/smoke-tools.mjs",
+			"scripts/ci-shuffle-census.mjs",
+			"scripts/complexity-report.mjs",
+		]) {
+			const code = stripSource(read(file), { strings: "blank" });
+			expect(code, file).toMatch(call);
+		}
+		// The ad hoc comparison the helper replaced must not come back beside it.
+		const smoke = stripSource(read("scripts/smoke-tools.mjs"), {
+			strings: "blank",
+		});
+		expect(smoke).not.toMatch(/passed\s*>=\s*minPass/);
+		const census = stripSource(read("scripts/ci-shuffle-census.mjs"), {
+			strings: "blank",
+		});
+		expect(census).not.toMatch(/if\s*\(\s*missing\.length\s*>\s*0\s*\)/);
 	});
 });

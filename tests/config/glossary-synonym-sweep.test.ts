@@ -553,7 +553,11 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		// 16 -> 17 (#4484): `heldBackBlockers` keeps the blocking findings the
 		// delta calls not new, an `Array.prototype.filter` call, not a delivery
 		// filter.
-		"clients/dispatch/dispatcher.ts": 17,
+		// 17 -> 21 (#4483): the pre-edit seed classification keeps the
+		// blocking findings it reports and removes its matches from the visible
+		// and held-back lists, `Array.prototype.filter` calls, not a delivery
+		// filter.
+		"clients/dispatch/dispatcher.ts": 21,
 		"clients/dispatch/fact-runner.ts": 1,
 		"clients/dispatch/fact-scheduler.ts": 2,
 		"clients/dispatch/facts/function-facts.ts": 2,
@@ -566,7 +570,12 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		// `Array.prototype.filter` calls, not a delivery filter.
 		// 20 -> 19 (#4485): the rolling delta's per-neighbour diagnostics
 		// `Array.prototype.filter` is deleted with the delta.
-		"clients/dispatch/integration.ts": 19,
+		// 19 -> 20 (#4483): the pre-edit capture keeps a dispatch group's
+		// linter runner ids, an `Array.prototype.filter` call.
+		"clients/dispatch/integration.ts": 20,
+		// #4483: the seed's runner and line selection, `Array.prototype.filter`
+		// calls, not a delivery filter.
+		"clients/dispatch/pre-edit-seed.ts": 4,
 		"clients/dispatch/rule-policy.ts": 1,
 		"clients/dispatch/rules/high-fan-out.ts": 1,
 		"clients/dispatch/rules/missing-error-propagation.ts": 3,
@@ -674,7 +683,9 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		// 4 -> 6 (#4484): `liveBlockers.filter` and `recordBlockers.filter` split the
 		// live blocking set into the delta's and the held-back ones, two
 		// `Array.prototype.filter` calls, not a delivery filter.
-		"clients/pipeline.ts": 6,
+		// 6 -> 8 (#4483): the seeded findings split into pre-existing and
+		// recorded ones, two `Array.prototype.filter` calls.
+		"clients/pipeline.ts": 8,
 		"clients/process-snapshot.ts": 5,
 		"clients/project-changes.ts": 3,
 		"clients/project-diagnostics/cache.ts": 2,
@@ -1336,7 +1347,8 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/dispatch/runners/eslint.ts": 3,
 		"clients/dispatch/runners/fact-rules.ts": 2,
 		// #4309: folded unavailable/absent-command exits remove one status use.
-		"clients/dispatch/runners/fish-indent.ts": 5,
+		// 5 -> 6 (#4522): the exitless-run guard reads the exit status once.
+		"clients/dispatch/runners/fish-indent.ts": 6,
 		"clients/dispatch/runners/gleam-check.ts": 7,
 		"clients/dispatch/runners/go-vet.ts": 5,
 		"clients/dispatch/runners/golangci-lint.ts": 4,

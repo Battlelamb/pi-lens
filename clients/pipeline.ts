@@ -1688,6 +1688,25 @@ function formatStillUnfixedLine(
 	return `🔴 Still unfixed: ${count} blocker${count === 1 ? "" : "s"} reported earlier${where}.`;
 }
 
+/**
+ * #4483: the one line a write gets for linter errors the file already held
+ * before its first edit this session (`DispatchResult.preExisting`). They do
+ * not stop the agent or shut the commit gate. Bounded like the still-unfixed
+ * line: at most five line numbers, then a count.
+ */
+function formatPreExistingLine(
+	findings: readonly Diagnostic[],
+	filePath: string,
+): string {
+	const lines = [...new Set(inlineBlockerLines(findings, filePath))];
+	const shown = lines.slice(0, 5).map((line) => `L${line}`);
+	if (lines.length > shown.length)
+		shown.push(`+${lines.length - shown.length} more`);
+	const where = shown.length > 0 ? ` (${shown.join(", ")})` : "";
+	const count = findings.length;
+	return `ℹ Pre-existing: ${count} linter error${count === 1 ? "" : "s"} already in this file before its first edit this session${where}; not blocking.`;
+}
+
 export interface FormatPhaseResult {
 	formatChanged: boolean;
 	formattersUsed: string[];
@@ -1908,6 +1927,8 @@ function buildEnrichedBlockerOutput(
  * covers only the edit (`editScopedRunnerIds`) answers only for a blocker
  * inside it: its line was edited or deleted, or its line now lies in
  * `editRanges`. One outside, or unplaced, stays as for no verdict.
+ * #4509 (N3): a kept recorded blocker this write could not place is marked
+ * `positionStale`.
  */
 function carryRecordedBlockers(
 	prior: readonly Diagnostic[],
@@ -1953,7 +1974,12 @@ function carryRecordedBlockers(
 		if (observedNow.has(d)) return [];
 		if (!recorded.has(d)) return [d];
 		const at = positionOf(d);
-		return [typeof at !== "number" || at === d.line ? d : { ...d, line: at }];
+		// #4509 (N3): kept without a place in these bytes, its line number is
+		// from older bytes; say so instead of leaving a later write to infer it
+		// from one line's hash.
+		if (typeof at !== "number")
+			return [d.positionStale ? d : { ...d, positionStale: true as const }];
+		return [at === d.line ? d : { ...d, line: at }];
 	});
 	if (carried.some((d) => !dispatchResult.stillObserved?.includes(d))) {
 		incrementDegradationCount({
@@ -1975,7 +2001,8 @@ function carryRecordedBlockers(
  * once per file. Round 5: so is a blocker whose line no longer holds its own
  * text in the anchor's bytes (`lineHash`: an earlier write without alignment
  * kept it at an older line number). `matchesAnywhere` then admits only an
- * observed finding on a line with the blocker's text. `owed` is the anchor's
+ * observed finding on a line with the blocker's text; #4509: so is one the
+ * record marks `positionStale`. `owed` is the anchor's
  * owed lines per runner, in this run's bytes (R4): remapped ranges with an
  * alignment, otherwise the lines whose text matches an owed line. `next` is
  * the anchor this run's verdict hands on: its own line hashes, and for each
@@ -2003,13 +2030,17 @@ function anchorToPriorAnalysis(
 	let lines: string[] | undefined;
 	const lineCount = () =>
 		currentHashes()?.length ?? fileContent?.split(/\r?\n/).length ?? 0;
+	// One line's text in these bytes (undefined: unread).
+	const textAt = (line: number): string | undefined => {
+		if (fileContent === undefined) return undefined;
+		lines ??= fileContent.split(/\r?\n/);
+		return lines[line - 1];
+	};
 	// One line's hash in these bytes, also past the caps (undefined: unread).
 	const hashAt = (line: number): number | undefined => {
 		const all = currentHashes();
 		if (all) return all[line - 1];
-		if (fileContent === undefined) return undefined;
-		lines ??= fileContent.split(/\r?\n/);
-		const text = lines[line - 1];
+		const text = textAt(line);
 		return text === undefined ? undefined : lineHashOf(text);
 	};
 	let lineMap: LineMap | undefined | null = null;
@@ -2033,11 +2064,14 @@ function anchorToPriorAnalysis(
 	const positionOf = (d: {
 		line: number;
 		lineHash?: number | undefined;
+		positionStale?: true | undefined;
 	}): number | undefined | typeof ANY_POSITION => {
 		const map = alignment();
+		// #4509 (N3): a recorded stale entry is never placed by its old number.
 		const placed =
-			d.lineHash === undefined ||
-			prior?.lineHashes?.[d.line - 1] === d.lineHash;
+			d.positionStale !== true &&
+			(d.lineHash === undefined ||
+				prior?.lineHashes?.[d.line - 1] === d.lineHash);
 		if (map && placed) return map(d.line);
 		unplaced();
 		return ANY_POSITION;
@@ -2062,6 +2096,7 @@ function anchorToPriorAnalysis(
 					owedContentOf(ranges, prior?.lineHashes),
 					currentHashes(),
 					lineCount(),
+					textAt,
 				),
 			);
 			continue;
@@ -2077,7 +2112,10 @@ function anchorToPriorAnalysis(
 		);
 	}
 	for (const [runnerId, content] of prior?.owedContent ?? [])
-		owe(runnerId, linesOwedByContent(content, currentHashes(), lineCount()));
+		owe(
+			runnerId,
+			linesOwedByContent(content, currentHashes(), lineCount(), textAt),
+		);
 	return {
 		positionOf,
 		matchesAnywhere,
@@ -2412,6 +2450,12 @@ async function analysePipeline(
 		fileBytes,
 		filePath,
 	);
+	// #4509: the runners that hold a recorded blocker here judge it themselves.
+	const recordedRunnerIds = new Set(
+		(ctx.priorInlineBlockers?.() ?? []).flatMap((d) =>
+			d.runnerId === undefined ? [] : [d.runnerId],
+		),
+	);
 	const dispatchResult = await dispatchLintWithResult(
 		filePath,
 		cwd,
@@ -2435,6 +2479,8 @@ async function analysePipeline(
 			telemetryProvider: ctx.telemetry?.provider,
 			// #4484 round 3 (R4): lines owed to runners that had no verdict.
 			owedRanges: anchoring.owed.size > 0 ? anchoring.owed : undefined,
+			recordedRunnerIds:
+				recordedRunnerIds.size > 0 ? recordedRunnerIds : undefined,
 		},
 	);
 	// #4484: the store, the widget and the published set hold the file's
@@ -2446,18 +2492,24 @@ async function analysePipeline(
 	// copy).
 	// #4484 round 3: a recorded blocker is matched only at its own position.
 	const heldBackBlockers = dispatchResult.heldBackBlockers ?? [];
+	// #4483: linter errors the file held before its first edit this session.
+	const seededFindings = dispatchResult.preExisting ?? [];
 	const ownFile = normalizeEphemeralMapKey(filePath);
 	const { carried: carriedBlockers, matched: matchedBlockers } =
 		carryRecordedBlockers(
 			ctx.priorInlineBlockers?.() ?? [],
-			[...dispatchResult.blockers, ...heldBackBlockers],
+			[...dispatchResult.blockers, ...heldBackBlockers, ...seededFindings],
 			dispatchResult,
 			filePath,
 			(d) =>
 				d.line === undefined ||
 				(d.filePath && normalizeEphemeralMapKey(d.filePath) !== ownFile)
 					? d.line
-					: anchoring.positionOf({ line: d.line, lineHash: d.lineHash }),
+					: anchoring.positionOf({
+							line: d.line,
+							lineHash: d.lineHash,
+							positionStale: d.positionStale,
+						}),
 			anchoring.matchesAnywhere,
 			ctx.modifiedRanges,
 		);
@@ -2467,9 +2519,14 @@ async function analysePipeline(
 	const promotedBlockers = heldBackBlockers.flatMap((d) =>
 		matchedBlockers.has(d) ? [] : [d],
 	);
+	// #4483: the record wins over the seed. A pre-existing copy that a recorded
+	// blocker matched is still that blocker (recorded on another write, or
+	// carried over a session boundary), so it stays recorded and unfixed.
+	const preExisting = seededFindings.filter((d) => !matchedBlockers.has(d));
+	const recordedSeeded = seededFindings.filter((d) => matchedBlockers.has(d));
 	const keptBlockers =
-		carriedBlockers.length > 0
-			? [...heldBackBlockers, ...carriedBlockers]
+		carriedBlockers.length > 0 || recordedSeeded.length > 0
+			? [...heldBackBlockers, ...recordedSeeded, ...carriedBlockers]
 			: heldBackBlockers;
 	const storedDiagnostics =
 		keptBlockers.length > 0
@@ -2645,6 +2702,9 @@ async function analysePipeline(
 	}
 	if (stillUnfixed.length > 0) {
 		output += `\n\n${formatStillUnfixedLine(stillUnfixed, filePath)}`;
+	}
+	if (preExisting.length > 0) {
+		output += `\n\n${formatPreExistingLine(preExisting, filePath)}`;
 	}
 	if (fixedCount > 0) {
 		const detail =

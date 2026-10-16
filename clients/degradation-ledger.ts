@@ -676,6 +676,13 @@ export type DegradationKind =
 	 */
 	| "lsp-created-import-scan-incomplete"
 	/**
+	 * #4476: the walk of a root's declaration files passed its directory or
+	 * file cap, so a declaration file created, edited or deleted outside
+	 * pi-lens under that root reaches no language server and refuses no
+	 * diagnostics-cache entry (clients/out-of-band-changes.ts). Once per root.
+	 */
+	| "lsp-declaration-look-capped"
+	/**
 	 * `loadWebTreeSitter()` (clients/deps/web-tree-sitter.js) rejected during
 	 * MODULE EVALUATION, not resolution (#1592). Node's ESM loader permanently
 	 * memoizes a module record that threw while evaluating, so re-importing
@@ -1073,6 +1080,8 @@ export type DegradationKind =
 	 * itself already landed; only the hash is missing. Subject is the file path.
 	 */
 	| "pipeline-post-write-hash-unavailable"
+	/** #4543: first-write capture exceeded its deadline or capacity (once/session). */
+	| "pre-edit-capture-incomplete"
 	/** A mounted process bridge refused calls during a primary-session gap. */
 	| "process-bridge-unavailable"
 	/**

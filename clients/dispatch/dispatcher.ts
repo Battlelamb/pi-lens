@@ -73,12 +73,14 @@ import {
 	filterGroupsForAdoptedRoot,
 } from "./adopted-root-runners.js";
 
+import { laneCopyStandsFor, semanticRank } from "./lane-copies.js";
 import {
 	applyRulePolicy,
 	resolvedRulePolicyMap,
 	rulePolicyMapFromConfig,
 } from "./rule-policy.js";
 import { getToolProfile } from "./tool-profile.js";
+import { classifyPreExisting, preEditSeedFactKey } from "./pre-edit-seed.js";
 import {
 	hasUsableResult,
 	isRunnerClaimSource,
@@ -439,6 +441,15 @@ export function createDispatchContext(
 // --- Delta Mode Logic ---
 
 /**
+ * The session fact holding a file's delta baseline (absolute, normalized
+ * path; the #2489 note in `dispatchForFile`). The #4483 pre-edit capture reads
+ * it to tell a file's first dispatch from a later one.
+ */
+export function deltaBaselineFactKey(filePath: string): string {
+	return `session.baseline.${filePath}`;
+}
+
+/**
  * Filter diagnostics to only show NEW issues (delta mode)
  */
 function filterDelta<T extends { id: string }>(
@@ -453,14 +464,6 @@ function filterDelta<T extends { id: string }>(
 	const newItems = after.filter((d) => !beforeSet.has(keyFn(d)));
 
 	return { new: newItems, fixed };
-}
-
-function semanticRank(semantic: OutputSemantic): number {
-	if (semantic === "blocking") return 4;
-	if (semantic === "warning") return 3;
-	if (semantic === "fixed") return 2;
-	if (semantic === "silent") return 1;
-	return 0;
 }
 
 function toolPriority(tool: string, defectClass: string): number {
@@ -944,9 +947,11 @@ interface GroupResult {
 	editScopedRunnerIds: string[];
 	/** #4484 round 7: runners that reached a verdict, and the lanes covered skips defer to. */
 	answeredRunnerIds: string[];
+	/** #4509: `ran` marks a covered run (it read the bytes), not a covered skip. */
 	coveredRunners: {
 		runnerId: string;
 		lane: { runnerId: string; serverId?: string };
+		ran: boolean;
 	}[];
 }
 
@@ -1324,14 +1329,17 @@ async function runGroup(
 					? { skipReason, ...(claimSource !== undefined && { claimSource }) }
 					: undefined),
 		});
-		recordRunner(
-			ctx.filePath,
-			runnerId,
-			result.status,
-			result.diagnostics.length,
-			duration,
-			ctx.writeIndex,
-		);
+		// #4483: a pre-edit capture reads bytes the host is about to replace,
+		// so its counts never reach the widget's runner state.
+		if (!ctx.preEditCapture)
+			recordRunner(
+				ctx.filePath,
+				runnerId,
+				result.status,
+				result.diagnostics.length,
+				duration,
+				ctx.writeIndex,
+			);
 
 		// #4484 r2: every finding names the runner that observed it, so a
 		// recorded blocker is retired only by a conclusive run of its own source.
@@ -1344,7 +1352,11 @@ async function runGroup(
 		else {
 			answeredRunnerIds.push(runnerId);
 			if (result.coveredBy)
-				coveredRunners.push({ runnerId, lane: result.coveredBy });
+				coveredRunners.push({
+					runnerId,
+					lane: result.coveredBy,
+					ran: result.skipReason !== "covered-by-primary",
+				});
 			if (result.editScopedVerdict === true) editScopedRunnerIds.push(runnerId);
 		}
 		inconclusiveServerIds.push(
@@ -1489,6 +1501,7 @@ export async function dispatchForFile(
 			groupCount: groups.length,
 			kind: ctx.kind,
 			runners: allRunnerIds.join(","),
+			...(ctx.preEditCapture && { preEditCapture: true }),
 		},
 	});
 
@@ -1539,7 +1552,7 @@ export async function dispatchForFile(
 				"dispatchForFile requires an absolute ctx.filePath to key the delta baseline (refs #2489)",
 		});
 	}
-	const baselineAbsKey = `session.baseline.${ctx.filePath}`;
+	const baselineAbsKey = deltaBaselineFactKey(ctx.filePath);
 	const previousBaseline =
 		ctx.deltaMode && baselinePathSafe
 			? ctx.facts.getBoundedSessionFact<Diagnostic[]>(baselineAbsKey)
@@ -1582,19 +1595,45 @@ export async function dispatchForFile(
 	}
 	// #4484 round 7: a covered skip is a verdict only when the lane it defers
 	// to answered: its runner reached a verdict, and its server confirmed.
+	// #4509: a covered run read the bytes, so its verdict stands either way.
+	// Where its answering lane delivers one of its findings (same line and
+	// rule, at least as severe: `laneCopyStandsFor`), the lane's copy stands
+	// for it, so the one finding is listed once.
 	const voidedCovers = new Set<string>();
-	for (const { runnerId, lane } of coveredRunners) {
+	const laneCopyByRunner = new Map<string, (d: Diagnostic) => boolean>();
+	for (const { runnerId, lane, ran } of coveredRunners) {
 		const silent =
 			!answeredRunnerIds.has(lane.runnerId) ||
 			(lane.serverId !== undefined && inconclusiveServerIds.has(lane.serverId));
+		if (ran) {
+			if (silent) continue;
+			laneCopyByRunner.set(
+				runnerId,
+				laneCopyStandsFor(
+					allDiagnostics.flatMap((d) =>
+						d.runnerId === lane.runnerId &&
+						(lane.serverId === undefined || d.serverId === lane.serverId)
+							? [d]
+							: [],
+					),
+				),
+			);
+			continue;
+		}
 		if (!silent) continue;
 		voidedCovers.add(runnerId);
 		inconclusiveRunnerIds.add(runnerId);
 	}
+	const deliveredDiagnostics =
+		laneCopyByRunner.size === 0
+			? allDiagnostics
+			: allDiagnostics.flatMap((d) =>
+					laneCopyByRunner.get(d.runnerId ?? "")?.(d) ? [] : [d],
+				);
 
 	// Apply delta mode ONCE across the full diagnostic set.
 	// This avoids partial-baseline corruption when processing multiple groups.
-	const dedupedDiagnostics = dedupeOverlappingDiagnostics(allDiagnostics);
+	const dedupedDiagnostics = dedupeOverlappingDiagnostics(deliveredDiagnostics);
 	const fileContent =
 		ctx.facts.getFileFact<string>(ctx.filePath, "file.content") ?? "";
 	// Project rule policy (`.pi-lens.json` `rules.<id>.disable`/`select`).
@@ -1700,6 +1739,42 @@ export async function dispatchForFile(
 		);
 		visibleDiagnostics = promoteDeltaUnusedToBlockers(filtered.new);
 		resolvedCount = filtered.fixed.length;
+	}
+
+	// #4483: a blocking linter finding the file held before its first edit
+	// this session (the seed `tool_call` captured) is pre-existing: not a
+	// blocker, not held back, reported on its own. Matched by identity and
+	// line text, so it stays pre-existing when lines move; the seed shrinks to
+	// what this run still observes, or keeps entries of runners with no verdict.
+	const seedKey = preEditSeedFactKey(ctx.filePath);
+	const preEditSeed =
+		ctx.deltaMode && baselinePathSafe
+			? ctx.facts.getBoundedSessionFact<Diagnostic[]>(seedKey)
+			: undefined;
+	const seedContent = ctx.facts.getFileFact<string>(
+		ctx.filePath,
+		"file.content",
+	);
+	let preExisting: Diagnostic[] = [];
+	if (preEditSeed && seedContent !== undefined) {
+		const classified = classifyPreExisting(
+			preEditSeed,
+			[
+				...visibleDiagnostics.filter((d) => d.semantic === "blocking"),
+				...heldBackBlockers,
+			],
+			seedContent,
+			new Set(
+				[...answeredRunnerIds].filter((id) => !inconclusiveRunnerIds.has(id)),
+			),
+		);
+		if (classified.preExisting.length > 0) {
+			const held = new Set(classified.preExisting);
+			visibleDiagnostics = visibleDiagnostics.filter((d) => !held.has(d));
+			heldBackBlockers = heldBackBlockers.filter((d) => !held.has(d));
+			preExisting = classified.preExisting;
+		}
+		ctx.facts.setBoundedSessionFact(seedKey, classified.nextSeed);
 	}
 
 	// Persist full current snapshot for next run (not delta-filtered subset).
@@ -1820,6 +1895,11 @@ export async function dispatchForFile(
 			baselineWarningCount,
 			// #4484: blockers still observed that the delta did not call new.
 			heldBackBlockers: heldBackBlockers.length,
+			// #4483: whether a pre-edit seed was read, and the blocking linter
+			// findings it reported as pre-existing.
+			preEditSeed: preEditSeed !== undefined,
+			preExisting: preExisting.length,
+			...(ctx.preEditCapture && { preEditCapture: true }),
 			// #4484 r2: findings that only keep a recorded blocker pending, and
 			// the sources whose silence is no evidence.
 			stillObserved: stillObserved.length,
@@ -1840,6 +1920,7 @@ export async function dispatchForFile(
 		blockerOutput,
 		hasBlockers: blockers.length > 0,
 		...(heldBackBlockers.length > 0 && { heldBackBlockers }),
+		...(preExisting.length > 0 && { preExisting }),
 		...(stillObserved.length > 0 && { stillObserved }),
 		...(editScopedRunnerIds.some((id) => !voidedCovers.has(id)) && {
 			editScopedRunnerIds: editScopedRunnerIds.flatMap((id) =>

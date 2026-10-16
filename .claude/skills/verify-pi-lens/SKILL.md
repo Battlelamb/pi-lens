@@ -1,6 +1,6 @@
 ---
 name: verify-pi-lens
-description: Drive a built pi-lens through its real MCP or tool layer, with home and data dirs pinned under the lane TMPDIR, to verify LSP diagnostics with a real server (Pyrefly), the formatter, the review graph and rename_file, on the checkout or on any other commit. Use when a fix or review needs a real-path probe, not a mock, and a model run (scripts/run-harness.mjs) is too costly.
+description: Drive a built pi-lens through its real MCP or tool layer, with home and data dirs pinned under the lane TMPDIR, to verify LSP diagnostics with a real server (Pyrefly), didSave (clangd), the formatter, the review graph and rename_file, on the checkout or on any other commit. Use when a fix or review needs a real-path probe, not a mock, and a model run (scripts/run-harness.mjs) is too costly.
 ---
 
 # Verify pi-lens
@@ -128,6 +128,7 @@ verifies).
 | `features/rename-file.md` | `rename-file` (`into-missing-path`) |
 | `features/review-graph.md` | `review-graph` (`mcp-create-after-build`, `builder-incremental`) |
 | `features/formatter.md` | `formatter` (`python-ruff`) |
+| `features/did-save.md` | `lsp-did-save` (`analyze`) |
 
 Each file has the sections Sub-features, How to get to it (user POV), Driving it
 with the harness, and Gotchas. Add a feature file when a seam has no recipe, and

@@ -1,0 +1,6 @@
+---
+section: Fixed
+audience: user
+---
+
+- **A fixed ast-grep error no longer stays blocking after the ast-grep server starts (closes #4509)** — An error the built-in ast-grep check found before the ast-grep language server started could block for the rest of the session once fixed: after an edit on its line that the server missed, or after an edit too large to line up with the file's earlier version, the fix still read `🔴 Still unfixed`, and the `--lens-guard` commit gate stayed shut. The built-in check now re-checks the file while it holds such an error, so the fix clears it; where the server reports the same rule on the same line, its copy is listed once, also when a slow re-check settles later. Another rule the server reports on that line, or a weaker copy of the same rule, no longer hides the error or opens the commit gate. An error kept through an edit too large to line up no longer cites a line number from the old file, is no longer cleared because its old line now holds the same text in a comment, and is no longer dropped at turn end or when a slow re-check settles. A lone closing brace or other line with no letters or digits no longer turns an older, untouched finding into a new STOP.

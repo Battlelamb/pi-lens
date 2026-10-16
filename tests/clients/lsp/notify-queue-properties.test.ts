@@ -53,6 +53,7 @@ import {
 	closeDocument,
 	handleNotifyChange,
 	handleNotifyOpen,
+	handleNotifySave,
 } from "../../../clients/lsp/client.js";
 import { createMockState } from "./mock-client-state.js";
 
@@ -74,6 +75,8 @@ const PROPERTY_TIMEOUT_MS = 15_000;
 type Command =
 	| { t: "open"; stamp: number | undefined; saved: boolean; silent: boolean }
 	| { t: "change" }
+	// #3405 r1: `notify.save`, a save with no content push.
+	| { t: "save" }
 	| { t: "close" }
 	| { t: "gone" }
 	| { t: "back" }
@@ -91,6 +94,7 @@ const commandArb: fc.Arbitrary<Command> = fc.oneof(
 		}),
 	},
 	{ weight: 2, arbitrary: fc.constant({ t: "change" as const }) },
+	{ weight: 1, arbitrary: fc.constant({ t: "save" as const }) },
 	{ weight: 2, arbitrary: fc.constant({ t: "close" as const }) },
 	{ weight: 1, arbitrary: fc.constant({ t: "gone" as const }) },
 	{ weight: 1, arbitrary: fc.constant({ t: "back" as const }) },
@@ -127,6 +131,15 @@ interface Close {
 	rejected?: boolean;
 }
 
+interface SaveOnly {
+	id: number;
+	issuedAt: number;
+	/** Whether the server held a document when the save was issued. */
+	heldAtIssue: boolean;
+	settledAt?: number;
+	result?: boolean | "rejected";
+}
+
 interface WireMessage {
 	method: "didOpen" | "didChange" | "didClose" | "didSave";
 	text?: string;
@@ -141,6 +154,7 @@ type ServerDoc = { open: false } | { open: true; content: string };
 interface Run {
 	saveOptions: boolean;
 	touches: Touch[];
+	saves: SaveOnly[];
 	closes: Close[];
 	wire: WireMessage[];
 	/** Event-log positions of the model's `gone` / `back` commands. */
@@ -170,6 +184,7 @@ async function execute(
 	const run: Run = {
 		saveOptions,
 		touches: [],
+		saves: [],
 		closes: [],
 		wire: [],
 		gone: [],
@@ -271,6 +286,28 @@ async function execute(
 		);
 	};
 
+	const issueSave = (index: number) => {
+		const save: SaveOnly = {
+			id: index,
+			issuedAt: run.log.length,
+			heldAtIssue: serverDoc(run.wire).open,
+		};
+		run.saves.push(save);
+		note(`issue save#${index}`);
+		void handleNotifySave(state, FILE).then(
+			(sent) => {
+				save.result = sent;
+				save.settledAt = run.log.length;
+				note(`settle save#${index} -> ${sent}`);
+			},
+			() => {
+				save.result = "rejected";
+				save.settledAt = run.log.length;
+				note(`settle save#${index} -> rejected`);
+			},
+		);
+	};
+
 	const issueClose = (index: number) => {
 		const close: Close = { id: index, issuedAt: run.log.length };
 		run.closes.push(close);
@@ -296,6 +333,7 @@ async function execute(
 			builder: async () => {
 				if (command.t === "open" || command.t === "change")
 					issueTouch(command, index);
+				else if (command.t === "save") issueSave(index);
 				else if (command.t === "close") issueClose(index);
 				else if (command.t === "gone") {
 					fileExists = false;
@@ -320,6 +358,9 @@ async function execute(
 	// not awaited: bounded rounds, no timer.
 	const unsettled = () => [
 		...run.touches.filter((t) => t.result === undefined).map((t) => t.content),
+		...run.saves
+			.filter((v) => v.result === undefined)
+			.map((v) => `save#${v.id}`),
 		...run.closes
 			.filter((c) => c.settledAt === undefined && !c.rejected)
 			.map((c) => `close#${c.id}`),
@@ -364,6 +405,8 @@ function liveness(run: Run): string[] {
 	const out = run.unsettled.map((what) => `${what} never settled`);
 	for (const t of run.touches)
 		if (t.result === "rejected") out.push(`${t.content} rejected`);
+	for (const v of run.saves)
+		if (v.result === "rejected") out.push(`save#${v.id} rejected`);
 	for (const c of run.closes)
 		if (c.rejected) out.push(`close#${c.id} rejected`);
 	return out;
@@ -529,6 +572,26 @@ function saveSurvives(run: Run): string[] {
 			(m) => m.method === "didSave" && m.delivered && m.at > save.issuedAt,
 		);
 		if (!saved) out.push(`save of ${save.content} produced no didSave`);
+	}
+	// #3405 r1: a save with no content push is owed under the same conditions,
+	// judged only when the server held a document as it was issued (it saves
+	// what the server holds, or rides on a push still queued).
+	for (const save of run.saves) {
+		if (!save.heldAtIssue) continue;
+		const endedByClose = run.closes.some(
+			(c) => (c.settledAt ?? Number.POSITIVE_INFINITY) > save.issuedAt,
+		);
+		if (endedByClose) continue;
+		if (!serverDoc(run.wire).open) continue;
+		if (
+			!existsAt(run, save.issuedAt) ||
+			run.gone.some((g) => g > save.issuedAt)
+		)
+			continue;
+		const saved = run.wire.some(
+			(m) => m.method === "didSave" && m.delivered && m.at > save.issuedAt,
+		);
+		if (!saved) out.push(`save#${save.id} produced no didSave`);
 	}
 	return out;
 }

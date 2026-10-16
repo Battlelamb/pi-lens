@@ -1542,6 +1542,136 @@ describe("McpHarness.dispose tears down the server's process tree", () => {
 	);
 });
 
+/**
+ * #3405: a save-triggered server answers an MCP host. The fake server here
+ * declares `textDocumentSync.save` and publishes ONLY from its didSave branch,
+ * Expert's measured shape (it compiles on didSave and on nothing else), so the
+ * finding reaches the MCP result exactly when a save reached the server.
+ * Recurrences, each measured on the real MCP server with clangd 22.1.0:
+ * `pilens_analyze` (the route the PostToolUse hooks share) never declared its
+ * touch a save, and a cold `pilens_diagnostics` query lost its save to the
+ * debounce after its own unsaved sweep warm-up pushed the same bytes.
+ */
+describe("a save-triggered server through MCP (#3405)", { retry: 2 }, () => {
+	const SAVE_ONLY_MESSAGE = "diagnostic published only after didSave";
+
+	/** `cleanOnOpen`: the server also answers each didOpen/didChange with an
+	 *  empty publish, so a sweep warm-up sees a ready server; without it the
+	 *  server is silent until a save, Expert's measured shape. */
+	function saveOnlyWorkspace(prefix: string, cleanOnOpen = false) {
+		const env = setupTestEnvironment(prefix);
+		const trace = path.join(env.tmpDir, "save-server.trace");
+		const shim = path.join(env.tmpDir, "save-server.mjs");
+		fs.writeFileSync(
+			shim,
+			[
+				'process.env.FAKE_LSP_SAVE = "true";',
+				'process.env.FAKE_LSP_PUBLISH_ON_SAVE = "1";',
+				'process.env.FAKE_LSP_NO_DIAGNOSTIC_PROVIDER = "1";',
+				...(cleanOnOpen
+					? ['process.env.FAKE_LSP_PUBLISH_SEQUENCE = "empty";']
+					: []),
+				`process.env.FAKE_LSP_TRACE_FILE = ${JSON.stringify(trace)};`,
+				`await import(${JSON.stringify(new URL("../fixtures/fake-lsp-server.mjs", import.meta.url).href)});`,
+				"",
+			].join("\n"),
+		);
+		fs.writeFileSync(path.join(env.tmpDir, ".luarc.json"), "{}\n");
+		fs.mkdirSync(path.join(env.tmpDir, ".pi-lens"), { recursive: true });
+		fs.writeFileSync(
+			path.join(env.tmpDir, ".pi-lens", "lsp.json"),
+			JSON.stringify({
+				servers: {
+					emmylua: {
+						name: "save-only server",
+						extensions: [".lua"],
+						command: process.execPath,
+						args: [shim],
+						rootMarkers: [".luarc.json"],
+					},
+				},
+				disabledServers: ["lua", "ast-grep", "typos", "opengrep"],
+			}),
+		);
+		const file = path.join(env.tmpDir, "probe.lua");
+		fs.writeFileSync(file, "local value = 1\n");
+		/** Every document notification the server received, by method. */
+		const wire = () =>
+			fs.existsSync(trace)
+				? fs
+						.readFileSync(trace, "utf8")
+						.split("\n")
+						.flatMap(
+							(line) =>
+								/^recv textDocument\/(did\w+) /.exec(line)?.slice(1, 2) ?? [],
+						)
+				: [];
+		const saves = () => wire().filter((method) => method === "didSave");
+		return { env, file, saves, wire };
+	}
+
+	it("pilens_analyze returns the finding a save-only server publishes", async () => {
+		const { env, file, wire } = saveOnlyWorkspace("pi-lens-mcp-save-analyze-");
+		const child = new McpHarness({ cwd: env.tmpDir });
+		try {
+			// Default flags, so the auxiliary profiles stay on and the dispatch
+			// runner touches with scope "with-auxiliary" after the analysis's
+			// "primary" push. #3405 r2: the debounce key carried the scope, so the
+			// runner re-pushed the same bytes after the save and cleared the
+			// finding this server (silent on a change) had published.
+			const res = await child.request(3405, "tools/call", {
+				name: "pilens_analyze",
+				arguments: { file, mode: "warm" },
+			});
+			const text = (res.result as { content: { text: string }[] }).content[0]
+				.text;
+			expect(wire(), "one push, one save, no re-push").toEqual([
+				"didOpen",
+				"didSave",
+			]);
+			expect(text).toContain(SAVE_ONLY_MESSAGE);
+		} finally {
+			child.dispose();
+			env.cleanup();
+		}
+	}, 60_000);
+
+	it("a cold pilens_diagnostics query saves after its own warm-up pushed the same bytes", async () => {
+		const { env, file, saves } = saveOnlyWorkspace(
+			"pi-lens-mcp-save-query-",
+			true,
+		);
+		const child = new McpHarness({ cwd: env.tmpDir });
+		try {
+			const query = () =>
+				child.request(3406, "tools/call", {
+					name: "pilens_diagnostics",
+					arguments: {
+						source: "lsp",
+						scope: "paths",
+						paths: [file],
+						serverScope: "primary",
+						waitMs: 3000,
+						severity: "all",
+					},
+				});
+			await query();
+			expect(saves(), "the server heard a save").toHaveLength(1);
+			// The empty publish for the re-push and the save's finding race inside
+			// the first answer; a repeat query of the same bytes sends nothing
+			// (debounced) and reads what the save produced.
+			const res = await query();
+			const text = (res.result as { content: { text: string }[] }).content[0]
+				.text;
+			expect(saves(), "one save per bytes").toHaveLength(1);
+			expect(text).toContain(SAVE_ONLY_MESSAGE);
+		} finally {
+			child.dispose();
+			env.cleanup();
+		}
+	}, 60_000);
+});
+
 // #4300: the real MCP child must not inherit pi's absent-host trust policy.
 // Real transport and process are required: in-process setters cannot witness startup.
 describe("non-pi workspace trust (#4300)", () => {

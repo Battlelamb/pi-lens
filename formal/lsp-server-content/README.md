@@ -8,6 +8,7 @@ job (`node scripts/check-tla-models.mjs`) checks every config against it.
 
 Issues: #3480 (the debounce fingerprint), #3481 (the stale cascade touch),
 #4493 (the HEAD-move resync, `HeadMoveResync.tla` and `HeadMoveHookBound.tla`,
+below), #4507 (the order of one bash command's writes, `BashWriteOrder.tla`,
 below).
 
 ## What the model covers
@@ -354,3 +355,38 @@ TLC 1.7.4, one worker.
 the look; the look sends `P d1` and stalls at `X d1`; the bound returns E;
 E reads the primary with `d2` stale. This is the live F1 run.
 
+## The order of one bash command's writes (#4507)
+
+`BashWriteOrder.tla`: a command rewrites a held dependency `z` and a held
+dependent `a` that imports a name the command adds to `z`. The tool_result
+dispatches each written file in turn, in either order; a dispatch sends its
+file and reads the primary's check of it, which reads every held view.
+`WritesPrimaryFirst` TRUE is the #4507 fix: the written held documents go to
+the primary first, one at a time (`sendToHeldPrimaries`). `DispatchWaitsPhase`
+TRUE is the #4528 r1 F1 fix: the dispatch loop waits for that phase under the
+edit budget. FALSE is round 1, where a 500 ms bound could end the wait
+(`PhaseCut`) while the phase still sent, and the dependent was checked before
+the dependency's new bytes went out. A primary may wedge at any time (`Wedge`):
+its views stop changing and it answers no check. Under `DispatchWaitsPhase`
+only a wedged primary outlasts the wait (`EditCut`); the model assumes a live
+primary takes the capped sends inside the edit budget.
+
+- `NoPhantomFinding`: no dispatch checks a file against a held document's old
+  bytes.
+- `SettledFresh`: once the result is done, a live primary holds the disk
+  bytes.
+
+| Config | Expect | TLC | States |
+|---|---|---|---|
+| `BashWriteFix` | pass | pass | 62 |
+| `BashWritePreFix` | violated NoPhantomFinding (before #4507) | violated | 6 |
+| `BashWritePhaseCut` | violated NoPhantomFinding (#4528 r1, the 500 ms cut) | violated | 15 |
+
+Round 3 (#4528): `ReplyOrdering` distinguishes measured single-task replies
+from replies that may overtake queued didChanges. `RequireOrderedDrain` keeps
+the latter phases undrained; `DrainProven` requires every claimed drain to
+follow the reads. `BashWriteThreaded` checks that invariant;
+`BashWriteThreadedPreFix` disables the guard and expects a violation.
+Dispatch still runs after an undrained phase, so those configs do not claim
+`NoPhantomFinding`. TLC was not run locally in round 3 (java unavailable);
+the previous state counts above have not been remeasured.

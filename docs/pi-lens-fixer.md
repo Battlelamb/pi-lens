@@ -32,6 +32,13 @@ exports change.
 - When a gate becomes fail-closed, sweep every construction site that reaches
   it, test doubles included, and prove the sweep with the behaviour suites
   (#3622).
+- A new module, or a new use of a detection or caching primitive (stat,
+  mtime, inode, content or line hash, directory walk, install stamp, sequence
+  counter), lists the existing modules that use the same primitive for the
+  same purpose. Find them by searching for the primitive, such as
+  `rg -l 'statSync|mtimeMs|createHash|readdir|projectSeq' clients`, never by
+  your own seam's call names. The consolidation verdict cites that list
+  (#4536).
 - A change on a lifecycle, timing, or identity seam extends or adds a TLA+
   model in this step (#3802; the rule itself is in `AGENTS.md`). Find the
   family in `formal/coverage-map.json`, write the invariant the change

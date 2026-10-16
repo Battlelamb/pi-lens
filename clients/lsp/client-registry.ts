@@ -779,6 +779,48 @@ export class ClientRegistry {
 		this.idleEvictionTimers.set(key, timer);
 	}
 
+	/**
+	 * #4476: retire and shut down the live primary clients whose root contains
+	 * `root` or lies under it, after a dependency install there. The install
+	 * rewrote files no watched-files event can name one by one, and a server
+	 * that caches closed files (TypeScript 7's native server, measured) keeps
+	 * the old declarations until it restarts. Auxiliary scanners resolve no
+	 * dependencies and stay: a cold one answered the next dispatch late, and
+	 * the installing bash result lost its other files' results (live probe).
+	 * The idle-eviction sequence: the cold state is published before the
+	 * awaited shutdown, so a touch arriving meanwhile waits on the spawn gate
+	 * and gets a fresh client, which reads the new files. Shutdown is
+	 * best-effort, as on every eviction path: the client is already retired,
+	 * so a failed one leaves no stale view behind. Answers the retired keys.
+	 */
+	async restartPrimaryClientsUnder(root: string): Promise<string[]> {
+		const rootKey = normalizeMapKey(root);
+		const overlaps = (clientRoot: string) =>
+			clientRoot === rootKey ||
+			clientRoot.startsWith(`${rootKey}/`) ||
+			rootKey.startsWith(`${clientRoot}/`);
+		return this.withClientSpawnGate(async () => {
+			if (this.isDestroyed) return [];
+			const victims: Array<[string, LSPClientInfo]> = [];
+			for (const [key, client] of this.clients) {
+				const { serverId, root: clientRoot } = parseClientKey(key);
+				if (
+					client.isAlive() &&
+					!isAuxiliary(getServerById(serverId)) &&
+					overlaps(clientRoot)
+				)
+					victims.push([key, client]);
+			}
+			for (const [key] of victims) this.retireClient(key);
+			await Promise.all(
+				victims.map(([, client]) =>
+					client.shutdown({ reason: "dependency_change" }).catch(() => {}),
+				),
+			);
+			return victims.map(([key]) => key);
+		});
+	}
+
 	private recordBreaker(key: string, reason: string): void {
 		recordDegradationOnce({ kind: "lsp-breaker", subject: key, reason });
 	}

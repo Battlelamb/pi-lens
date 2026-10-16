@@ -1396,7 +1396,7 @@ const EXEMPT_SITES: Readonly<Record<string, SweepExemption>> = {
 			"line-granular scan cannot see a caller's bound.",
 		owner: "#4493",
 	},
-	"clients/runtime-tool-result.ts#lookAtHead:5dd0ee41~1af701ab": {
+	"clients/runtime-tool-result.ts#lookAtHead:6ea98e35~6fe2f153": {
 		family: "hook-await",
 		site: "tool_result_read_only",
 		reason:
@@ -1418,17 +1418,6 @@ const EXEMPT_SITES: Readonly<Record<string, SweepExemption>> = {
 			"line-granular scan cannot see a caller's bound.",
 		owner: "#4493",
 	},
-	"clients/runtime-tool-result.ts#lookAtHead:c4c6636f~a805713d": {
-		family: "hook-await",
-		site: "tool_result_read_only",
-		reason:
-			"Inside `lookAtHead`, the body of `resyncHeadMove` (#4493). Both " +
-			"callers await it under bounded() with the read-only tool_result " +
-			"budget and the hook's signal (the bash tool_result and the " +
-			"tool_call look), so this await is bounded one frame up; the " +
-			"line-granular scan cannot see a caller's bound.",
-		owner: "#4493",
-	},
 	"clients/runtime-tool-result.ts#lookAtHead:cf85f0b1~e6bbc8fb": {
 		family: "hook-await",
 		site: "tool_result_read_only",
@@ -1440,16 +1429,63 @@ const EXEMPT_SITES: Readonly<Record<string, SweepExemption>> = {
 			"line-granular scan cannot see a caller's bound.",
 		owner: "#4493",
 	},
-	"clients/runtime-tool-result.ts#lookAtHead:f0b9e5ad~fbd4d23c": {
+	"clients/runtime-tool-result.ts#resyncHeadMove:13eb8d0a~539bb4dc": {
 		family: "hook-await",
 		site: "tool_result_read_only",
 		reason:
-			"Inside `lookAtHead`, the body of `resyncHeadMove` (#4493). Both " +
-			"callers await it under bounded() with the read-only tool_result " +
-			"budget and the hook's signal (the bash tool_result and the " +
-			"tool_call look), so this await is bounded one frame up; the " +
-			"line-granular scan cannot see a caller's bound.",
-		owner: "#4493",
+			"The body of `resyncHeadMove` (#4476, #4493): both callers (the " +
+			"bash tool_result and the tool_call look) await it under bounded() " +
+			"with the read-only tool_result budget and the hook's signal, so " +
+			"this await is bounded one frame up; the line-granular scan cannot " +
+			"see a caller's bound.",
+		owner: "#4476",
+	},
+	"clients/runtime-tool-result.ts#resyncHeadMove:301d8f0a~1bf32683": {
+		family: "hook-await",
+		site: "tool_result_read_only",
+		reason:
+			"The body of `resyncHeadMove` (#4476, #4493): both callers (the " +
+			"bash tool_result and the tool_call look) await it under bounded() " +
+			"with the read-only tool_result budget and the hook's signal, so " +
+			"this await is bounded one frame up; the line-granular scan cannot " +
+			"see a caller's bound.",
+		owner: "#4476",
+	},
+	"clients/runtime-tool-result.ts#sendToHeldPrimaries:48fdd1b8~35660cb8": {
+		family: "hook-await",
+		site: "tool_result_edit",
+		reason:
+			"Inside `sendToHeldPrimaries` (#4493, #4507): its two callers are " +
+			"`lookAtHead`, bounded one frame up through `resyncHeadMove`, and " +
+			"the bash tool_result's primary phase, which awaits it under " +
+			"bounded() with the edit budget (#4528 r1 F1) and " +
+			"ToolResultDeps.signal; the line-granular scan cannot see a " +
+			"caller's bound.",
+		owner: "#4507",
+	},
+	"clients/runtime-tool-result.ts#sendToHeldPrimaries:c4c6636f~a805713d": {
+		family: "hook-await",
+		site: "tool_result_edit",
+		reason:
+			"Inside `sendToHeldPrimaries` (#4493, #4507): its two callers are " +
+			"`lookAtHead`, bounded one frame up through `resyncHeadMove`, and " +
+			"the bash tool_result's primary phase, which awaits it under " +
+			"bounded() with the edit budget (#4528 r1 F1) and " +
+			"ToolResultDeps.signal; the line-granular scan cannot see a " +
+			"caller's bound.",
+		owner: "#4507",
+	},
+	"clients/runtime-tool-result.ts#sendToHeldPrimaries:f0b9e5ad~9c757531": {
+		family: "hook-await",
+		site: "tool_result_edit",
+		reason:
+			"Inside `sendToHeldPrimaries` (#4493, #4507): its two callers are " +
+			"`lookAtHead`, bounded one frame up through `resyncHeadMove`, and " +
+			"the bash tool_result's primary phase, which awaits it under " +
+			"bounded() with the edit budget (#4528 r1 F1) and " +
+			"ToolResultDeps.signal; the line-granular scan cannot see a " +
+			"caller's bound.",
+		owner: "#4507",
 	},
 	"clients/runtime-turn.ts#handleTurnEnd:156451e5~bf99fb9e": {
 		family: "hook-await",
@@ -2265,7 +2301,11 @@ const HELPER_UNBOUNDED: Readonly<Record<string, number>> = {
 	// carries its own 1000 ms deadline as an argument (the client resolves it
 	// on timeout); a bounded() race around it would add a second timer for the
 	// same deadline.
-	"clients/dispatch/integration.ts": 21,
+	// 21 -> 22 (#4483): `capturePreEditLinterFindings` awaits its linter-only
+	// `dispatchForFile`; its only hook caller, the tool_call capture, holds it
+	// under bounded() with ctx.signal and PRE_EDIT_CAPTURE_BUDGET_MS, so a
+	// second bound here would add a timer for the same deadline.
+	"clients/dispatch/integration.ts": 22,
 	// 2 → 3 (#4484 review F5): `settlePendingRunnerFindingsForTests` awaits
 	// the store's runs so a test joins a collect-later settle without polling.
 	// Only tests call it; no hook handler reaches it.
@@ -2494,6 +2534,12 @@ const HELPER_UNBOUNDED: Readonly<Record<string, number>> = {
 	// in listGitHeadDelta, each with its own spawn timeout; both run inside
 	// the HEAD look its hook callers bound with bounded().
 	"clients/opaque-mutation-scan.ts": 12,
+	// #4476: new to the one-hop set. The out-of-band look: the root listing
+	// and the stat of each install stamp it holds, the declaration walk's
+	// directory reads and stats, the per-root chain, and the restart of a
+	// root's primary clients. It runs only inside the HEAD look, which both
+	// hook callers bound with bounded().
+	"clients/out-of-band-changes.ts": 9,
 	"clients/package-manager.ts": 8,
 	"clients/partial-edit-apply.ts": 2,
 	"clients/performance-report.ts": 8,
@@ -2722,6 +2768,12 @@ const BOUNDED_CALL_SITES: Readonly<Record<string, string>> = {
 	"call:clients/runtime-agent-end.ts#handleAgentEnd:fc644b89~93eae0ad":
 		"The deferred formatter drain receives AgentEndDeps.signal, or the " +
 		"ambient signal in a standalone harness; agent_settled bounds the wait.",
+	"call:clients/runtime-tool-call.ts#handleToolCallImpl:2dc2d1e2~ce33f035":
+		"The pre-edit linter capture (#4483) uses the tool_call's ctx.signal, " +
+		"absent only in a harness. #2523 gives tool_call no budget of its own, " +
+		"so the capture carries PRE_EDIT_CAPTURE_BUDGET_MS (500 ms, measured " +
+		"in the PR); that wall bound is always live, and a capture it abandons " +
+		"installs nothing once the host has written.",
 	"call:clients/runtime-tool-call.ts#handleToolCallImpl:c06d5cf4~a6535d16":
 		"The HEAD-move look before a tool runs (#4493) uses the tool_call's " +
 		"ctx.signal, absent only in a harness. #2523 gives tool_call no budget " +
@@ -2733,23 +2785,30 @@ const BOUNDED_CALL_SITES: Readonly<Record<string, string>> = {
 	"call:clients/runtime-tool-result.ts#handleToolResult:19412575~b4f8a98d":
 		"Observed tool analysis uses ToolResultDeps.signal and the edit budget; " +
 		"a missing signal is an explicit standalone-harness case.",
-	"call:clients/runtime-tool-result.ts#handleToolResult:19412575~c3186ef7":
-		"The HEAD-move look on a bash tool_result (#4493) uses " +
-		"ToolResultDeps.signal and the read-only budget, which index.ts gives " +
-		"a tool_result that names no written file; a missing signal is an " +
-		"explicit standalone-harness case.",
 	"call:clients/runtime-tool-result.ts#handleToolResult:2b57f8b9~b4f8a98d":
 		"The classified bootstrap demand uses ToolResultDeps.signal and the " +
 		"edit budget; a missing signal is an explicit harness case.",
 	"call:clients/runtime-tool-result.ts#handleToolResult:464d2ad3~b4f8a98d":
 		"Observed duplicate-claim joins use the same ToolResultDeps.signal and " +
 		"edit budget; the local alias keeps this call site distinct for the sweep.",
+	"call:clients/runtime-tool-result.ts#handleToolResult:861069ce~b4f8a98d":
+		"The HEAD-move look on a bash tool_result (#4493) uses " +
+		"ToolResultDeps.signal and the edit budget, as the bash-write primary " +
+		"phase does (#4528 r4: the read-only bound cut a slow primary " +
+		"mid-send); a missing signal is an explicit standalone-harness case.",
 	"call:clients/runtime-tool-result.ts#handleToolResult:8f7626bd~b4f8a98d":
 		"Each observed changed-file analysis uses ToolResultDeps.signal and the " +
 		"edit budget; the local alias keeps this call site distinct for the sweep.",
 	"call:clients/runtime-tool-result.ts#handleToolResult:b9faf573~b4f8a98d":
 		"Classified pipeline analysis uses ToolResultDeps.signal and the edit " +
 		"budget; a missing signal is an explicit standalone-harness case.",
+	"call:clients/runtime-tool-result.ts#handleToolResult:ef8fdef7~b4f8a98d":
+		"The primary phase of a bash tool_result's written files (#4507) uses " +
+		"ToolResultDeps.signal (aliased so this site keys apart from the HEAD " +
+		"look's) and the edit budget, which its dispatches already run under " +
+		"(#4528 r1 F1: a 500 ms cut let a dependent be checked before its " +
+		"dependency was sent); a missing signal is an explicit " +
+		"standalone-harness case.",
 	"call:clients/runtime-turn.ts#handleTurnEnd:2b57f8b9~67c7ff0d":
 		"`deps.signal` — the live `turn_end` ctx.signal in the pi host, threaded " +
 		"through `TurnEndDeps`, and the SAME optionality as the secrets lane's " +

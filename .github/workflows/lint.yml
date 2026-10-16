@@ -290,12 +290,19 @@ jobs:
           config="$(npm run lint:js:advisory --silent -- --print-config 2>/dev/null || true)"
           rules="$(printf '%s\n' "$config" | node scripts/count-oxlint-rules.mjs)"
           rules="${rules:-0}"
-          if [ "$rules" -lt "$RULE_FLOOR" ]; then
+          # The count-vs-floor compare is the shared helper's (#4518); its exit
+          # status is the verdict, and the diagnosis below names the likely cause.
+          if ! node scripts/assert-evaluated.mjs --count "oxlint-rules=${rules}" --floor "$RULE_FLOOR"; then
             echo "::error::oxlint advisory ran with only $rules rules (floor $RULE_FLOOR) -- oxlint-tsgolint is likely missing or --type-aware silently degraded; this is NOT the same as a clean or lightly-findinged run"
             exit 1
           fi
           exit 0
 
+  # No floor (#4518): jscpd's exit code is the whole verdict (threshold 1) and
+  # its input is four fixed in-repo paths. Probed: a missing path exits 1, but a
+  # path whose files the `.jscpd.json` format and ignore filters all drop prints
+  # "analyzed no files" and exits 0. The paths hold 500+ tracked sources today,
+  # so only a config edit can empty the scan; the row is the reader.
   jscpd:
     name: jscpd (advisory)
     continue-on-error: true
@@ -341,8 +348,13 @@ jobs:
       - name: Download core tree-sitter grammars
         run: node scripts/download-grammars.js --core --dest grammars
       - run: npm run build
+      # The script fails below its analysed-files floor (#4518). `set -o
+      # pipefail` is load-bearing: the default shell has none, so `| tee` would
+      # take tee's exit code and a script that crashed would read green.
       - name: Generate complexity report
-        run: node scripts/complexity-report.mjs | tee complexity-report.txt
+        run: |
+          set -o pipefail
+          node scripts/complexity-report.mjs | tee complexity-report.txt
       - name: Publish complexity report
         if: always()
         run: cat complexity-report.txt >> "$GITHUB_STEP_SUMMARY"
@@ -353,6 +365,12 @@ jobs:
           path: reports/complexity/complexity.md
           if-no-files-found: ignore
 
+  # No floor (#4518): this job only publishes the two tsc counts. They are
+  # pinned by the gating tests/config/strictness-ratchet.test.ts, which runs the
+  # same two configurations and reds on exit 0, zero diagnostics or any drift,
+  # so a tsc that evaluated nothing reds the Unit lane, not this row. The report
+  # step still carries `set -o pipefail`: the default shell has none, and a
+  # script that crashed behind `| tee` would otherwise read green.
   strictness:
     name: strictness (advisory)
     continue-on-error: true
@@ -374,11 +392,16 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Generate strictness report
-        run: node scripts/strictness-report.mjs | tee strictness-report.txt
+        run: |
+          set -o pipefail
+          node scripts/strictness-report.mjs | tee strictness-report.txt
       - name: Publish strictness report
         if: always()
         run: cat strictness-report.txt >> "$GITHUB_STEP_SUMMARY"
 
+  # No floor (#4518): the file list is `git ls-files` of a checkout of this
+  # repo, and yamllint with an empty list exits 2 (usage), so an empty
+  # population reds the row instead of reading clean. The row is the reader.
   yamllint:
     name: yamllint (advisory)
     continue-on-error: true
@@ -403,6 +426,9 @@ jobs:
           mapfile -t yaml_files < <(git ls-files '*.yml' '*.yaml')
           yamllint "${yaml_files[@]}"
 
+  # No floor (#4518): crate-ci/typos walks the checkout and exits non-zero on
+  # any finding or error; the population is the repo itself and cannot be
+  # empty. The row is the reader.
   typos:
     name: typos (advisory)
     continue-on-error: true
@@ -421,6 +447,11 @@ jobs:
         with:
           args: --force-exclude
 
+  # No floor (#4518): `npm run taplo` feeds `git ls-files '*.toml'` (39 files
+  # today) to taplo. Probed: `taplo check` on a pattern or file that matches
+  # nothing logs "found files total=0" and exits 0, so only a pathspec edit can
+  # empty the check; it exits non-zero on a parse error or a format drift. The
+  # row is the reader.
   taplo:
     name: taplo (advisory)
     continue-on-error: true

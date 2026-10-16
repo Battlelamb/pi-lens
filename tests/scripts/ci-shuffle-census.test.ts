@@ -876,6 +876,17 @@ describe("judgeCensus", () => {
 		);
 	});
 
+	// Recurrence #4518: the planned-start check delegates to assertEvaluated,
+	// which rejects a floor of 0; an empty plan (nothing planned, nothing
+	// missing) must stay a clean judgement, not a TypeError.
+	it("judges an empty plan clean instead of throwing", () => {
+		const verdict = judgeCensus({ records: [], ratchet: [], planned: [] });
+		expect(verdict.code).toBe(0);
+		expect(verdict.lines.some((line) => line.startsWith("not run:"))).toBe(
+			false,
+		);
+	});
+
 	// Recurrence: a hung or uncollected start proves nothing about its files.
 	it("is unproven when a start timed out or was never collected", () => {
 		for (const verdict of ["timeout", "uncollected"] as const) {

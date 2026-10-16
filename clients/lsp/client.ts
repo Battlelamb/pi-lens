@@ -362,6 +362,17 @@ export interface LSPClientInfo {
 		): Promise<boolean | void>;
 		change(filePath: string, content: string): Promise<boolean | void>;
 		/**
+		 * #3405: send `textDocument/didSave` for the bytes this client last sent
+		 * for `filePath`, with no content push. For a touch whose push the
+		 * service debounced (the server already holds these bytes) but whose
+		 * caller declared a save the earlier push did not carry. Queued per path
+		 * behind any unsent push, which then carries the save instead; gated like
+		 * every save (`save` declared, document open). Resolves `false` when
+		 * nothing left for this entry. Optional so client doubles need not
+		 * implement it.
+		 */
+		save?(filePath: string): Promise<boolean>;
+		/**
 		 * #1668: queue a `workspace/didChangeWatchedFiles` entry for a disk
 		 * change this client did not learn about through didOpen/didChange —
 		 * an external bash write/delete outside the open-document sync path.
@@ -370,6 +381,12 @@ export interface LSPClientInfo {
 		 * a burst of external changes still flushes as one notification.
 		 */
 		watchedFileChange(filePath: string, type: number): void;
+		/**
+		 * #4476: send the queued watched-files changes now, so a check that
+		 * follows is answered by a server that has re-read the files. Optional
+		 * for test doubles.
+		 */
+		flushWatched?(): void;
 		/**
 		 * #4320: queue Created for each existing path that is new to this server
 		 * and not yet announced to it, then send any waiting Created now. A read
@@ -4438,18 +4455,21 @@ async function sendDidSave(
 async function sendDidSaveForHeldDocument(
 	state: LSPClientState,
 	normalizedPath: string,
-): Promise<void> {
-	if (!state.saveOptions || !isClientAlive(state)) return;
-	if (!state.openDocuments.has(normalizedPath)) return;
+): Promise<boolean> {
+	if (!state.saveOptions || !isClientAlive(state)) return false;
+	if (!state.openDocuments.has(normalizedPath)) return false;
 	const uri = state.openDocumentUris?.get(normalizedPath);
-	if (uri === undefined) return;
+	if (uri === undefined) return false;
 	expectSaveRescan(state, normalizedPath);
 	try {
-		await safeSendNotification(state.connection, "textDocument/didSave", {
-			textDocument: { uri },
-		});
+		return await safeSendNotification(
+			state.connection,
+			"textDocument/didSave",
+			{ textDocument: { uri } },
+		);
 	} catch {
 		// A failed save notify must not stop the queue runner.
+		return false;
 	}
 }
 
@@ -4651,6 +4671,13 @@ function enqueueDocumentNotify(
 	saved = false,
 	readStamp?: number,
 	close = false,
+	/**
+	 * #3405: a save with no content (`handleNotifySave`). It never replaces a
+	 * pending entry: it hands that entry its save and keeps the entry's run,
+	 * stamp and count, as a stale read does, so the bytes the server ends with
+	 * cannot change.
+	 */
+	saveOnly = false,
 ): Promise<boolean> {
 	let queue = state.notifyChangeQueues.get(normalizedPath);
 	if (!queue) {
@@ -4683,7 +4710,9 @@ function enqueueDocumentNotify(
 			a !== undefined && b !== undefined && a < b;
 		const stale =
 			previous !== undefined &&
-			(before(readStamp, previous.readStamp) || before(readStamp, lastSent));
+			(saveOnly ||
+				before(readStamp, previous.readStamp) ||
+				before(readStamp, lastSent));
 		// #3544: a pending stamp older than the last send belongs to bytes the
 		// runner drops; an unstamped replacement must not inherit it.
 		const heldStamp = before(previous?.readStamp, lastSent)
@@ -4693,7 +4722,9 @@ function enqueueDocumentNotify(
 		queue!.pending = {
 			run: stale ? previous!.run : run,
 			waiters,
-			coalescedCount: (previous?.coalescedCount ?? 0) + (previous ? 1 : 0),
+			// A save-only entry coalesces no content send.
+			coalescedCount:
+				(previous?.coalescedCount ?? 0) + (previous && !saveOnly ? 1 : 0),
 			saved: saved || previous?.saved === true,
 			// An unstamped replacement cannot say how old its bytes are; keeping the
 			// pending stamp keeps an older read arriving next out (#3481 round 1).
@@ -4764,6 +4795,28 @@ function cancelDocumentNotifyQueues(state: LSPClientState): void {
 		queue.pending = undefined;
 	}
 	state.notifyChangeQueues.clear();
+}
+
+/**
+ * #3405: `notify.save` — a didSave for the document this client holds, with no
+ * content push (see the interface doc). Text never rides along: by the time
+ * the entry runs, a push queued before it may have replaced the bytes the
+ * caller read, and `text` is optional in `DidSaveTextDocumentParams`.
+ */
+export function handleNotifySave(
+	state: LSPClientState,
+	filePath: string,
+): Promise<boolean> {
+	const normalizedPath = normalizeMapKey(filePath);
+	return enqueueDocumentNotify(
+		state,
+		normalizedPath,
+		() => sendDidSaveForHeldDocument(state, normalizedPath),
+		true,
+		undefined,
+		false,
+		true,
+	);
 }
 
 export function handleNotifyOpen(
@@ -6386,8 +6439,14 @@ export async function createLSPClient(options: {
 			async change(filePath, content) {
 				return handleNotifyChange(state, filePath, content);
 			},
+			save(filePath) {
+				return handleNotifySave(state, filePath);
+			},
 			watchedFileChange(filePath, type) {
 				handleNotifyExternalChange(state, filePath, type);
+			},
+			flushWatched() {
+				if (isClientAlive(state)) state.watchQueue.flush();
 			},
 			announceCreated(entries) {
 				handleAnnounceCreated(state, entries);

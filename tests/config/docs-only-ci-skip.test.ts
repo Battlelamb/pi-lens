@@ -301,7 +301,7 @@ describe("#3801 docs-only pull requests skip only the heavy advisory jobs", () =
 			docs.changes,
 			docs.results,
 		);
-		expect(docsSteps["ubuntu-latest"]).toHaveLength(total - 1); // the macOS-only APFS step
+		expect(docsSteps["ubuntu-latest"]).toHaveLength(total - 2); // the macOS-only APFS step and its evaluated floor (#4518)
 		expect(docsSteps["macos-latest"]).toHaveLength(total);
 	});
 

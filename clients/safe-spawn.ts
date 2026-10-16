@@ -14,6 +14,7 @@
  * - To: await safeSpawnAsync(cmd, args, opts)
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
 	type ChildProcess,
 	type SpawnOptions,
@@ -1459,6 +1460,9 @@ const SPAWN_SAMPLER_TEARDOWN_GRACE_MS = 5_000;
 // ASYNC VERSION (Recommended - Non-blocking)
 // ============================================================================
 
+/** Capture-local cancellation; async context prevents interference with concurrent dispatch. */
+export const spawnAbortScope = new AsyncLocalStorage<AbortSignal>();
+
 /**
  * Async spawn with timeout and proper process cleanup.
  *
@@ -1514,9 +1518,14 @@ export async function safeSpawnAsync(
 	// Fall back to the current turn's ambient signal (set from ctx.signal) so an
 	// Esc/abort mid-turn cancels dispatches that didn't thread a signal of their
 	// own — unless the caller opts out (installs, which must run to completion).
-	const abortSignal =
+	const callerSignal =
 		options?.signal ??
 		(options?.ignoreAmbientSignal ? undefined : ambientAbortSignal);
+	const scopedSignal = spawnAbortScope.getStore();
+	const abortSignal =
+		scopedSignal && callerSignal
+			? AbortSignal.any([scopedSignal, callerSignal])
+			: (scopedSignal ?? callerSignal);
 
 	return new Promise((resolve) => {
 		// Check for early abort

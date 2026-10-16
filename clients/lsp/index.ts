@@ -651,12 +651,16 @@ export interface LSPTouchFileOptions {
 	 * #3405: this touch's content IS the file's saved on-disk state and the
 	 * caller wants that file diagnosed now, so each server whose
 	 * `textDocumentSync.save` asked for it gets a `textDocument/didSave` after
-	 * its content notification lands. Three callers set it, each one-file and
+	 * its content notification lands. Four callers set it, each one-file and
 	 * caller-initiated: the post-write sync (`clients/pipeline.ts`
 	 * `resyncLspFile`), the held-only resync of a file the deferred drain wrote
 	 * (`resyncHeldLspDocument`, #3828 r3: through the drift queue, for that one
-	 * path only) and the explicit `lsp_diagnostics` query
-	 * (`tools/lsp-diagnostics.ts`). Warm-ups, cascade neighbour reads, the drift
+	 * path only), the explicit `lsp_diagnostics` query
+	 * (`tools/lsp-diagnostics.ts`) and the MCP analysis's first touch
+	 * (`clients/mcp/analyze.ts` `warmLspForFile`, the route of the MCP hosts'
+	 * post-write hooks and `pilens_analyze`). When a recent unsaved push of the
+	 * same bytes debounces a saved touch, the save goes alone
+	 * (`saveDebouncedPush`). Sweep warm-ups, cascade neighbour reads, the drift
 	 * backstop's own resyncs, the importers a Git-change resync adds and the
 	 * workspace sweep deliberately leave it unset — a save is a
 	 * recompile trigger on a save-triggered server (Expert schedules a whole
@@ -1229,7 +1233,7 @@ export class LSPService {
 	>();
 	/**
 	 * Touch-debounce record of "this server already has this content", keyed
-	 * "normalizedFilePath:clientScope:serverId".
+	 * "normalizedFilePath:serverId".
 	 *
 	 * #743/#1253: the serverId component is load-bearing. #1253 requires that a
 	 * server whose notify write never landed does NOT get an entry (otherwise the
@@ -1245,14 +1249,24 @@ export class LSPService {
 	 * content. (A client already dead at the write resolves `false` since #3543,
 	 * so it marks no entry.)
 	 * Weak, so an entry never pins a retired client's state.
+	 *
+	 * #3405 r2: no client-scope component. What a server holds does not depend
+	 * on which scope pushed it, and the scope in the key (a leftover from the
+	 * file-level key #1253 replaced) let the dispatch runner's "with-auxiliary"
+	 * touch re-push the bytes the post-write sync or the MCP analysis had just
+	 * pushed as "primary", clearing the diagnostics of every edit.
+	 *
+	 * #3405: `saved` records whether that landed push carried a save. A save
+	 * rides on its push, so an entry without one does not cover a later saved
+	 * touch of the same bytes (see `saveDebouncedPush`).
 	 */
 	private readonly recentTouches = new Map<
 		string,
 		{
 			fingerprint: string;
 			touchedAt: number;
-			clientScope: LSPTouchClientScope;
 			client: WeakRef<LSPClientInfo>;
+			saved: boolean;
 		}
 	>();
 	/**
@@ -1556,7 +1570,6 @@ export class LSPService {
 	private shouldSkipTouch(
 		filePath: string,
 		contentFingerprint: () => string,
-		clientScope: LSPTouchClientScope,
 		waitForDiagnostics: boolean,
 		spawned: readonly SpawnedServer[],
 	): boolean {
@@ -1569,7 +1582,6 @@ export class LSPService {
 			this.shouldSkipNotify(
 				filePath,
 				contentFingerprint,
-				clientScope,
 				entry.info.id,
 				entry.client,
 			),
@@ -1595,13 +1607,12 @@ export class LSPService {
 	private shouldSkipNotify(
 		filePath: string,
 		contentFingerprint: () => string,
-		clientScope: LSPTouchClientScope,
 		serverId: string,
 		client: LSPClientInfo,
 	): boolean {
 		if (TOUCH_DEBOUNCE_MS <= 0) return false;
 		const previous = this.recentTouches.get(
-			this.recentTouchKey(filePath, clientScope, serverId),
+			this.recentTouchKey(filePath, serverId),
 		);
 		if (!previous) return false;
 		const now = Date.now();
@@ -1623,28 +1634,56 @@ export class LSPService {
 		return previous.fingerprint === contentFingerprint();
 	}
 
-	private recentTouchKey(
+	/**
+	 * #3405: a save rides on its push, so a debounced push drops the save with
+	 * it. Measured with clangd 22.1.0: a cold `lsp_diagnostics` query's unsaved
+	 * sweep warm-up pushed the bytes 6 ms before the query's saved touch, which
+	 * was debounced, and the server never received didSave; a save-triggered
+	 * server (Expert) then answers nothing. Re-pushing is no fix: clangd does not
+	 * republish for identical bytes, so the cleared cache left the query
+	 * inconclusive. The server already holds the bytes, so only the save goes,
+	 * through the client's own queue and gate (`notify.save`), when the landed
+	 * push carried none and the server declared `save`. Not awaited: a
+	 * notification has no answer, and the path's queue may hold a running push.
+	 * Returns the server id when a save was queued.
+	 */
+	private saveDebouncedPush(
 		filePath: string,
-		clientScope: LSPTouchClientScope,
-		serverId: string,
-	): string {
-		return `${normalizeMapKey(filePath)}:${clientScope}:${serverId}`;
+		entry: SpawnedServer,
+		saved: boolean,
+	): string | undefined {
+		if (!saved) return undefined;
+		const previous = this.recentTouches.get(
+			this.recentTouchKey(filePath, entry.info.id),
+		);
+		if (!previous || previous.saved) return undefined;
+		if (entry.client.getSaveOptions?.() === undefined) return undefined;
+		const save = entry.client.notify.save;
+		if (!save) return undefined;
+		// Marked before the send: a second saved touch of these bytes owes none.
+		previous.saved = true;
+		void save.call(entry.client.notify, filePath).catch(() => {});
+		return entry.info.id;
+	}
+
+	private recentTouchKey(filePath: string, serverId: string): string {
+		return `${normalizeMapKey(filePath)}:${serverId}`;
 	}
 
 	private markTouched(
 		filePath: string,
 		contentFingerprint: string,
-		clientScope: LSPTouchClientScope,
 		serverId: string,
 		client: LSPClientInfo,
+		saved: boolean,
 	): void {
-		const key = this.recentTouchKey(filePath, clientScope, serverId);
+		const key = this.recentTouchKey(filePath, serverId);
 		const now = Date.now();
 		this.recentTouches.set(key, {
 			fingerprint: contentFingerprint,
 			touchedAt: now,
-			clientScope,
 			client: new WeakRef(client),
+			saved,
 		});
 		// Trim entries that are already past the debounce window — shouldSkipTouch
 		// ignores them anyway, so they serve no purpose. Only sweep when the map
@@ -3375,6 +3414,36 @@ export class LSPService {
 	}
 
 	/**
+	 * #4476: deliver changes pi-lens found on disk by looking (a declaration
+	 * file created, edited or deleted outside it) to every live client of the
+	 * files' servers, as exact-URI watched-files events, and send them now
+	 * rather than after the debounce window: the look runs right before the
+	 * next check. A server that registered client watchers (TypeScript 7's
+	 * native server registers `<root>/**\/*`) re-reads a closed file only on
+	 * such an event. Never spawns.
+	 */
+	notifyOutOfBandFileChanges(
+		changes: ReadonlyArray<{ filePath: string; type: number }>,
+	): void {
+		if (this.checkDestroyed() || changes.length === 0) return;
+		for (const { filePath, type } of changes)
+			for (const server of getServersForFileWithConfig(filePath))
+				this.notifyLiveClientsForServer(server.id, filePath, type, "", true);
+		for (const client of this.state.clients.values())
+			if (client.isAlive()) client.notify.flushWatched?.();
+	}
+
+	/**
+	 * #4476: restart the live primary clients whose root overlaps `root` after
+	 * a dependency install there (see `ClientRegistry.restartPrimaryClientsUnder`).
+	 * Answers how many.
+	 */
+	async restartPrimaryClientsUnder(root: string): Promise<number> {
+		if (this.checkDestroyed()) return 0;
+		return (await this.clientRegistry.restartPrimaryClientsUnder(root)).length;
+	}
+
+	/**
 	 * #4320: before a batch serves any cached answer, tell every live client the
 	 * batch's files that are new to its server and not yet announced to it, and
 	 * send each client's waiting Created now (`notify.announceCreated`). Without
@@ -3423,11 +3492,26 @@ export class LSPService {
 	 * auxiliaries, the importers and the drift records are left to
 	 * {@link resyncGitChangedFiles}, which the caller runs after this. Never
 	 * spawns: a server not holding the document is excluded.
+	 *
+	 * #4528 r1 F1: each client that took a send then answers one request (its
+	 * liveness probe, waited up to `drainMs`). The writes resolve once the
+	 * bytes are in the pipe, not once the server read them; a server still
+	 * working through earlier changes kept publishing checks computed against
+	 * a dependency's old bytes, and a check read right after the sends took
+	 * one. A reply proves every send before it was processed
+	 * (for a server whose replies are `threaded` it proves only liveness).
+	 * `drained` requires measured single-task ordering and a successful probe;
+	 * threaded/unmeasured servers and timeouts are undrained.
 	 */
 	async resyncHeldPrimaries(
 		filePaths: readonly string[],
-	): Promise<{ sent: number }> {
+		drainMs: number,
+	): Promise<{ sent: number; drained: boolean }> {
 		let sent = 0;
+		const sentTo = new Map<
+			string,
+			{ client: LSPClientInfo; ordered: boolean }
+		>();
 		for (const filePath of filePaths) {
 			if (this.checkDestroyed()) break;
 			const servers = getServersForFileWithConfig(filePath);
@@ -3449,8 +3533,35 @@ export class LSPService {
 				excludeServerIds: exclude,
 			});
 			sent += 1;
+			for (const server of servers) {
+				if (exclude.has(server.id)) continue;
+				const root = await this.clientRegistry.resolveServerRoot(
+					server,
+					filePath,
+				);
+				const key = root ? `${server.id}:${normalizeMapKey(root)}` : undefined;
+				const client = key ? this.state.clients.get(key) : undefined;
+				if (key && client)
+					sentTo.set(key, {
+						client,
+						ordered:
+							serverTraits(server).replyOrdering === "single-task-ordered",
+					});
+			}
 		}
-		return { sent };
+		if (sentTo.size === 0) return { sent, drained: true };
+		const answers = await Promise.all(
+			[...sentTo.values()].map(async ({ client, ordered }) => {
+				// #4528 r2: a threaded or unmeasured reply proves only liveness.
+				if (!ordered) return false;
+				try {
+					return (await client.pingLiveness?.(drainMs)) ?? true;
+				} catch {
+					return false;
+				}
+			}),
+		);
+		return { sent, drained: answers.every(Boolean) };
 	}
 
 	/**
@@ -4063,11 +4174,15 @@ export class LSPService {
 				this.shouldSkipTouch(
 					filePath,
 					contentFingerprint,
-					clientScope,
 					diagnosticsMode !== "none",
 					spawned,
 				)
 			) {
+				const savedServerIds = spawned.flatMap(
+					(entry) =>
+						this.saveDebouncedPush(filePath, entry, options.saved === true) ??
+						[],
+				);
 				logLatency({
 					type: "phase",
 					phase: "lsp_touch_file",
@@ -4081,6 +4196,7 @@ export class LSPService {
 						failureKind: "success",
 						skipped: true,
 						reason: "debounced_unchanged_content",
+						...(savedServerIds.length > 0 && { savedServerIds }),
 					},
 				});
 				// #1179: a debounced skip collected nothing — resolve the wrapper's
@@ -4107,7 +4223,6 @@ export class LSPService {
 						this.shouldSkipNotify(
 							filePath,
 							contentFingerprint,
-							clientScope,
 							entry.info.id,
 							entry.client,
 						),
@@ -4116,6 +4231,14 @@ export class LSPService {
 			);
 			const notifySkipped =
 				spawned.length > 0 && notifySkippedServerIds.size === spawned.length;
+			// #3405: a debounced server keeps the bytes it holds; a save it is owed
+			// goes alone (`saveDebouncedPush`).
+			const savedServerIds = spawned.flatMap((entry) =>
+				notifySkippedServerIds.has(entry.info.id)
+					? (this.saveDebouncedPush(filePath, entry, options.saved === true) ??
+						[])
+					: [],
+			);
 			// #1531: the pre-notify diagnostics baseline for THIS file on each client.
 			// It used to be `client.diagnosticsVersion`, a client-GLOBAL counter that also
 			// advances for files this touch never mentions — which let a sibling file's
@@ -4445,9 +4568,9 @@ export class LSPService {
 							this.markTouched(
 								filePath,
 								contentFingerprint(),
-								clientScope,
 								entry.info.id,
 								entry.client,
+								options.saved === true,
 							);
 						} else if (wrote === false) {
 							// #3481: the server does not hold `content` (a later read, a
@@ -6440,6 +6563,7 @@ export class LSPService {
 					// read won, the path was closing or renamed away, or the client
 					// was dead, #3543). Absent when none.
 					...(supersededServerIds.length > 0 && { supersededServerIds }),
+					...(savedServerIds.length > 0 && { savedServerIds }),
 					diagnosticsTimedOut,
 					inconclusive,
 					// #1549: the attribution the issue's observability contract asks for —

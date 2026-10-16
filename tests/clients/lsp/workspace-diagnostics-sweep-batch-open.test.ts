@@ -76,9 +76,17 @@ describe("runWorkspaceDiagnostics — batch-open restores #271 coalescing for a 
 		getServersForFileWithConfig.mockReset();
 		createLSPClient.mockReset();
 		tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-lens-wsd-batchopen-"));
+		// The open count below depends on whether f0's per-file touch lands inside
+		// the touch debounce window of the warm-up's push; a window wider than
+		// the test makes that deterministic on a loaded runner. Read at import,
+		// after the resetModules above.
+		vi.stubEnv("PI_LENS_LSP_TOUCH_DEBOUNCE_MS", "600000");
 	});
 
-	afterEach(() => removeTempDirSync(tmp));
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		removeTempDirSync(tmp);
+	});
 
 	it("fires the watched-files notification once for a sweep over N previously-unopened files, not once per file", async () => {
 		const fileNames = Array.from({ length: 12 }, (_, i) => `f${i}.ts`);
@@ -143,13 +151,16 @@ describe("runWorkspaceDiagnostics — batch-open restores #271 coalescing for a 
 		// second time by the main per-file loop's own `touchFile` — which by
 		// then finds the document already open and only sends the
 		// already-open didChange equivalent (no further enqueue, mirrored by
-		// this mock's early return). Plus exactly ONE extra `notify.open` from
-		// the #667 pre-sweep warm-up touch, which runs against the group's
-		// first file (f0.ts) BEFORE the #608 pre-open pass even starts — the
-		// warm-up call is the one that actually opens f0.ts first; the pre-open
-		// pass then finds it already open. One warm-up per GROUP (one server
-		// here), not one per file.
-		expect(client.notify.open).toHaveBeenCalledTimes(fileNames.length * 2 + 1);
+		// this mock's early return). The #667 pre-sweep warm-up touch runs
+		// against the group's first file (f0.ts) BEFORE the #608 pre-open pass
+		// even starts — the warm-up call is the one that actually opens f0.ts
+		// first; the pre-open pass then finds it already open. The per-file
+		// touch of f0.ts then pushes nothing: the warm-up pushed the same bytes
+		// to the same server inside the debounce window (#3405 r2: the debounce
+		// key no longer carries the client scope, so the warm-up's "primary"
+		// push covers the sweep's "all" touch). One warm-up per GROUP (one
+		// server here), not one per file.
+		expect(client.notify.open).toHaveBeenCalledTimes(fileNames.length * 2);
 		// The watched-files queue coalesces each CHUNK's first-opens into its
 		// own single flush — 12 files at the default chunk width of 8 is 2
 		// chunks (8+4), so 2 flushes from the #608 pre-open pass itself. The

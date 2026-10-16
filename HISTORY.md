@@ -1,5 +1,47 @@
 # HISTORY
 
+## 2026-10-16 — one signal wired consumer by consumer (shape 71)
+
+A read-only audit (#4535) found five push detectors for disk changes pi-lens
+did not author: opaque bash recovery, the HEAD look, the #4528 out-of-band
+look, the settled sweep and the LSP drift heartbeat. Each wired its own
+consumers. After a HEAD move, LSP resynced while the review graph, symbol
+search and project snapshot served the old content. Every fixer had written a
+consolidation verdict, and each searched only its own seam's call names. #4528
+searched `notifyExternalFileChange\(` and concluded that no seam stamped
+installs, while `clients/` held six freshness modules. Reviewers re-ran the
+same query. The orchestrator grouped issues by consumer and filed eleven
+gaps (#4532) before asking why. Fixes: the fixer and reviewer search by
+primitive (#4536), shape 71, the three-issue audit rule, and the publisher
+with a consumer census (#4535).
+
+## 2026-10-16 retro
+
+Run by the orchestrator over the 2026-10-16 session. Where each finding landed:
+
+- **Sibling search by call name (judgement, built).** See shape 71 above.
+- **Script imported `dist/` before any build (mechanical, built in #4531).**
+  #4525 shipped `scripts/assert-evaluated.mjs` importing `dist/` through
+  `lib/clean-signal.mjs`. `tool-smoke-prs` runs it on an unbuilt checkout, so
+  every refresh PR would hold on `ERR_MODULE_NOT_FOUND`. The #4518 fixer found
+  it from a `git archive`. #4531 adds an import-walk test whose dynamic-import,
+  side-effect and `createRequire` plants red.
+- **Workflow step shell pinned as text (mechanical, folded into #4531 r2).**
+  Four mutations of the Swift, APFS and handshake shell survived because tests
+  only matched the step text. Deleting `set +e` would turn the intended
+  "still crashes" outcome red.
+- **An inconclusive answer read as cleared (shape 7, folded into #4533 r2).**
+  The born-after-start witness accepted "check timed out - NOT the same as 0
+  diagnostics" as cleared.
+- **Line-only match across rules (judgement, folded into #4529 r2).** The new
+  dispatcher drop keyed a server finding to napi's blocker by line only, so a
+  different rule's warning on that line read as clean.
+- **Orchestrator tooling (mechanical, built outside this repo).** The
+  post-land tree prune deleted a live reviewer tree whose merge was not
+  committed. It now skips trees with local changes or a running process.
+  The hand-back router now resolves resumed agents and reads the round from
+  the ledger.
+
 ## 2026-10-15 — population-deriving scanners fail closed
 
 `AGENTS.md` "Test requirements" gained the fail-closed rule. Issue #4429:

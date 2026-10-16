@@ -83,6 +83,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { assertEvaluated } from "./lib/assert-evaluated.mjs";
 import { gitExecFileSync } from "./lib/git-fixture-env.mjs";
 import { escapeMarkdownCell } from "./lib/markdown-cell.mjs";
 import {
@@ -422,7 +423,17 @@ export function judgeCensus({
 	if (planned !== undefined) {
 		const recorded = new Set(census.map((record) => record.key));
 		const missing = planned.filter((entry) => !recorded.has(startKey(entry)));
-		if (missing.length > 0) {
+		// The count-vs-plan comparison is the shared proof-of-work helper's
+		// (#4518): every planned start must have evaluated (left a record).
+		const evaluatedStarts =
+			planned.length > 0
+				? assertEvaluated({
+						producer: "shuffle-census",
+						evaluated: planned.length - missing.length,
+						expectedAtLeast: planned.length,
+					})
+				: null;
+		if (evaluatedStarts && !evaluatedStarts.ok) {
 			const first = missing.slice(0, 3).map((entry) => entry.label);
 			lines.push(
 				`not run: ${missing.length} of ${planned.length} planned start(s) have no record (${first.join("; ")}${missing.length > 3 ? "; ..." : ""})`,

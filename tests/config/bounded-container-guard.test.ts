@@ -27,6 +27,10 @@ const BOUNDED_HELPERS = new Set([
 ]);
 // Content-keyed, so an exemption must be re-confirmed after an edit.
 const FINITE_REASONS: Readonly<Record<string, string>> = {
+	// #4483: files whose pre-edit linter capture is still running. Each capture
+	// adds its own file before its linters run and deletes it in `finally`.
+	"clients/dispatch/integration.ts#preEditCaptureFacts:3fc075f7":
+		"one key per pre-edit capture still running; the capture deletes its own key in finally once its linters settle (each runner has its own spawn timeout)",
 	// #4403 round 5 (V1): the primaries whose cascade "no language server
 	// answered" line was delivered. Keyed by LSP server id, written only for a
 	// primary a delivered line named, and cleared at session_start.

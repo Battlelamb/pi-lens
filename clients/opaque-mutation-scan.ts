@@ -109,6 +109,17 @@ export interface PendingOpaqueBaseline {
 }
 
 /**
+ * Opaque recovery feeds dispatch and LSP resync; it is not read evidence.
+ * Keep its lifecycle gate shared by the pre-call baseline and post-call take.
+ */
+export function shouldRunOpaqueRecovery(
+	toolName: string,
+	workspaceRoot: string | undefined,
+): workspaceRoot is string {
+	return toolName === "bash" && workspaceRoot !== undefined;
+}
+
+/**
  * The turn a baseline was recorded in: the session's turn key and the
  * coordinator's liveness test for it (`RuntimeCoordinator.turnKey` and
  * `isLiveTurnKey`, #3613), so a concurrent session's turn stays live.

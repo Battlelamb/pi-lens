@@ -1257,6 +1257,127 @@ describe("Dispatch Flow", () => {
 		});
 	});
 
+	// #4509: napi runs under Gate B while it holds a recorded blocker, beside
+	// the ast-grep server whose copies carry another identity.
+	describe("covered runs (#4509)", () => {
+		const finding = (
+			line: number,
+			serverId?: string,
+			over: Partial<Diagnostic> = {},
+		): Diagnostic => ({
+			id: `f-${line}`,
+			message: "Function returns 'unknown'",
+			filePath: "test.ts",
+			line,
+			severity: "error",
+			semantic: "blocking",
+			tool: serverId ? "lsp" : "ast-grep-napi",
+			// The spellings each runner gives one rule: the server's LSP copy
+			// carries its source, napi's the rule id. The two keys differ, so
+			// the overlap dedupe keeps both.
+			rule: serverId ? "ast-grep:no-unknown-returns" : "no-unknown-returns",
+			...(serverId && { serverId }),
+			...over,
+		});
+		const register = (laneAnswers: boolean, lane: Partial<Diagnostic> = {}) => {
+			registerRunner({
+				id: "lane",
+				appliesTo: ["jsts"],
+				priority: 1,
+				run: async () => ({
+					status: "succeeded",
+					// A silent server delivers none of its copies.
+					diagnostics: laneAnswers ? [finding(3, "srv", lane)] : [],
+					semantic: "blocking",
+					...(!laneAnswers && { unconfirmedServerIds: ["srv"] }),
+				}),
+			});
+			registerRunner({
+				id: "peer",
+				appliesTo: ["jsts"],
+				priority: 2,
+				run: async () => ({
+					status: "succeeded",
+					diagnostics: [finding(3), finding(5)],
+					semantic: "blocking",
+					coveredBy: { runnerId: "lane", serverId: "srv" },
+				}),
+			});
+		};
+		const run = async () => {
+			const ctx = createDispatchContext(
+				"test.ts",
+				"/project",
+				{ getFlag: () => false },
+				new FactStore(),
+			);
+			const result = await dispatchForFile(ctx, [
+				{ mode: "all", runnerIds: ["lane", "peer"] },
+			]);
+			return result.diagnostics.map((d) => `${d.runnerId}@${d.line}`).sort();
+		};
+
+		// Recurrence (#4491 row 18b, probe P35): the run and the lane both
+		// delivered the finding on the line the lane flagged: one finding,
+		// listed twice in the STOP block.
+		it("drops a covered run's finding where its answering lane flagged the line", async () => {
+			register(true);
+			expect(await run()).toEqual(["lane@3", "peer@5"]);
+		});
+
+		// Recurrence (#4491 row 26, probe P33): a covered run's verdict with
+		// its lane silent is the only reading of the bytes; dropping or
+		// voiding it would retire napi's blocker with the violation on disk.
+		it("delivers a covered run's findings when its lane is silent", async () => {
+			register(false);
+			expect(await run()).toEqual(["peer@3", "peer@5"]);
+		});
+
+		// Recurrence (#4529 review R1, probe P45): the drop keyed by line
+		// alone, so a team sgconfig's server flagging another rule on napi's
+		// blocker line swapped napi's blocker out, or at warning left `✓ clean`.
+		it("keeps a covered run's finding where its lane flagged another rule on the line", async () => {
+			register(true, { rule: "ast-grep:other-rule" });
+			expect(await run()).toEqual(["lane@3", "peer@3", "peer@5"]);
+		});
+
+		// Recurrence (#4529 review R1): a team sgconfig can downgrade the same
+		// rule, and the server's warning copy then stood for napi's blocker,
+		// so nothing blocked.
+		it("keeps a covered run's blocker where its lane's copy of the rule is weaker", async () => {
+			register(true, { severity: "warning", semantic: "warning" });
+			expect(await run()).toEqual(["lane@3", "peer@3", "peer@5"]);
+		});
+
+		// A cover may name a runner and no server (`coveredBy.serverId` is
+		// optional). Reading every finding as that lane's copy would drop the
+		// run's own findings that no lane delivers.
+		it("reads only the lane runner's copies when the cover names no server", async () => {
+			registerRunner({
+				id: "lane",
+				appliesTo: ["jsts"],
+				priority: 1,
+				run: async () => ({
+					status: "succeeded",
+					diagnostics: [finding(3)],
+					semantic: "blocking",
+				}),
+			});
+			registerRunner({
+				id: "peer",
+				appliesTo: ["jsts"],
+				priority: 2,
+				run: async () => ({
+					status: "succeeded",
+					diagnostics: [finding(3), finding(5)],
+					semantic: "blocking",
+					coveredBy: { runnerId: "lane" },
+				}),
+			});
+			expect(await run()).toEqual(["lane@3", "peer@5"]);
+		});
+	});
+
 	// #2337: ast-grep-napi declares skipTestFiles: true, but that flag was only
 	// enforced in RunnerRegistry.getForKind. The jsts write-group path
 	// (clients/dispatch/plan.ts) resolves runners by id via registry.get() and

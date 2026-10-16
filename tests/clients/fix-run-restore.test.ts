@@ -90,9 +90,19 @@ vi.mock("../../clients/safe-spawn.js", async (importOriginal) => {
 				if (command === "cargo" && args[0] === "--version") {
 					return { stdout: "cargo 1.82.0", stderr: "", status: 0 };
 				}
-				if (command === "cargo" && args[0] === "clippy") {
+				// Only the fixer is the gated double. A lint-only `cargo clippy`
+				// (the rust-clippy dispatch runner, which the #4483 pre-edit
+				// capture also runs at an agent edit's tool_call) answers clean.
+				if (
+					command === "cargo" &&
+					args[0] === "clippy" &&
+					args.includes("--fix")
+				) {
 					const status = (await fake.clippy?.(options?.cwd ?? "")) ?? 0;
 					return { stdout: "", stderr: "", status };
+				}
+				if (command === "cargo" && args[0] === "clippy") {
+					return { stdout: "", stderr: "", status: 0 };
 				}
 				if (command === "dart" && args[0] === "--version") {
 					return { stdout: "Dart SDK version: 3.5.0", stderr: "", status: 0 };

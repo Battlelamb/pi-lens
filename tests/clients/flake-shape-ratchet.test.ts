@@ -290,6 +290,14 @@ const ADMITTED_AFTER_BASELINE: Readonly<
 		reason:
 			"a project lsp.json cannot declare an auxiliary server, so the catalog lookup adds the auxiliary fake; every server is still a real child process",
 	},
+	// 2026-10-16 (#4476): the same fake auxiliary, seen from the role lookup
+	// the registry's dependency restart asks; getServerById knows only the
+	// built-in catalog, so the auxiliary added above answers there too.
+	"in-process-mock:clients/head-move-resync-4493.test.ts::clients/lsp/server": {
+		detector: "in-process-mock",
+		reason:
+			"getServerById reads only the built-in catalog, so the auxiliary fake the config lookup adds is answered there too; the restart then keeps it, and every server is still a real child process",
+	},
 	// 2026-10-15 (#4449): the registry's skip and respawn records go to
 	// logLatency. Its in-process ring drops the fields the test asserts, and
 	// test mode never reaches the file sink, so the captured call is the seam.
@@ -325,6 +333,16 @@ const ADMITTED_AFTER_BASELINE: Readonly<
 			detector: "in-process-mock",
 			reason:
 				"spawning the managed language server is the process boundary; the wrapper delegates every other command, the refused project-local candidate included, to the real launchLSP",
+		},
+	// 2026-10-16 (#4483): the first-write seed witness keeps every pi-lens
+	// module on the tool_call-to-turn-end chain real; only the language-server
+	// process behind the LSP capability adapter is stood in for, for the
+	// language-server guard cell (acceptance 5).
+	"in-process-mock:index-4483-first-write-seed-witness.test.ts::clients/lsp/capabilities":
+		{
+			detector: "in-process-mock",
+			reason:
+				"the language-server process is the boundary; the capability adapter is where every host witness stands in for it",
 		},
 	// 2026-10-15 (#4484): the host witness keeps every pi-lens module on the
 	// write-to-turn-end chain real; only the language-server process behind the
@@ -739,6 +757,14 @@ const ADMITTED_AFTER_BASELINE: Readonly<
 		reason:
 			"a real gh child is required to prove transient API failure recovery, persistent failure, and a ZIP over the default spawn buffer at the process boundary",
 	},
+	// #4518: the evaluated-floor steps of grammar-health.yml, ci.yml and lint.yml
+	// are shell text; the exit-code mapping, `set +e`, a step output read by the
+	// next step and `| tee` under pipefail are observable only by running bash.
+	"real-process-spawn:scripts/floor-steps-executed.test.ts": {
+		detector: "real-process-spawn",
+		reason:
+			"the evaluated-floor steps are shell text from the workflows; only a real bash running the extracted run: shows that a swallowed status, a renamed step id or a pipe without pipefail reds or lies on the nightly",
+	},
 	"real-process-spawn:scripts/git-fixture-env.test.ts": {
 		detector: "real-process-spawn",
 		reason:
@@ -1031,6 +1057,14 @@ const ADMITTED_AFTER_BASELINE: Readonly<
 	// 2026-09-26 (#3511 review round 3): the quick-mode warmup witness must
 	// run the real warmup timer and background word-index save, which no
 	// test hook awaits.
+	// 2026-10-16 (#4528 r1 F3): the spawn-gate window of a dependency restart
+	// exists only between real server processes, and the tool_call hook bounds
+	// its look, so the restart finishes after the hook returns.
+	"ungoverned-wait-for:clients/head-move-resync-4493.test.ts": {
+		detector: "ungoverned-wait-for",
+		reason:
+			"the restart's spawn-gate window is between real server processes: one server's shutdown, the cache clock, and a restart that ends after the bounded tool_call hook returns expose no awaitable, so vi.waitFor joins them",
+	},
 	"ungoverned-wait-for:clients/word-index-lifecycle.test.ts": {
 		detector: "ungoverned-wait-for",
 		reason:

@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	checkCount,
 	checkDocs,
 	checkRecords,
 	gitHeadText,
@@ -17,6 +18,7 @@ import {
 	readEvaluatedRecord,
 	writeEvaluatedRecord,
 } from "../../scripts/lib/assert-evaluated.mjs";
+import { stripSource } from "../support/sweep-kit.js";
 
 // Recurrence #4514 / retro P2: an artifact that degrades under
 // continue-on-error (41 servers captured fell to 16, ~54 classified rows to
@@ -312,6 +314,46 @@ describe("checkDocs: the refresh PR refuses a degraded regeneration (#4514)", ()
 		);
 	});
 
+	// #4537: expiry is legitimate, but only HEAD can justify it (#4338 M1).
+	it.each([
+		["2026-10-10", true],
+		["2026-10-11", true],
+		["2026-10-12", false],
+		["2026-10-17", false],
+		["garbage", false],
+		["2026-02-30", false],
+		[undefined, false],
+	])(
+		"judges the M1 five-cell loss with HEAD firstMissed %s as %s",
+		(stamp, ok) => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date("2026-10-16T23:59:00Z"));
+			try {
+				const state = (firstMissed: string | undefined) =>
+					`\n## Capability matrix refresh state (nightly-generated)\n\n\`\`\`json\n${JSON.stringify({ "first-publish": Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`l${23 + i}`, { firstMissed }])) })}\n\`\`\`\n`;
+				const headMatrix = matrixDoc(Array(28).fill("direct")) + state(stamp);
+				// An expired stamp in the output must not authorize an unstamped HEAD.
+				const flipped =
+					matrixDoc([
+						...Array(23).fill("direct"),
+						...Array(5).fill("unknown"),
+					]) + state("2026-10-01");
+				const root = stage({
+					...head,
+					"docs/lsp-capability-matrix.md": flipped,
+				});
+				const records = checkDocs(root, (p) =>
+					p === "docs/lsp-capability-matrix.md"
+						? headMatrix
+						: (head[p] ?? null),
+				);
+				expect(records.every((r) => r.ok)).toBe(ok);
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
+
 	it("fails a larger flip on the count and on the cells", () => {
 		const flipped = matrixDoc([
 			...Array(20).fill("direct"),
@@ -469,5 +511,120 @@ describe("checkRecords and main: the dedicated floor step (#4514)", () => {
 		writeAll(low, { ...healthy, "characterize-lsp": 1 });
 		expect(main(["--records", low])).toBe(1);
 		expect(main([])).toBe(2);
+	});
+});
+
+// Recurrence #4518: the producers outside the LSP nightly (the APFS anchors,
+// the Swift crash-watch) derive their count in shell, so the one helper needs a
+// door a workflow step can use without writing a record file. Same record
+// shape, same floor comparison; an empty count is a producer that did not
+// report, never a zero it measured.
+describe("--count: a workflow step's own count against a floor (#4518)", () => {
+	it("passes a count at the floor and fails one below it, with the one record shape", () => {
+		expect(checkCount("apfs-anchors=200", 200)).toEqual({
+			producer: "apfs-anchors",
+			evaluated: 200,
+			floor: 200,
+			prevEvaluated: null,
+			ok: true,
+			reason: "ok",
+		});
+		const low = checkCount("apfs-anchors=199", 200);
+		expect(low.ok).toBe(false);
+		expect(low.reason).toBe("evaluated 199, below the floor of 200");
+	});
+
+	it("reads an empty, missing or non-numeric count as a producer that never reported", () => {
+		for (const spec of [
+			"swift-crash-watch=",
+			"swift-crash-watch",
+			"swift-crash-watch=abc",
+			"swift-crash-watch=-1",
+			"swift-crash-watch=1.5",
+		]) {
+			const record = checkCount(spec, 1);
+			expect(record, spec).toMatchObject({
+				producer: "swift-crash-watch",
+				evaluated: 0,
+				ok: false,
+			});
+			expect(record.reason, spec).toMatch(/no record/);
+		}
+	});
+
+	it("main exits 0 at the floor, 1 on a zero count, 1 on a missing count, 2 without a valid --floor", () => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		expect(main(["--count", "swift-crash-watch=1", "--floor", "1"])).toBe(0);
+		expect(main(["--count", "swift-crash-watch=0", "--floor", "1"])).toBe(1);
+		expect(main(["--count", "swift-crash-watch=", "--floor", "1"])).toBe(1);
+		expect(main(["--count", "swift-crash-watch=1"])).toBe(2);
+		expect(main(["--count", "swift-crash-watch=1", "--floor", "0"])).toBe(2);
+		expect(main(["--count", "swift-crash-watch=1", "--floor", "x"])).toBe(2);
+		// `--count` with no value, or a flag where its value belongs, is a usage
+		// error: it used to be dropped silently (`--docs --count` exited 0).
+		expect(main(["--count"])).toBe(2);
+		expect(main(["--count", "--floor", "5"])).toBe(2);
+		expect(main(["--docs", "--count"], () => null)).toBe(2);
+	});
+
+	it("prints the failing row in the shape the red-night notifier lists, and a step-summary row", () => {
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const summary = path.join(tmp(), "summary.md");
+		vi.stubEnv("GITHUB_STEP_SUMMARY", summary);
+		try {
+			main(["--count", "apfs-anchors=3", "--floor", "200"]);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+		expect(log).toHaveBeenCalledWith(
+			"✗  apfs-anchors  evaluated floor  3  evaluated 3, below the floor of 200",
+		);
+		expect(fs.readFileSync(summary, "utf8")).toContain(
+			"| apfs-anchors | 3 | 200 | n/a | evaluated 3, below the floor of 200 |",
+		);
+	});
+});
+
+// Recurrence #4518 (found while reusing the helper): the refresh-PR job
+// (tool-smoke-prs) runs `scripts/assert-evaluated.mjs` on a fresh checkout that
+// never builds, and the helper imported scripts/lib/clean-signal.mjs, which
+// imports `dist/clients/lsp/server-traits.js`. The guard died with
+// ERR_MODULE_NOT_FOUND, so every refresh PR was held for a reason that was not
+// a degraded night. A static import walk, not a spawn, so it needs no admission.
+describe("the helper loads on a checkout with no dist/ (#4518)", () => {
+	const root = path.resolve(import.meta.dirname, "../..");
+	const inDist = (file: string) => file.includes(`${path.sep}dist${path.sep}`);
+	/** Every module reachable through a relative specifier (a dist/ one is listed, not read). */
+	const closure = (entry: string) => {
+		const seen = new Set<string>();
+		const visit = (file: string) => {
+			if (seen.has(file)) return;
+			seen.add(file);
+			if (inDist(file)) return;
+			const code = stripSource(fs.readFileSync(file, "utf8"), {
+				strings: "keep",
+			});
+			// Every relative module specifier, whatever carries it: a named or
+			// aliased import, a side-effect import, a re-export, a dynamic import().
+			for (const m of code.matchAll(/"(\.{1,2}\/[^"]+\.(?:mjs|js|ts|mts))"/g))
+				visit(path.resolve(path.dirname(file), m[1]));
+		};
+		visit(path.resolve(root, entry));
+		return [...seen];
+	};
+
+	it("reaches no module under dist/ from either entry point", () => {
+		for (const entry of [
+			"scripts/assert-evaluated.mjs",
+			"scripts/lib/assert-evaluated.mjs",
+		]) {
+			const files = closure(entry);
+			expect(files.length, entry).toBeGreaterThanOrEqual(2);
+			expect(files.filter(inDist).map((f) => path.relative(root, f))).toEqual(
+				[],
+			);
+		}
 	});
 });

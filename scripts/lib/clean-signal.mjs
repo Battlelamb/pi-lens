@@ -34,6 +34,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { isAuxiliary } from "../../dist/clients/lsp/server-traits.js";
+import { MEASURED_CLEAN_BEHAVIORS } from "./md-matrix.mjs";
 
 // #594: the fixed path probe-clean-signal.mjs (writer) and
 // notify-clean-signal-drift.mjs (reader) agree on for the machine-readable
@@ -431,20 +432,12 @@ export const COMPARABLE_FIRST_PUBLISH = new Set(["empty-first", "direct"]);
 
 /**
  * The matrix `clean-behavior` values that are a measurement of anything.
- * `unknown` is evidence in neither direction (the #240 doctrine), so it never
- * enters a comparison. Shared by `scripts/probe-clean-signal.mjs` (through
- * `buildMatrixObservations` and its row filter) and
- * `tests/config/lsp-clean-behavior-census.test.ts` (the marker census), which
- * previously kept two independent spellings of the same set (#3401).
- * `scripts/lib/md-matrix.mjs` deliberately does NOT import it: that writer is
- * copied alone into a scratch checkout by `tests/scripts/release-qa.test.ts`,
- * so it stays dependency-free and receives already-classified observations.
+ * Defined in `md-matrix.mjs` (dependency-free) so `assert-evaluated.mjs`, which
+ * the refresh-PR job runs on a fresh checkout with no `dist/`, can count rows
+ * without importing this file's `dist/` import (#4518). The census test and
+ * `scripts/probe-clean-signal.mjs` keep importing it from here.
  */
-export const MEASURED_CLEAN_BEHAVIORS = new Set([
-	"publishes-versioned",
-	"publishes-unversioned",
-	"silent",
-]);
+export { MEASURED_CLEAN_BEHAVIORS };
 
 /**
  * The matrix lang a probe fixture writes to: a `clean: true` fixture

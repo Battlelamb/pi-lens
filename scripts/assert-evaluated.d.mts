@@ -10,6 +10,8 @@ export function checkDocs(
 	root?: string,
 	headText?: (docPath: string) => string | null,
 ): EvaluatedRecord[];
+/** One record for a count a workflow step derived itself: `<producer>=<n>` against `floor`. */
+export function checkCount(spec: string, floor: number): EvaluatedRecord;
 /** Exit code: 0 ok, 1 below a floor or HEAD unreadable, 2 usage. */
 export function main(
 	argv: string[],

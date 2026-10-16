@@ -41,6 +41,7 @@ import {
 	type PendingRunnerFindings,
 } from "./dispatch/pending-runner-findings.js";
 import { applyPushedFindingPolicy } from "./dispatch/finding-policy.js";
+import { laneCopyStandsFor } from "./dispatch/lane-copies.js";
 import { type Diagnostic, reachedNoVerdict } from "./dispatch/types.js";
 import { stampLineHashes } from "./line-alignment.js";
 import { logLatency } from "./latency-logger.js";
@@ -141,7 +142,7 @@ export function recordDeferredRunnerBlockers(
 	// Round 5: and with its line's text in the settled bytes, as the pipeline
 	// stamps its record (`stampLineHashes`).
 	const blocking = stampLineHashes(
-		survivors.flatMap((d) =>
+		withoutLaneCopies(runtime, pending, survivors).flatMap((d) =>
 			d.semantic === "blocking"
 				? [{ ...d, runnerId: d.runnerId ?? pending.runnerId }]
 				: [],
@@ -189,16 +190,23 @@ export function retireSettledRunnerBlockers(
 	// #4484 round 7: a settled skip that defers to a covering lane retires
 	// nothing. That lane's answer for these bytes is not known here, and its
 	// evidence may cover only the edit; the next inline write judges.
-	if (!result || reachedNoVerdict(result) || result.coveredBy !== undefined)
+	// #4509: a covered run read the bytes itself, so it retires as any run.
+	if (
+		!result ||
+		reachedNoVerdict(result) ||
+		(result.coveredBy !== undefined &&
+			result.skipReason === "covered-by-primary")
+	)
 		return 0;
 	const bytes = readBytes(pending.filePath);
 	const retired = runtime.retireUnobservedRunnerBlockers(pending.filePath, {
 		runnerId: pending.runnerId,
 		// #4484 round 3: what the run's edit-range gate withheld is still
 		// observed, at its own line.
-		observed: [...verdict.kept, ...(result.outOfEditScope ?? [])].flatMap(
-			(d) => (d.semantic === "blocking" ? [d] : []),
-		),
+		observed: [
+			...withoutLaneCopies(runtime, pending, verdict.kept),
+			...(result.outOfEditScope ?? []),
+		].flatMap((d) => (d.semantic === "blocking" ? [d] : [])),
 		markedAtMs: pending.markedAtMs,
 		sha256: bytes
 			? createHash("sha256").update(bytes).digest("hex")
@@ -209,6 +217,31 @@ export function retireSettledRunnerBlockers(
 	});
 	if (retired > 0) runtime.updateGitGuardStatus(false, "");
 	return retired;
+}
+
+/**
+ * #4529 review R3: a settled covered run's findings, less those its lane's
+ * recorded copies stand for (`laneCopyStandsFor`), as the dispatcher drops
+ * them from a run it waited for. Such a finding is neither recorded nor
+ * observed, so the run's own entry for it retires and the lane's copy stands.
+ */
+function withoutLaneCopies(
+	runtime: RuntimeCoordinator,
+	pending: PendingRunnerFindings,
+	findings: readonly Diagnostic[],
+): readonly Diagnostic[] {
+	const lane = pending.result?.coveredBy;
+	if (lane === undefined) return findings;
+	const standsFor = laneCopyStandsFor(
+		(runtime.getInlineBlockerDiagnostics(pending.filePath) ?? []).flatMap(
+			(d) =>
+				d.runnerId === lane.runnerId &&
+				(lane.serverId === undefined || d.serverId === lane.serverId)
+					? [d]
+					: [],
+		),
+	);
+	return findings.flatMap((d) => (standsFor(d) ? [] : [d]));
 }
 
 function readBytes(filePath: string): Buffer | undefined {
