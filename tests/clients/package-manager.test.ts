@@ -488,10 +488,50 @@ describe("findGlobalBinary", () => {
 		return { prefix, binDir };
 	}
 
+	// #4530 r7: existence alone selected directories and non-executable files.
+	it("rejects global directories and non-executable files before selecting a command", async () => {
+		setPlatform("linux");
+		const { binDir } = npmGlobalPrefix();
+		const candidate = path.join(binDir, "prisma");
+		fs.mkdirSync(candidate);
+		expect(await findGlobalBinary("prisma")).toBeUndefined();
+		fs.rmdirSync(candidate);
+		fs.writeFileSync(candidate, "#!/bin/sh\n", { mode: 0o644 });
+		expect(await findGlobalBinary("prisma")).toBeUndefined();
+		fs.chmodSync(candidate, 0o755);
+		expect(await findGlobalBinary("prisma")).toBe(candidate);
+	});
+
+	it("rejects local directories and non-executable commands", () => {
+		setPlatform("linux");
+		setProjectTrustState("trusted");
+		const root = tmpDir();
+		const candidate = path.join(root, "node_modules", ".bin", "example");
+		fs.mkdirSync(candidate, { recursive: true });
+		expect(findLocalBinAt("example", root)).toBeUndefined();
+		fs.rmdirSync(candidate);
+		fs.writeFileSync(candidate, "#!/bin/sh\n", { mode: 0o644 });
+		expect(findLocalBinAt("example", root)).toBeUndefined();
+		fs.chmodSync(candidate, 0o755);
+		expect(findLocalBinAt("example", root)).toBe(candidate);
+	});
+
+	it("finds Windows global commands through PATHEXT after rejecting a directory", async () => {
+		setPlatform("win32");
+		vi.stubEnv("PATHEXT", ".CMD;.COM");
+		const { binDir } = npmGlobalPrefix();
+		fs.mkdirSync(path.join(binDir, "prisma.cmd"));
+		const valid = path.join(binDir, "prisma.com");
+		fs.writeFileSync(valid, "fixture");
+		expect(await findGlobalBinary("prisma")).toBe(valid);
+	});
+
 	it("finds a bare binary in a manager's global bin dir (Unix)", async () => {
 		setPlatform("linux");
 		const { binDir } = npmGlobalPrefix();
-		fs.writeFileSync(path.join(binDir, "prisma"), "#!/bin/sh\n");
+		fs.writeFileSync(path.join(binDir, "prisma"), "#!/bin/sh\n", {
+			mode: 0o755,
+		});
 		expect(await findGlobalBinary("prisma")).toBe(
 			path.resolve(path.join(binDir, "prisma")),
 		);
@@ -501,7 +541,9 @@ describe("findGlobalBinary", () => {
 		setPlatform("win32");
 		const { binDir } = npmGlobalPrefix();
 		fs.writeFileSync(path.join(binDir, "prisma.cmd"), "@echo off\n");
-		fs.writeFileSync(path.join(binDir, "prisma"), "#!/bin/sh\n");
+		fs.writeFileSync(path.join(binDir, "prisma"), "#!/bin/sh\n", {
+			mode: 0o755,
+		});
 		expect(await findGlobalBinary("prisma")).toBe(
 			path.resolve(path.join(binDir, "prisma.cmd")),
 		);
@@ -546,7 +588,9 @@ describe("findGlobalBinary", () => {
 		const prefix = tmpDir();
 		const binDir = path.join(prefix, "bin");
 		fs.mkdirSync(binDir, { recursive: true });
-		fs.writeFileSync(path.join(binDir, "prisma"), "#!/bin/sh\n");
+		fs.writeFileSync(path.join(binDir, "prisma"), "#!/bin/sh\n", {
+			mode: 0o755,
+		});
 		onlyAvailable("npm");
 		let attempt = 0;
 		setQueryResponder(async () => {
@@ -572,8 +616,8 @@ describe("findGlobalBinary", () => {
 		const newBinDir = path.join(newPrefix, "bin");
 		fs.mkdirSync(oldBinDir, { recursive: true });
 		fs.mkdirSync(newBinDir, { recursive: true });
-		fs.writeFileSync(path.join(oldBinDir, "prisma"), "old\n");
-		fs.writeFileSync(path.join(newBinDir, "prisma"), "new\n");
+		fs.writeFileSync(path.join(oldBinDir, "prisma"), "old\n", { mode: 0o755 });
+		fs.writeFileSync(path.join(newBinDir, "prisma"), "new\n", { mode: 0o755 });
 		onlyAvailable("npm");
 		await resolveNodePackageManager(tmpDir());
 
@@ -619,7 +663,7 @@ describe("findGlobalBinary", () => {
 		const newPrefix = tmpDir();
 		const newBinDir = path.join(newPrefix, "bin");
 		fs.mkdirSync(newBinDir, { recursive: true });
-		fs.writeFileSync(path.join(newBinDir, "prisma"), "new\n");
+		fs.writeFileSync(path.join(newBinDir, "prisma"), "new\n", { mode: 0o755 });
 		onlyAvailable("npm");
 		await resolveNodePackageManager(tmpDir());
 
@@ -680,7 +724,7 @@ describe("findNodeToolBinary", () => {
 		const root = tmpDir();
 		const bin = path.join(root, "node_modules", ".bin", "eslint");
 		fs.mkdirSync(path.dirname(bin), { recursive: true });
-		fs.writeFileSync(bin, "#!/bin/sh\n");
+		fs.writeFileSync(bin, "#!/bin/sh\n", { mode: 0o755 });
 
 		for (const trust of ["unknown", "untrusted"] as const) {
 			setProjectTrustState(trust);
@@ -697,7 +741,7 @@ describe("findNodeToolBinary", () => {
 		const root = tmpDir();
 		const bin = path.join(root, "node_modules", ".bin", "eslint");
 		fs.mkdirSync(path.dirname(bin), { recursive: true });
-		fs.writeFileSync(bin, "#!/bin/sh\n");
+		fs.writeFileSync(bin, "#!/bin/sh\n", { mode: 0o755 });
 		setProjectTrustState("trusted");
 		expect(findLocalBinAt("eslint", root)).toBe(bin);
 	});
@@ -710,7 +754,7 @@ describe("findNodeToolBinary", () => {
 		fs.mkdirSync(nested, { recursive: true });
 		const localBin = path.join(root, "node_modules", ".bin", "jscpd");
 		fs.mkdirSync(path.dirname(localBin), { recursive: true });
-		fs.writeFileSync(localBin, "#!/bin/sh\n");
+		fs.writeFileSync(localBin, "#!/bin/sh\n", { mode: 0o755 });
 
 		expect(await findNodeToolBinary("jscpd", nested)).toBe(localBin);
 	});
@@ -720,7 +764,9 @@ describe("findNodeToolBinary", () => {
 		const prefix = tmpDir();
 		const binDir = path.join(prefix, "bin");
 		fs.mkdirSync(binDir, { recursive: true });
-		fs.writeFileSync(path.join(binDir, "madge"), "#!/bin/sh\n");
+		fs.writeFileSync(path.join(binDir, "madge"), "#!/bin/sh\n", {
+			mode: 0o755,
+		});
 		onlyAvailable("npm");
 		setQueryResponder(async () => ({
 			stdout: `${prefix}\n`,

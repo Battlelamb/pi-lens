@@ -481,32 +481,38 @@ describe.skipIf(process.platform === "win32")(
 			expect(project.ran()).toBe("");
 		});
 
-		it("reads a refreshed tool's version with a runtime from outside the project", async () => {
-			const project = makeProject();
-			plant(path.join(project.bin, "node"), project.marker);
-			const outside = tempDir("pi-lens-4530-outside-");
-			const versionMarker = path.join(outside, "version.marker");
-			const remembered = writeScript(
-				path.join(outside, "mypy"),
-				`#!/usr/bin/env node\nrequire("node:fs").appendFileSync(${JSON.stringify(versionMarker)}, "ran\\n");\nconsole.log("mypy 1.0.0");\n`,
-			);
-			rememberToolPath("mypy", remembered);
-			process.env.PATH = [
-				project.bin,
-				outside,
-				path.dirname(process.execPath),
-			].join(path.delimiter);
-			delete process.env.PI_LENS_DISABLE_TOOL_INSTALL;
-			process.env.PI_LENS_TEST_MODE = "0";
-			process.chdir(project.root);
-			setProjectTrustState("unknown");
+		it(
+			"reads a refreshed tool's version with a runtime from outside the project",
+			// `refreshManagedTool` runs a real `pip install -U` for this tool, so
+			// the default 5s budget is too tight on a cold pip cache (#4530 r7).
+			{ timeout: 30_000 },
+			async () => {
+				const project = makeProject();
+				plant(path.join(project.bin, "node"), project.marker);
+				const outside = tempDir("pi-lens-4530-outside-");
+				const versionMarker = path.join(outside, "version.marker");
+				const remembered = writeScript(
+					path.join(outside, "mypy"),
+					`#!/usr/bin/env node\nrequire("node:fs").appendFileSync(${JSON.stringify(versionMarker)}, "ran\\n");\nconsole.log("mypy 1.0.0");\n`,
+				);
+				rememberToolPath("mypy", remembered);
+				process.env.PATH = [
+					project.bin,
+					outside,
+					path.dirname(process.execPath),
+				].join(path.delimiter);
+				delete process.env.PI_LENS_DISABLE_TOOL_INSTALL;
+				process.env.PI_LENS_TEST_MODE = "0";
+				process.chdir(project.root);
+				setProjectTrustState("unknown");
 
-			await refreshManagedTool("mypy");
+				await refreshManagedTool("mypy");
 
-			// The version probe ran, through a runtime outside the project.
-			expect(fs.readFileSync(versionMarker, "utf8")).toContain("ran");
-			expect(project.ran()).toBe("");
-		});
+				// The version probe ran, through a runtime outside the project.
+				expect(fs.readFileSync(versionMarker, "utf8")).toContain("ran");
+				expect(project.ran()).toBe("");
+			},
+		);
 
 		it("keeps project PATH entries out of the managed tool environment", async () => {
 			const project = makeProject();

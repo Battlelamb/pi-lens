@@ -855,7 +855,7 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/bash-file-access.ts": 9,
 		// 10 -> 7 (#4268): the hand-built `path.join` candidate list folds onto the
 		// shared `findLocalBinAt` trust seam, one construction site for the shim.
-		"clients/biome-client.ts": 7,
+		"clients/biome-client.ts": 6,
 		"clients/blocker-freshness.ts": 4,
 		// 5 -> 6 (#3594): the remembered-holder skip's degradation `subject`,
 		// `path.resolve(dir)`, mirroring `withGenerationLockSync`'s own (#3578).

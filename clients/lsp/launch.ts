@@ -338,7 +338,7 @@ function bypassPs1OnWindows(
 ): { command: string; args: string[]; needsShell: boolean } | undefined {
 	// 1. Prefer the .cmd sibling — cmd.exe handles it without execution policy issues
 	const cmdPath = `${ps1Path.slice(0, -4)}.cmd`;
-	if (fs.existsSync(cmdPath)) {
+	if (isAcceptedCommandFile(cmdPath)) {
 		return { command: cmdPath, args, needsShell: true };
 	}
 
@@ -354,7 +354,8 @@ function bypassPs1OnWindows(
 		if (match) {
 			const relPath = match[1].replace(/[/\\]/g, path.sep);
 			const jsPath = path.resolve(path.dirname(ps1Path), "..", relPath);
-			if (fs.existsSync(jsPath)) {
+			// This bypass runs only on Windows, where command acceptance is file-only.
+			if (isAcceptedCommandFile(jsPath)) {
 				return {
 					command: process.execPath,
 					args: [jsPath, ...args],
@@ -391,7 +392,7 @@ function findBinaryOnPath(
 			.map((line) => line.trim())
 			.filter(Boolean);
 		for (const candidate of result) {
-			if (fs.existsSync(candidate)) {
+			if (isAcceptedCommandFile(candidate)) {
 				return candidate;
 			}
 		}

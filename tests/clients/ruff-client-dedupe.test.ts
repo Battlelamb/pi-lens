@@ -4,7 +4,11 @@ const safeSpawnAsync = vi.fn();
 const safeSpawn = vi.fn();
 const ensureTool = vi.fn();
 
-vi.mock("../../clients/safe-spawn.js", () => ({ safeSpawnAsync, safeSpawn }));
+vi.mock("../../clients/safe-spawn.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../clients/safe-spawn.js")>()),
+	safeSpawnAsync,
+	safeSpawn,
+}));
 vi.mock("../../clients/installer/index.js", () => ({
 	// #2140: the probe resolver asks the installer for a release-managed
 	// binary (`~/.pi-lens/bin`) before falling back to PATH. Undefined is

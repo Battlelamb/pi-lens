@@ -103,6 +103,7 @@ import {
 	trustScopedSpawnEnv,
 } from "../package-manager.js";
 import {
+	isAcceptedCommandFile,
 	resetSafeSpawnWindowsCommandCache,
 	safeSpawnAsync,
 } from "../safe-spawn.js";
@@ -2844,7 +2845,7 @@ export async function verifyToolBinary(
 
 	if (isWindows && /\.ps1$/i.test(execPath)) {
 		const cmdSibling = `${execPath.slice(0, -4)}.cmd`;
-		if (require("node:fs").existsSync(cmdSibling)) {
+		if (isAcceptedCommandFile(cmdSibling)) {
 			execPath = cmdSibling;
 		}
 	}
@@ -3189,7 +3190,7 @@ export function resolvePlatformPackageBinary(
 		for (const bin of spec.binaries) {
 			for (const name of isWin ? [`${bin}.exe`, bin] : [bin]) {
 				const candidate = path.join(pkgDir, name);
-				if (existsSync(candidate)) return candidate;
+				if (isAcceptedCommandFile(candidate)) return candidate;
 			}
 		}
 	} catch {

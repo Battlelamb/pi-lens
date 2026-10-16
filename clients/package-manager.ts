@@ -26,7 +26,11 @@ import {
 	logAvailabilityDecision,
 	startHostStallSampler,
 } from "./dispatch/runners/utils/availability-policy.js";
-import { safeSpawnAsync } from "./safe-spawn.js";
+import {
+	safeSpawnAsync,
+	getPathExts,
+	isAcceptedCommandFile,
+} from "./safe-spawn.js";
 import { probeToolAsync } from "./tool-probe.js";
 import { createAvailabilityProbeFlight } from "./availability-probe-flight.js";
 import {
@@ -530,20 +534,22 @@ export async function allAvailableGlobalBinDirs(
  * probe: it finds tools installed via `pnpm add -g` / `bun add -g` (whose bin
  * dirs are often not on PATH) and survives the PATH-cache staleness that follows
  * an `install -g`. On Windows it checks the `.cmd` shim, then `.exe`, then the
- * bare name; on Unix just the bare name.
+ * remaining PATHEXT suffixes and bare name; on Unix just the bare name.
  */
 export async function findGlobalBinary(
 	command: string,
 	windowsExt = ".cmd",
 ): Promise<string | undefined> {
 	const candidates = onWindows()
-		? [`${command}${windowsExt}`, `${command}.exe`, command]
+		? [...new Set([windowsExt, ".exe", ...getPathExts(process.env), ""])].map(
+				(ext) => `${command}${ext}`,
+			)
 		: [command];
 	try {
 		for (const binDir of await allAvailableGlobalBinDirs()) {
 			for (const name of candidates) {
 				const full = path.join(binDir, name);
-				if (fs.existsSync(full)) return full;
+				if (isAcceptedCommandFile(full)) return full;
 			}
 		}
 	} catch {
@@ -790,7 +796,7 @@ export interface LocalBinWalkOptions {
 }
 
 /**
- * THE project-local tool-bin walk: yields every `<binDir>/<tool>` that exists
+ * THE project-local tool-bin walk: yields every accepted `<binDir>/<tool>`
  * in `startDir` or one of its ancestors, nearest first, stopping at the HOME
  * ceiling (never the fs root — see below).
  *
@@ -840,7 +846,7 @@ function expandCandidateNames(
 		: [...tools];
 }
 
-/** Every `<dir>/<binDir>/<name>` that exists, for exactly `dir` — no walk. */
+/** Every accepted `<dir>/<binDir>/<name>`, for exactly `dir` — no walk. */
 function* matchesInDir(
 	dir: string,
 	names: readonly string[],
@@ -849,7 +855,7 @@ function* matchesInDir(
 	for (const name of names) {
 		for (const binDir of binDirs) {
 			const full = path.join(dir, binDir, name);
-			if (fs.existsSync(full)) yield full;
+			if (isAcceptedCommandFile(full)) yield full;
 		}
 	}
 }

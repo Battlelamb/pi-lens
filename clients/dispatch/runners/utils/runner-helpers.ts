@@ -57,6 +57,7 @@ import {
 import { logLatency } from "../../../latency-logger.js";
 import {
 	safeSpawnAsync,
+	isAcceptedCommandFile,
 	resolveWindowsCommandForEnvironment,
 } from "../../../safe-spawn.js";
 import {
@@ -486,7 +487,7 @@ export function resolveAdoptedRootCommand(
 	// candidates and PATH without probing either before containment.
 	const candidates = managedNodeToolCandidates(command);
 	let selected = candidates.find(
-		(candidate) => candidate && fs.existsSync(candidate),
+		(candidate) => candidate && isAcceptedCommandFile(candidate),
 	);
 	if (!selected) {
 		if (process.platform === "win32") {
@@ -2142,7 +2143,7 @@ function buildSgLocalBins(): SgLocalBinCandidate[] {
 			".bin",
 			candidate,
 		);
-		if (fs.existsSync(managedBin)) {
+		if (isAcceptedCommandFile(managedBin)) {
 			bins.push({ path: managedBin, source: "own-install" });
 		}
 	}

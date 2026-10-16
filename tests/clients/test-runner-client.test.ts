@@ -3410,7 +3410,8 @@ describe("resolveExec argv preservation matrix (#1098)", () => {
 					);
 				}
 				fs.mkdirSync(path.dirname(localBinPath), { recursive: true });
-				fs.writeFileSync(localBinPath, "");
+				// #4530 r7: command acceptance requires the executable bit on POSIX.
+				fs.writeFileSync(localBinPath, "", { mode: 0o755 });
 
 				const testFile = path.join(
 					tmpDir,
@@ -3505,7 +3506,8 @@ describe("resolveExec argv preservation matrix (#1098)", () => {
 			`cargo${binSuffix()}`,
 		);
 		fs.mkdirSync(path.dirname(localBinPath), { recursive: true });
-		fs.writeFileSync(localBinPath, "");
+		// #4530 r7: command acceptance requires the executable bit on POSIX.
+		fs.writeFileSync(localBinPath, "", { mode: 0o755 });
 
 		const testFile = path.join(tmpDir, "src", "lib.rs");
 

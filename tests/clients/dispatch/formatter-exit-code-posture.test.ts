@@ -25,7 +25,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestEnvironment } from "../test-utils.js";
 
 const safeSpawnAsync = vi.fn();
-vi.mock("../../../clients/safe-spawn.js", () => ({
+vi.mock("../../../clients/safe-spawn.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../clients/safe-spawn.js")>()),
 	safeSpawnAsync,
 	safeSpawn: vi.fn(),
 	which: vi.fn(async () => null),
@@ -180,7 +181,8 @@ describe("formatter exit-code posture (#1337)", () => {
 			const binDir = path.join(env.tmpDir, "node_modules", ".bin");
 			fs.mkdirSync(binDir, { recursive: true });
 			for (const name of ["biome", "biome.cmd"]) {
-				fs.writeFileSync(path.join(binDir, name), "");
+				// #4530 r7: command acceptance requires the executable bit on POSIX.
+				fs.writeFileSync(path.join(binDir, name), "", { mode: 0o755 });
 			}
 
 			const resolved = await biomeFormatter.resolveCommand?.(
