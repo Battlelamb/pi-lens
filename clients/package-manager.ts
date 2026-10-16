@@ -47,7 +47,10 @@ import {
 	walkUpDirs,
 } from "./path-utils.js";
 import { getProjectTrustState } from "./project-trust.js";
-import { recordDegradationOnce } from "./degradation-ledger.js";
+import {
+	getDegradationLedgerGeneration,
+	recordDegradationOnce,
+} from "./degradation-ledger.js";
 import { logExtension } from "./extension-log.js";
 
 export type NodePackageManager = "npm" | "pnpm" | "yarn" | "bun";
@@ -690,12 +693,24 @@ export function commandSearchReachesProject(cwd: string): boolean {
 }
 
 /**
+ * #4530: the user-facing PATH-refusal notice is once per session, not once per
+ * refused entry. Several entries can reach the same project (an absolute
+ * `node_modules/.bin` and husky's relative one), and each warns with the same
+ * sentence, so the message names no entry and repeating it adds no signal. The
+ * `trust-refusal` ledger row below stays per entry, so the exact set is still
+ * observable. Keyed on the degradation generation, which `session_start`
+ * bumps, the same re-arm `unknownProjectLocalNoticeGeneration` uses.
+ */
+let trustScopedPathNoticeGeneration = -1;
+
+/**
  * #4530: `pathValue` without the entries that reach the session project
  * (`process.cwd()`) or `cwd`, while pi has not trusted the project; a trusted
  * project gets `pathValue` back unchanged. pi-lens's own lookups, and the
  * tools they start, resolve names through this PATH, so a binary inside the
  * project never answers for a global one. Each ignored entry is recorded once
- * per session. `refusedEntries`, when supplied, receives those path spellings.
+ * per session; the notice is emitted once per session. `refusedEntries`, when
+ * supplied, receives those path spellings.
  */
 export function trustScopedPath(
 	pathValue: string,
@@ -704,6 +719,7 @@ export function trustScopedPath(
 ): string {
 	const trust = getProjectTrustState();
 	if (trust === "trusted") return pathValue;
+	const generation = getDegradationLedgerGeneration();
 	const session = process.cwd();
 	const reaches = [session, ...(pathsEqual(cwd, session) ? [] : [cwd])].map(
 		projectReach,
@@ -715,13 +731,13 @@ export function trustScopedPath(
 			continue;
 		}
 		refusedEntries?.push(entry);
-		if (
-			recordDegradationOnce({
-				kind: "trust-refusal",
-				subject: `project-path-entry:${entry}`,
-				reason: `lookup dir inside the project ignored: pi project trust is ${trust}`,
-			})
-		) {
+		recordDegradationOnce({
+			kind: "trust-refusal",
+			subject: `project-path-entry:${entry}`,
+			reason: `lookup dir inside the project ignored: pi project trust is ${trust}`,
+		});
+		if (trustScopedPathNoticeGeneration !== generation) {
+			trustScopedPathNoticeGeneration = generation;
 			logExtension({
 				subsystem: "project-trust",
 				level: "warn",

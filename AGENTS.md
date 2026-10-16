@@ -819,8 +819,9 @@ file-scoped worklist and receives no project-wide scanner output.
 - Global binary lookups honour project trust. Until pi trusts the project,
   the installer's and the LSP launcher's lookups, and the spawns they make,
   use `trustScopedPath`/`trustScopedSpawnEnv` (`clients/package-manager.ts`):
-  PATH entries that reach the project are dropped, recorded once each, and a
-  global dir inside the project is skipped.
+  PATH entries that reach the project are dropped and recorded once each, the
+  refusal notice is emitted once per session, and a global dir inside the
+  project is skipped.
 - Under pi, project trust is consumed through `isProjectTrusted`; pi-lens never
   registers the host's trust-answer handler. `compileLspRegistry` is the one admission
   seam for LSP executable fields: global config and built-ins remain allowed,

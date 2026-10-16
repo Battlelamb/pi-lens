@@ -717,9 +717,11 @@ describe.skipIf(process.platform === "win32")(
 				const warnings = warnMessages();
 				const refusals =
 					trust === "unknown" ? Number(projectCompiler) + Number(extra) : 0;
+				// #4530 r8: the notice is once per session even when several project
+				// entries are refused; the exact set stays on the ledger row below.
 				expect(
 					warnings.filter((message) => TRUST_WORDING.test(message)),
-				).toHaveLength(refusals);
+				).toHaveLength(refusals > 0 ? 1 : 0);
 				const resolution =
 					!launches && !(trust === "unknown" && projectCompiler);
 				expect(
@@ -1011,6 +1013,80 @@ describe.skipIf(process.platform === "win32")(
 							}),
 						]),
 					}),
+				]),
+			);
+		});
+
+		it("emits one trust notice for several refused PATH entries (husky's relative entry)", async () => {
+			const tree = buildPathTscTree("multi-refusal");
+			// The project compiler sits outside the `node_modules/typescript`
+			// ancestor walk, so only a refused PATH route can find it. Husky's
+			// `.husky/_/h` prepends the relative `node_modules/.bin`, a second
+			// entry that reaches the same untrusted project: both are refused and
+			// each records a ledger row, but the notice must stay one.
+			const projectPkg = path.join(
+				tree.project,
+				"tools",
+				"node_modules",
+				"typescript",
+			);
+			fs.mkdirSync(path.join(projectPkg, "bin"), { recursive: true });
+			fs.mkdirSync(path.join(projectPkg, "lib"), { recursive: true });
+			fs.mkdirSync(path.join(tree.project, "tools", "bin"), {
+				recursive: true,
+			});
+			fs.writeFileSync(
+				path.join(projectPkg, "package.json"),
+				`${JSON.stringify({ name: "typescript", version: "5.9.3" })}\n`,
+			);
+			fs.writeFileSync(
+				path.join(projectPkg, "bin", "tsc"),
+				"#!/usr/bin/env node\n",
+			);
+			fs.chmodSync(path.join(projectPkg, "bin", "tsc"), 0o755);
+			fs.writeFileSync(
+				path.join(projectPkg, "lib", "tsserver.js"),
+				"// project code\n",
+			);
+			fs.symlinkSync(
+				path.join("..", "node_modules", "typescript", "bin", "tsc"),
+				path.join(tree.project, "tools", "bin", "tsc"),
+			);
+			const finderBin = path.join(path.dirname(tree.project), "finder-bin");
+			fs.mkdirSync(finderBin);
+			fs.symlinkSync("/usr/bin/which", path.join(finderBin, "which"));
+			process.chdir(tree.project);
+			process.env.PATH = [
+				path.join(tree.project, "tools", "bin"),
+				"node_modules/.bin",
+				finderBin,
+			].join(path.delimiter);
+			const { setProjectTrustState } =
+				await import("../../../clients/project-trust.js");
+			setProjectTrustState("unknown");
+			const { TypeScriptServer } =
+				await import("../../../clients/lsp/server.js");
+
+			const spawned = await TypeScriptServer.spawn(tree.project, {
+				allowInstall: false,
+			});
+
+			expect(spawned).toBeUndefined();
+			expect(launchLSPMock).not.toHaveBeenCalled();
+			expect(
+				warnMessages().filter((message) => TRUST_WORDING.test(message)),
+			).toEqual([
+				"lookup dir inside the project ignored: mark the project trusted in pi or upgrade pi",
+			]);
+			const ledger = await import("../../../clients/degradation-ledger.js");
+			const trustRow = ledger
+				.getDegradationSummary()
+				.find((row) => row.kind === "trust-refusal");
+			expect(trustRow?.count).toBe(2);
+			expect(trustRow?.latestReasons.map((entry) => entry.subject)).toEqual(
+				expect.arrayContaining([
+					"project-path-entry:node_modules/.bin",
+					`project-path-entry:${path.join(tree.project, "tools", "bin")}`,
 				]),
 			);
 		});
