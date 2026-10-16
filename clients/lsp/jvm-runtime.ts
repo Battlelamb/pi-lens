@@ -241,7 +241,7 @@ async function runJavaProbe(): Promise<boolean | undefined> {
 	try {
 		result = await safeSpawnAsync(finder, ["java"], {
 			timeout: JAVA_PROBE_TIMEOUT_MS,
-			env: trustScopedSpawnEnv(),
+			env: trustScopedSpawnEnv() ?? process.env,
 		});
 	} finally {
 		hostStallMs = sampler.stop();

@@ -831,10 +831,10 @@ describe.skipIf(process.platform === "win32")(
 			expect(tsserverPathOf(spawned)).toBe(tree.tsserver);
 		});
 
-		it("still treats a bare tsc that resolves into the project as project code (unknown trust)", async () => {
+		it("excludes a project PATH compiler before discovery and records the refusal (unknown trust)", async () => {
 			const tree = buildPathTscTree("project-bin");
-			// A PATH entry inside the project tree must keep its project provenance
-			// after the bare name is resolved. The compiler sits outside the
+			// A PATH entry inside the project tree is excluded before the bare
+			// name is resolved. The compiler sits outside the
 			// `node_modules/typescript` ancestor walk so only the PATH route finds it.
 			const projectPkg = path.join(
 				tree.project,
@@ -878,11 +878,12 @@ describe.skipIf(process.platform === "win32")(
 
 			expect(spawned).toBeUndefined();
 			expect(launchLSPMock).not.toHaveBeenCalled();
-			// One notice per generation (#4414 F1): the genuine trust refusal is not
-			// followed by the "no compiler resolved" notice, which would blame
-			// resolution for a compiler pi found and refused.
+			// #4530 scopes PATH before discovery: #4414 still forbids using the
+			// project compiler as a global. Record the excluded entry and the
+			// resulting lack of an eligible compiler.
 			expect(warnMessages()).toEqual([
-				"project-local LSP binary refused: mark the project trusted in pi or upgrade pi",
+				"lookup dir inside the project ignored: mark the project trusted in pi or upgrade pi",
+				"TypeScript language server not started: no absolute TypeScript compiler (tsserver.js) could be resolved; install typescript in the project or let pi-lens install it",
 			]);
 		});
 	},

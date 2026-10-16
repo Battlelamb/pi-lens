@@ -2586,7 +2586,7 @@ export async function isCommandAvailableAsync(
 	const finder = process.platform === "win32" ? "where" : "which";
 	const result = await safeSpawnAsync(finder, [command], {
 		timeout: 5000,
-		env,
+		env: env ?? process.env,
 	});
 	return result.status === 0 && !result.error;
 }
@@ -2602,7 +2602,7 @@ export async function findCommandAsync(
 	const finder = process.platform === "win32" ? "where" : "which";
 	const result = await safeSpawnAsync(finder, [command], {
 		timeout: 5000,
-		env,
+		env: env ?? process.env,
 	});
 
 	if (result.status !== 0 || result.error) return null;

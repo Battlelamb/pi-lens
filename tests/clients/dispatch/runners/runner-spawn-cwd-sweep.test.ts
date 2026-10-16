@@ -324,7 +324,7 @@ const NO_CWD_EXEMPTION_ROWS: ReadonlyArray<readonly [string, string]> = [
 		"the analysis root reaches runAnalyze as `key` (path.resolve(targetDir)); the name carries no `cwd`, so the wrapper rule reads it as unsupplied. Same #2894 verdict as dead-code-client: the input is a directory, and `resolveToolCwd` dirnames its `file` argument",
 	],
 	[
-		"clients/lsp/jvm-runtime.ts#runJavaProbe:41cf49b2",
+		"clients/lsp/jvm-runtime.ts#runJavaProbe:e3a30dc8",
 		"`which java` / `where java` PATH lookup for the JVM language servers",
 	],
 	[
@@ -360,11 +360,11 @@ const NO_CWD_EXEMPTION_ROWS: ReadonlyArray<readonly [string, string]> = [
 		"safeSpawnBatch forwards each command's own `options` object unchanged, so the cwd belongs to whoever built that batch entry",
 	],
 	[
-		"clients/safe-spawn.ts#isCommandAvailableAsync:45a177c3",
+		"clients/safe-spawn.ts#isCommandAvailableAsync:26e8bdbb",
 		"`which`/`where <command>` PATH lookup (async form)",
 	],
 	[
-		"clients/safe-spawn.ts#findCommandAsync:45a177c3",
+		"clients/safe-spawn.ts#findCommandAsync:26e8bdbb",
 		"`which`/`where <command>` PATH lookup that returns the resolved path",
 	],
 	[
@@ -610,7 +610,7 @@ const ORIGIN_ADMISSION_ROWS: ReadonlyArray<readonly [string, string]> = [
 		"cwd is runScan's own `cwd` parameter; `govulncheck -mode=source ./...` is relative to it by design",
 	],
 	[
-		"clients/installer/index.ts#runCommand:bed06f4a~dbf27697",
+		"clients/installer/index.ts#runCommand:9e63618c~dbf27697",
 		"cwd is runCommand's own `cwd` parameter; its three call sites in this file are the checked ones",
 	],
 	[
