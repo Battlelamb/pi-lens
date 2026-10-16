@@ -21,7 +21,11 @@ import { isTestMode } from "../env-utils.js";
 import { getGlobalPiLensDir } from "../file-utils.js";
 import { getGlobalPiLensLogDir } from "../probe-home-state.js";
 import { isFullyQualified } from "../path-utils.js";
-import { findGlobalBinary, isProjectLocalBinPath } from "../package-manager.js";
+import {
+	findGlobalBinary,
+	isProjectLocalBinPath,
+	trustScopedPath,
+} from "../package-manager.js";
 import {
 	getDegradationLedgerGeneration,
 	recordDegradationOnce,
@@ -771,7 +775,13 @@ export async function launchLSP(
 ): Promise<LSPProcess> {
 	const cwd = String(options.cwd ?? process.cwd());
 	const mergedEnv = { ...process.env, ...options.env };
-	const augmentedPath = await buildAugmentedPath(resolvePathValue(mergedEnv));
+	// #4530: while the project is not trusted, nothing this launch resolves
+	// through PATH (the lookup below, or the server's own) comes from a PATH
+	// entry inside the project.
+	const augmentedPath = trustScopedPath(
+		await buildAugmentedPath(resolvePathValue(mergedEnv)),
+		cwd,
+	);
 	// #3539: the child names this process's incarnation, so the orphan
 	// backstop can tell whose it is after this process dies and the child is
 	// reparented. With no tag of our own the child gets none (#3986): the

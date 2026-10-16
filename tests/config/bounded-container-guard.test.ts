@@ -521,7 +521,7 @@ describe("#2981 long-lived containers are bounded or admitted", () => {
 		"clients/opaque-mutation-scan.ts#getOpaqueBaselineStore:feff1538",
 		"clients/opaque-mutation-scan.ts#isGitWorktree:97337298",
 		"clients/package-manager.ts#PROBE_TIMEOUT_MS:ab1ec294",
-		"clients/package-manager.ts#execArgs:b2cb6a98",
+		"clients/package-manager.ts#execArgs:e94f9156",
 		"clients/package-root.ts#1f3e8efd",
 		"clients/project-lens-config.ts#configCache:77a8d572",
 		"clients/project-report.ts#computeDeadWeight:7e342b62",

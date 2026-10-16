@@ -51,7 +51,10 @@ import {
 	getToolPath,
 } from "../installer/index.js";
 import * as installer from "../installer/index.js";
-import { commandSearchReachesProject } from "../package-manager.js";
+import {
+	commandSearchReachesProject,
+	trustScopedSpawnEnv,
+} from "../package-manager.js";
 import {
 	classifyProbeFailure,
 	describeInstallAttempt,
@@ -1988,6 +1991,21 @@ function isOnPath(command: string): Promise<boolean> {
 }
 
 /**
+ * #4530: spawn options for a language-runtime install. Global binary lookups
+ * honour project trust: while the project is not trusted the runtime resolves
+ * through the trust-scoped PATH and runs from HOME, so project configuration
+ * does not steer it.
+ */
+function runtimeInstallSpawnOptions() {
+	const env = trustScopedSpawnEnv();
+	return {
+		timeout: 180000,
+		ignoreAmbientSignal: true,
+		...(env && { env, cwd: os.homedir() }),
+	};
+}
+
+/**
  * Try to install gopls via `go install`. Resolves true if the install succeeded.
  *
  * Async (was a blocking `spawnSync`): runs on the LSP runtime-install gate, off
@@ -2000,7 +2018,7 @@ export async function tryGoInstallGopls(): Promise<boolean> {
 	const result = await safeSpawnAsync(
 		isWindows ? "go.exe" : "go",
 		["install", "golang.org/x/tools/gopls@latest"],
-		{ timeout: 180000, ignoreAmbientSignal: true },
+		runtimeInstallSpawnOptions(),
 	);
 	return !result.error && result.status === 0;
 }
@@ -2010,7 +2028,7 @@ export async function tryDotnetToolInstall(tool: string): Promise<boolean> {
 	const result = await safeSpawnAsync(
 		"dotnet",
 		["tool", "install", "--tool-path", PI_LENS_BIN_DIR, tool],
-		{ timeout: 180000, ignoreAmbientSignal: true },
+		runtimeInstallSpawnOptions(),
 	);
 	if (!result.error && result.status === 0) return true;
 
@@ -2026,7 +2044,7 @@ export async function tryDotnetToolInstall(tool: string): Promise<boolean> {
 	const updateResult = await safeSpawnAsync(
 		"dotnet",
 		["tool", "update", "--tool-path", PI_LENS_BIN_DIR, tool],
-		{ timeout: 180000, ignoreAmbientSignal: true },
+		runtimeInstallSpawnOptions(),
 	);
 	return !updateResult.error && updateResult.status === 0;
 }
@@ -2478,7 +2496,7 @@ export async function tryGemInstall(gem: string): Promise<boolean> {
 	const result = await safeSpawnAsync(
 		"gem",
 		["install", gem, "--bindir", binDir, "--no-document"],
-		{ timeout: 180000, ignoreAmbientSignal: true },
+		runtimeInstallSpawnOptions(),
 	);
 	const ok = !result.error && result.status === 0;
 	// Add binDir to PATH so subsequent lookups find the installed gem

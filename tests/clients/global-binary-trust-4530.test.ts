@@ -1,0 +1,615 @@
+/**
+ * #4530: global binary lookups honour project trust.
+ *
+ * pi-lens finds tools outside the project in three ways: the package
+ * managers' global bin dirs (`findGlobalBinary`, the installer's npm-global
+ * rung), PATH (the installer's PATH rung), and the package manager itself
+ * (installs, managed refresh). Under pi trust `unknown` or `untrusted`, none
+ * of them may run a binary that lives inside the project, and project
+ * configuration may not redirect them; a trusted project behaves as before.
+ *
+ * Every case drives the production lookup against real files: the project
+ * fixtures are shell scripts that leave a marker when they run, and the real
+ * package manager on PATH answers the global-bin queries. Recurrence guarded:
+ * a lookup outside the project-local walk (#4248, #4515) still reaching into
+ * the project.
+ */
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+	getDegradationSummary,
+	resetDegradationLedger,
+} from "../../clients/degradation-ledger.js";
+import { getGlobalPiLensDir } from "../../clients/file-utils.js";
+import {
+	checkProbeCache,
+	ensureTool,
+	getAllToolStatuses,
+	getInstallAttempt,
+	getToolEnvironment,
+	getToolPath,
+	refreshManagedTool,
+	resetProbeCacheStateForTesting,
+} from "../../clients/installer/index.js";
+import {
+	tryDotnetToolInstall,
+	tryGemInstall,
+	tryGoInstallGopls,
+} from "../../clients/lsp/server.js";
+import {
+	_resetPackageManagerCache,
+	findGlobalBinary,
+	trustScopedPath,
+} from "../../clients/package-manager.js";
+import {
+	resetProjectTrust,
+	setProjectTrustState,
+} from "../../clients/project-trust.js";
+import { removeTempDirSync } from "./test-utils.js";
+
+const FIXTURE_TOOL = "pi-lens-4530-fixture-ls";
+const SAVED_ENV = [
+	"PATH",
+	"HOME",
+	"npm_config_prefix",
+	"NPM_CONFIG_PREFIX",
+	"PI_LENS_DISABLE_TOOL_INSTALL",
+	"PI_LENS_TEST_MODE",
+] as const;
+const savedEnv = new Map<string, string | undefined>();
+const originalCwd = process.cwd();
+const dirs: string[] = [];
+
+function tempDir(prefix: string): string {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+	dirs.push(dir);
+	return dir;
+}
+
+/** A project root; `marker` exists once any fixture planted in it has run. */
+function makeProject() {
+	const root = tempDir("pi-lens-4530-project-");
+	fs.writeFileSync(path.join(root, "package.json"), "{}\n");
+	const marker = path.join(root, "executed.marker");
+	return {
+		root,
+		marker,
+		bin: path.join(root, "node_modules", ".bin"),
+		ran: (): string =>
+			fs.existsSync(marker) ? fs.readFileSync(marker, "utf8").trim() : "",
+	};
+}
+
+function writeScript(file: string, body: string): string {
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, body, { mode: 0o755 });
+	return file;
+}
+
+/** A shell fixture that appends its argv to `marker` and prints a version. */
+function plant(file: string, marker: string): string {
+	return writeScript(
+		file,
+		`#!/bin/sh\necho "$0 $*" >> ${JSON.stringify(marker)}\necho 1.0.0\n`,
+	);
+}
+
+function dirOf(command: string): string {
+	const found = (savedEnv.get("PATH") ?? "")
+		.split(path.delimiter)
+		.find((dir) => dir && fs.existsSync(path.join(dir, command)));
+	if (!found) throw new Error(`${command} is not on PATH`);
+	return found;
+}
+
+function trustRows(fragment: string) {
+	return getDegradationSummary()
+		.filter((group) => group.kind === "trust-refusal")
+		.flatMap((group) => group.latestReasons)
+		.filter((row) => row.subject.includes(fragment));
+}
+
+/** A probe-cache entry for `toolId`, as a past discovery pass leaves it. */
+function rememberToolPath(toolId: string, file: string): void {
+	const stat = fs.statSync(file);
+	fs.mkdirSync(getGlobalPiLensDir(), { recursive: true });
+	fs.writeFileSync(
+		path.join(getGlobalPiLensDir(), "probe-cache.json"),
+		JSON.stringify({
+			[toolId]: {
+				path: file,
+				mtimeMs: stat.mtimeMs,
+				sizeBytes: stat.size,
+				cachedAt: Date.now(),
+			},
+		}),
+	);
+	resetProbeCacheStateForTesting();
+}
+
+function clearStore(): void {
+	for (const name of ["tools", "pip-tools", "pip-user", "probe-cache.json"]) {
+		fs.rmSync(path.join(getGlobalPiLensDir(), name), {
+			recursive: true,
+			force: true,
+		});
+	}
+}
+
+beforeEach(() => {
+	for (const key of SAVED_ENV) savedEnv.set(key, process.env[key]);
+	// The host's own npm prefix variable would answer for the global query.
+	delete process.env.npm_config_prefix;
+	delete process.env.NPM_CONFIG_PREFIX;
+	resetProjectTrust();
+	resetDegradationLedger();
+	_resetPackageManagerCache();
+	resetProbeCacheStateForTesting();
+	clearStore();
+});
+
+afterEach(() => {
+	process.chdir(originalCwd);
+	for (const [key, value] of savedEnv) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+	resetProjectTrust();
+	_resetPackageManagerCache();
+	resetProbeCacheStateForTesting();
+	clearStore();
+	while (dirs.length) removeTempDirSync(dirs.pop() as string);
+});
+
+// lane: Linux and macOS unit shards; the fixtures are POSIX shell scripts.
+describe.skipIf(process.platform === "win32")(
+	"global bin dirs honour project trust (#4530)",
+	() => {
+		it("keeps project configuration from redirecting the global lookup under unknown trust", async () => {
+			const project = makeProject();
+			const elsewhere = tempDir("pi-lens-4530-elsewhere-");
+			const planted = plant(
+				path.join(elsewhere, "bin", FIXTURE_TOOL),
+				project.marker,
+			);
+			fs.writeFileSync(
+				path.join(project.root, ".npmrc"),
+				`prefix=${elsewhere}\n`,
+			);
+			process.chdir(project.root);
+
+			setProjectTrustState("unknown");
+			expect(await findGlobalBinary(FIXTURE_TOOL)).toBeUndefined();
+
+			// A trusted project behaves as before: its configuration counts.
+			setProjectTrustState("trusted");
+			expect(await findGlobalBinary(FIXTURE_TOOL)).toBe(planted);
+		});
+
+		it("drops a global bin dir inside the project and records it once", async () => {
+			const project = makeProject();
+			const prefix = path.join(project.root, "prefix");
+			const planted = plant(
+				path.join(prefix, "bin", FIXTURE_TOOL),
+				project.marker,
+			);
+			process.env.npm_config_prefix = prefix;
+			process.chdir(project.root);
+
+			setProjectTrustState("unknown");
+			expect(await findGlobalBinary(FIXTURE_TOOL)).toBeUndefined();
+			expect(await findGlobalBinary(FIXTURE_TOOL)).toBeUndefined();
+			expect(trustRows(`project-path-entry:${prefix}`)).toEqual([
+				expect.objectContaining({
+					reason:
+						"lookup dir inside the project ignored: pi project trust is unknown",
+				}),
+			]);
+
+			setProjectTrustState("trusted");
+			expect(await findGlobalBinary(FIXTURE_TOOL)).toBe(planted);
+		});
+
+		it("never runs a PATH lookup helper from a project bin dir", async () => {
+			const project = makeProject();
+			plant(path.join(project.bin, "which"), project.marker);
+			process.env.PATH = [project.bin, savedEnv.get("PATH")].join(
+				path.delimiter,
+			);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			await findGlobalBinary(FIXTURE_TOOL);
+
+			expect(project.ran()).toBe("");
+		});
+
+		it("never runs a package manager from a project bin dir", async () => {
+			const project = makeProject();
+			for (const manager of ["npm", "pnpm", "yarn"]) {
+				plant(path.join(project.bin, manager), project.marker);
+			}
+			process.env.PATH = [project.bin, savedEnv.get("PATH")].join(
+				path.delimiter,
+			);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			await findGlobalBinary(FIXTURE_TOOL);
+
+			expect(project.ran()).toBe("");
+		});
+
+		it("resolves the package manager's own runtime outside a project bin dir", async () => {
+			const project = makeProject();
+			plant(path.join(project.bin, "node"), project.marker);
+			process.env.PATH = [project.bin, savedEnv.get("PATH")].join(
+				path.delimiter,
+			);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			await findGlobalBinary(FIXTURE_TOOL);
+
+			expect(project.ran()).toBe("");
+		});
+	},
+);
+
+// lane: Linux and macOS unit shards; the fixtures are POSIX shell scripts.
+describe.skipIf(process.platform === "win32")(
+	"installer lookups honour project trust (#4530)",
+	() => {
+		it("skips a PATH entry inside the project in the PATH rung", async () => {
+			const project = makeProject();
+			const direnvBin = path.join(project.root, "bin");
+			plant(path.join(direnvBin, "stylelint"), project.marker);
+			process.env.PATH = [direnvBin, path.dirname(process.execPath)].join(
+				path.delimiter,
+			);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			// A bare-name answer would later resolve through the same PATH, to the
+			// project's copy.
+			expect(await getToolPath("stylelint")).not.toBe("stylelint");
+			expect(project.ran()).toBe("");
+			expect(
+				getDegradationSummary().filter(
+					(group) => group.kind === "installer-path-candidate-unrunnable",
+				),
+			).toEqual([]);
+		});
+
+		it("verifies a PATH candidate with a runtime from outside the project", async () => {
+			const project = makeProject();
+			plant(path.join(project.bin, "node"), project.marker);
+			const outside = tempDir("pi-lens-4530-outside-");
+			writeScript(
+				path.join(outside, "stylelint"),
+				'#!/usr/bin/env node\nconsole.log("16.0.0");\n',
+			);
+			process.env.PATH = [
+				project.bin,
+				outside,
+				path.dirname(process.execPath),
+				savedEnv.get("PATH"),
+			].join(path.delimiter);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			expect(await getToolPath("stylelint")).toBe("stylelint");
+			expect(project.ran()).toBe("");
+		});
+
+		it("never verifies a global-rung binary inside the project", async () => {
+			const project = makeProject();
+			const prefix = path.join(project.root, "tools-prefix");
+			plant(path.join(prefix, "bin", "stylelint"), project.marker);
+			fs.writeFileSync(path.join(project.root, ".npmrc"), `prefix=${prefix}\n`);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			expect(await getToolPath("stylelint")).toBeUndefined();
+			expect(project.ran()).toBe("");
+		});
+
+		it("never asks a project interpreter where user tools live", async () => {
+			const project = makeProject();
+			const venvBin = path.join(project.root, ".venv", "bin");
+			for (const python of ["python3", "python"]) {
+				plant(path.join(venvBin, python), project.marker);
+			}
+			const outside = tempDir("pi-lens-4530-outside-");
+			process.env.PATH = [venvBin, outside].join(path.delimiter);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			await getToolPath("mypy");
+
+			expect(project.ran()).toBe("");
+		});
+
+		it("installs through a package manager from outside the project", async () => {
+			const project = makeProject();
+			plant(path.join(project.bin, "npm"), project.marker);
+			const outside = tempDir("pi-lens-4530-outside-");
+			const outsideMarker = path.join(outside, "npm.marker");
+			// The outside manager fails at once, so nothing is downloaded.
+			writeScript(
+				path.join(outside, "npm"),
+				`#!/bin/sh\necho "$*" >> ${JSON.stringify(outsideMarker)}\nexit 1\n`,
+			);
+			process.env.PATH = [project.bin, outside, dirOf("which")].join(
+				path.delimiter,
+			);
+			delete process.env.PI_LENS_DISABLE_TOOL_INSTALL;
+			process.env.PI_LENS_TEST_MODE = "0";
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			expect(await ensureTool("stylelint")).toBeUndefined();
+
+			expect(project.ran()).toBe("");
+			expect(fs.readFileSync(outsideMarker, "utf8")).toContain("install");
+			expect(getInstallAttempt("stylelint")).toMatchObject({
+				outcome: "failed",
+			});
+		});
+
+		it("installs pip tools without a project interpreter", async () => {
+			const project = makeProject();
+			const venvBin = path.join(project.root, ".venv", "bin");
+			for (const name of ["python3", "python", "pip3", "pip", "pipx"]) {
+				plant(path.join(venvBin, name), project.marker);
+			}
+			const outside = tempDir("pi-lens-4530-outside-");
+			const userBase = tempDir("pi-lens-4530-user-base-");
+			// The outside python accepts every pip rung and names a user base
+			// that holds no tool, so the install ends without a download.
+			writeScript(
+				path.join(outside, "python3"),
+				`#!/bin/sh\ncase "$*" in *site*) echo ${JSON.stringify(userBase)};; esac\nexit 0\n`,
+			);
+			process.env.PATH = [venvBin, outside].join(path.delimiter);
+			delete process.env.PI_LENS_DISABLE_TOOL_INSTALL;
+			process.env.PI_LENS_TEST_MODE = "0";
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			await ensureTool("mypy");
+
+			expect(project.ran()).toBe("");
+		});
+
+		it("installs gems without a project gem", async () => {
+			const project = makeProject();
+			const vendorBin = path.join(project.root, "vendor", "bin");
+			plant(path.join(vendorBin, "gem"), project.marker);
+			process.env.PATH = [vendorBin, tempDir("pi-lens-4530-outside-")].join(
+				path.delimiter,
+			);
+			delete process.env.PI_LENS_DISABLE_TOOL_INSTALL;
+			process.env.PI_LENS_TEST_MODE = "0";
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			await ensureTool("rubocop");
+
+			expect(project.ran()).toBe("");
+		});
+
+		it("never lists a project binary as an installed global tool", async () => {
+			const project = makeProject();
+			const direnvBin = path.join(project.root, "bin");
+			plant(path.join(direnvBin, "stylelint"), project.marker);
+			process.env.PATH = [direnvBin, path.dirname(process.execPath)].join(
+				path.delimiter,
+			);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			const status = (await getAllToolStatuses()).find(
+				(entry) => entry.id === "stylelint",
+			);
+
+			expect(status?.source).not.toBe("global-path");
+			expect(project.ran()).toBe("");
+		});
+
+		it("reads a listed global tool's version with a runtime from outside the project", async () => {
+			const project = makeProject();
+			plant(path.join(project.bin, "node"), project.marker);
+			const outside = tempDir("pi-lens-4530-outside-");
+			writeScript(
+				path.join(outside, "stylelint"),
+				'#!/usr/bin/env node\nconsole.log("16.0.0");\n',
+			);
+			process.env.PATH = [
+				project.bin,
+				outside,
+				path.dirname(process.execPath),
+			].join(path.delimiter);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			const status = (await getAllToolStatuses()).find(
+				(entry) => entry.id === "stylelint",
+			);
+
+			expect(status).toMatchObject({
+				source: "global-path",
+				version: "16.0.0",
+			});
+			expect(project.ran()).toBe("");
+		});
+
+		it("re-checks a remembered tool with a runtime from outside the project", async () => {
+			const project = makeProject();
+			plant(path.join(project.bin, "node"), project.marker);
+			const outside = tempDir("pi-lens-4530-outside-");
+			const remembered = writeScript(
+				path.join(outside, "sg"),
+				'#!/usr/bin/env node\nconsole.log("ast-grep 0.39.0");\n',
+			);
+			rememberToolPath("ast-grep", remembered);
+			process.env.PATH = [project.bin, path.dirname(process.execPath)].join(
+				path.delimiter,
+			);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			expect(await checkProbeCache("ast-grep")).toBe(remembered);
+			expect(project.ran()).toBe("");
+		});
+
+		it("reads a refreshed tool's version with a runtime from outside the project", async () => {
+			const project = makeProject();
+			plant(path.join(project.bin, "node"), project.marker);
+			const outside = tempDir("pi-lens-4530-outside-");
+			const versionMarker = path.join(outside, "version.marker");
+			const remembered = writeScript(
+				path.join(outside, "mypy"),
+				`#!/usr/bin/env node\nrequire("node:fs").appendFileSync(${JSON.stringify(versionMarker)}, "ran\\n");\nconsole.log("mypy 1.0.0");\n`,
+			);
+			rememberToolPath("mypy", remembered);
+			process.env.PATH = [
+				project.bin,
+				outside,
+				path.dirname(process.execPath),
+			].join(path.delimiter);
+			delete process.env.PI_LENS_DISABLE_TOOL_INSTALL;
+			process.env.PI_LENS_TEST_MODE = "0";
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			await refreshManagedTool("mypy");
+
+			// The version probe ran, through a runtime outside the project.
+			expect(fs.readFileSync(versionMarker, "utf8")).toContain("ran");
+			expect(project.ran()).toBe("");
+		});
+
+		it("keeps project PATH entries out of the managed tool environment", async () => {
+			const project = makeProject();
+			const outside = tempDir("pi-lens-4530-outside-");
+			process.env.PATH = [project.bin, outside].join(path.delimiter);
+			process.chdir(project.root);
+
+			setProjectTrustState("unknown");
+			const scoped = (await getToolEnvironment()).PATH?.split(path.delimiter);
+			await getToolEnvironment();
+			expect(scoped).toContain(outside);
+			expect(scoped).not.toContain(project.bin);
+			expect(trustRows(`project-path-entry:${project.bin}`)).toHaveLength(1);
+
+			setProjectTrustState("trusted");
+			expect(
+				(await getToolEnvironment()).PATH?.split(path.delimiter),
+			).toContain(project.bin);
+		});
+	},
+);
+
+const RUNTIME_INSTALLS = [
+	["go", () => tryGoInstallGopls()],
+	["dotnet", () => tryDotnetToolInstall("pi-lens-4530-fixture-tool")],
+	["gem", () => tryGemInstall("pi-lens-4530-fixture-gem")],
+] as const;
+
+/** An outside runtime that records the directory it ran in, then fails. */
+function outsideRuntime(name: string): { dir: string; ranIn: () => string } {
+	const dir = tempDir("pi-lens-4530-outside-");
+	const marker = path.join(dir, `${name}.cwd`);
+	writeScript(
+		path.join(dir, name),
+		`#!/bin/sh\npwd -P >> ${JSON.stringify(marker)}\nexit 1\n`,
+	);
+	return {
+		dir,
+		ranIn: () =>
+			fs.existsSync(marker) ? fs.readFileSync(marker, "utf8").trim() : "",
+	};
+}
+
+// lane: Linux and macOS unit shards; the fixtures are POSIX shell scripts.
+describe.skipIf(process.platform === "win32")(
+	"LSP runtime installs honour project trust (#4530)",
+	() => {
+		for (const [name, install] of RUNTIME_INSTALLS) {
+			it(`runs the ${name} install from outside an untrusted project`, async () => {
+				const project = makeProject();
+				const direnvBin = path.join(project.root, "bin");
+				plant(path.join(direnvBin, name), project.marker);
+				const outside = outsideRuntime(name);
+				process.env.PATH = [direnvBin, outside.dir, dirOf("sh")].join(
+					path.delimiter,
+				);
+				process.chdir(project.root);
+				setProjectTrustState("unknown");
+
+				expect(await install()).toBe(false);
+
+				expect(project.ran()).toBe("");
+				const ranIn = outside.ranIn().split("\n");
+				expect(ranIn.length).toBeGreaterThan(0);
+				for (const dir of ranIn) {
+					expect(dir).toBe(fs.realpathSync(os.homedir()));
+				}
+			});
+		}
+
+		it("runs a runtime install in the session project when it is trusted", async () => {
+			const project = makeProject();
+			const direnvBin = path.join(project.root, "bin");
+			plant(path.join(direnvBin, "go"), project.marker);
+			process.env.PATH = [direnvBin, dirOf("sh")].join(path.delimiter);
+			process.chdir(project.root);
+			setProjectTrustState("trusted");
+
+			await tryGoInstallGopls();
+
+			expect(project.ran()).toContain("install");
+		});
+	},
+);
+
+describe("trustScopedPath (#4530)", () => {
+	it("keeps HOME's own tool dirs when the session runs at HOME", () => {
+		const home = tempDir("pi-lens-4530-home-");
+		const homeBin = path.join(home, "bin");
+		fs.mkdirSync(homeBin);
+		process.env.HOME = home;
+		process.chdir(home);
+		setProjectTrustState("unknown");
+
+		expect(trustScopedPath(homeBin)).toBe(homeBin);
+	});
+
+	it("keeps every entry for a trusted project", () => {
+		const project = makeProject();
+		const pathValue = [project.bin, "relative", ""].join(path.delimiter);
+		process.chdir(project.root);
+		setProjectTrustState("trusted");
+
+		expect(trustScopedPath(pathValue)).toBe(pathValue);
+	});
+
+	it("drops entries that reach the launch root, not only the session cwd", () => {
+		const session = makeProject();
+		const other = makeProject();
+		const outside = tempDir("pi-lens-4530-outside-");
+		const otherBin = path.join(other.root, "bin");
+		process.chdir(session.root);
+		setProjectTrustState("untrusted");
+
+		expect(
+			trustScopedPath(
+				[session.bin, otherBin, outside].join(path.delimiter),
+				other.root,
+			),
+		).toBe(outside);
+	});
+});

@@ -159,6 +159,15 @@ describe("formatter exit-code posture (#1337)", () => {
 	it("passes --no-errors-on-unmatched on every biome command path", async () => {
 		const { biomeFormatter } = await loadFormatters();
 		expect(biomeFormatter.command).toContain("--no-errors-on-unmatched");
+		// The planted biome below is project code, which the local branch resolves
+		// only for a trusted project (#4248). Untrusted, the lookup fell through to
+		// the installer's PATH rung, and passed only while the checkout's own biome
+		// sat on an npm-run PATH; that rung now ignores PATH dirs inside an
+		// untrusted session project (#4530). Same module instance as formatters
+		// after resetModules, so imported here.
+		const { resetProjectTrust, setProjectTrustState } =
+			await import("../../../clients/project-trust.js");
+		setProjectTrustState("trusted");
 
 		const env = setupTestEnvironment("pi-lens-biome-unmatched-");
 		try {
@@ -187,6 +196,7 @@ describe("formatter exit-code posture (#1337)", () => {
 				args.indexOf(filePath),
 			);
 		} finally {
+			resetProjectTrust();
 			env.cleanup();
 		}
 	});

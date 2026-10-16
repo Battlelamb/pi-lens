@@ -1,0 +1,166 @@
+/**
+ * #4530: the LSP launcher's global binary lookups honour project trust.
+ *
+ * `launchLSP` resolves a bare server name through PATH and the package
+ * managers' global bin dirs, and the server it starts resolves its own
+ * runtime through the same PATH. Under pi trust `unknown`, none of that may
+ * land inside the project, and project configuration may not redirect the
+ * global lookup; a trusted project behaves as before. Each case launches a
+ * real child; the project fixtures are shell scripts that leave a marker when
+ * they run. Recurrence guarded: a lookup outside the project-local refusal
+ * (#4248, #4515) still starting project code.
+ */
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { resetDegradationLedger } from "../../../clients/degradation-ledger.js";
+import {
+	type LSPProcess,
+	launchLSP,
+	stopLSP,
+} from "../../../clients/lsp/launch.js";
+import { _resetPackageManagerCache } from "../../../clients/package-manager.js";
+import {
+	resetProjectTrust,
+	setProjectTrustState,
+} from "../../../clients/project-trust.js";
+import { removeTempDirSync } from "../test-utils.js";
+
+const SERVER = "pi-lens-4530-fixture-server";
+const originalCwd = process.cwd();
+const originalPath = process.env.PATH;
+const originalPrefix = process.env.npm_config_prefix;
+const dirs: string[] = [];
+const launched: LSPProcess[] = [];
+
+function tempDir(prefix: string): string {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+	dirs.push(dir);
+	return dir;
+}
+
+function makeProject() {
+	const root = tempDir("pi-lens-4530-launch-");
+	fs.writeFileSync(path.join(root, "package.json"), "{}\n");
+	const marker = path.join(root, "executed.marker");
+	return {
+		root,
+		marker,
+		ran: (): boolean => fs.existsSync(marker),
+	};
+}
+
+/** A shell fixture that records that it ran, then stays up like a server. */
+function plant(file: string, marker: string): string {
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(
+		file,
+		`#!/bin/sh\necho ran >> ${JSON.stringify(marker)}\nexec sleep 5\n`,
+		{ mode: 0o755 },
+	);
+	return file;
+}
+
+async function launch(
+	command: string,
+	cwd: string,
+): Promise<LSPProcess | Error> {
+	try {
+		const proc = await launchLSP(command, ["--stdio"], { cwd });
+		launched.push(proc);
+		return proc;
+	} catch (error) {
+		return error as Error;
+	}
+}
+
+beforeEach(() => {
+	delete process.env.npm_config_prefix;
+	resetProjectTrust();
+	resetDegradationLedger();
+	_resetPackageManagerCache();
+});
+
+afterEach(async () => {
+	while (launched.length) await stopLSP(launched.pop() as LSPProcess);
+	process.chdir(originalCwd);
+	process.env.PATH = originalPath;
+	if (originalPrefix === undefined) delete process.env.npm_config_prefix;
+	else process.env.npm_config_prefix = originalPrefix;
+	resetProjectTrust();
+	_resetPackageManagerCache();
+	while (dirs.length) removeTempDirSync(dirs.pop() as string);
+});
+
+// lane: Linux and macOS lsp-spawn-heavy shard; the fixtures are POSIX shell scripts.
+describe.skipIf(process.platform === "win32")(
+	"launchLSP global lookups honour project trust (#4530)",
+	() => {
+		it("never resolves a bare server name through a PATH entry inside the project", async () => {
+			const project = makeProject();
+			const direnvBin = path.join(project.root, "bin");
+			plant(path.join(direnvBin, SERVER), project.marker);
+			process.env.PATH = [direnvBin, originalPath].join(path.delimiter);
+			setProjectTrustState("unknown");
+
+			const result = await launch(SERVER, project.root);
+
+			expect(result).toBeInstanceOf(Error);
+			expect(project.ran()).toBe(false);
+		});
+
+		it("never launches a server that project configuration placed in the global lookup", async () => {
+			const project = makeProject();
+			const prefix = path.join(project.root, "tools-prefix");
+			plant(path.join(prefix, "bin", SERVER), project.marker);
+			fs.writeFileSync(path.join(project.root, ".npmrc"), `prefix=${prefix}\n`);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			const result = await launch(SERVER, project.root);
+
+			expect(result).toBeInstanceOf(Error);
+			expect(project.ran()).toBe(false);
+		});
+
+		it("starts the server's runtime from outside the project", async () => {
+			const project = makeProject();
+			plant(
+				path.join(project.root, "node_modules", ".bin", "node"),
+				project.marker,
+			);
+			const outside = tempDir("pi-lens-4530-launch-outside-");
+			const server = path.join(outside, SERVER);
+			fs.writeFileSync(
+				server,
+				"#!/usr/bin/env node\nsetTimeout(() => {}, 5000);\n",
+				{ mode: 0o755 },
+			);
+			process.env.PATH = [
+				path.join(project.root, "node_modules", ".bin"),
+				path.dirname(process.execPath),
+				originalPath,
+			].join(path.delimiter);
+			setProjectTrustState("unknown");
+
+			const result = await launch(server, project.root);
+
+			expect(result).not.toBeInstanceOf(Error);
+			expect(project.ran()).toBe(false);
+		});
+
+		it("still launches a server from a project PATH entry for a trusted project", async () => {
+			const project = makeProject();
+			const direnvBin = path.join(project.root, "bin");
+			plant(path.join(direnvBin, SERVER), project.marker);
+			process.env.PATH = [direnvBin, originalPath].join(path.delimiter);
+			setProjectTrustState("trusted");
+
+			const result = await launch(SERVER, project.root);
+
+			expect(result).not.toBeInstanceOf(Error);
+			expect(project.ran()).toBe(true);
+		});
+	},
+);

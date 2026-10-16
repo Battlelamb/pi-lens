@@ -99,6 +99,8 @@ import {
 	installArgs,
 	pmBinary,
 	resolveNodePackageManager,
+	trustScopedPath,
+	trustScopedSpawnEnv,
 } from "../package-manager.js";
 import {
 	resetSafeSpawnWindowsCommandCache,
@@ -2378,7 +2380,9 @@ async function verifyAstGrepProbePath(binPath: string): Promise<boolean> {
 	// `probeToolAsync` already owns the synchronous-throw case (#533), the
 	// Windows `.cmd`/`.bat` resolution this used `shell: true` for, and the
 	// timeout tree-kill a bare `spawn({ timeout })` does not do.
+	const env = trustScopedSpawnEnv();
 	const result = await probeToolAsync(binPath, ["--version"], {
+		...(env && { env }),
 		timeout: 5000,
 	});
 	return (
@@ -2523,6 +2527,15 @@ export function resetPathWalkMemo(): void {
 	pathWalkMemo.clear();
 }
 
+function ambientPath(): string {
+	return process.env.PATH || process.env.Path || process.env.path || "";
+}
+
+/** #4530: the PATH the installer's own lookups walk (see `trustScopedPath`). */
+function installerSearchPath(): string {
+	return trustScopedPath(ambientPath());
+}
+
 /**
  * Check if a command is available in PATH by walking PATH entries and
  * verifying each candidate is a real file with non-zero size.
@@ -2532,10 +2545,9 @@ export function resetPathWalkMemo(): void {
 export async function isCommandAvailable(
 	command: string,
 	_args?: string[],
+	pathEnv: string = ambientPath(),
 ): Promise<boolean> {
 	const isWindows = installerPlatform() === "win32";
-	const pathEnv =
-		process.env.PATH || process.env.Path || process.env.path || "";
 	const dirs = pathEnv.split(path.delimiter);
 
 	// On Windows, probe .exe, .cmd, and .bat extensions in addition to bare name.
@@ -2841,8 +2853,12 @@ export async function verifyToolBinary(
 	// there), so no shell option exists or is needed here.
 	void useShell;
 
+	// #4530: global binary lookups honour project trust: what this spawn
+	// resolves through PATH stays outside an untrusted project.
+	const env = trustScopedSpawnEnv();
 	try {
 		const result = await safeSpawnAsync(execPath, verificationArgs, {
+			...(env && { env }),
 			timeout: timeoutMs,
 			input: "",
 			// A broken or version-blind language server can emit a bundled
@@ -2975,7 +2991,13 @@ export async function getAllToolStatuses(): Promise<ToolStatus[]> {
 		}
 
 		// 1. Check if in PATH (global)
-		if (await isCommandAvailable(tool.checkCommand, tool.checkArgs)) {
+		if (
+			await isCommandAvailable(
+				tool.checkCommand,
+				tool.checkArgs,
+				installerSearchPath(),
+			)
+		) {
 			status.installed = true;
 			status.source = "global-path";
 			status.path = tool.checkCommand;
@@ -2985,7 +3007,9 @@ export async function getAllToolStatuses(): Promise<ToolStatus[]> {
 			// #3400: a `tree-manifest` launcher answers any argument by starting a
 			// JVM, so `--version` is no probe there; the listing shows no version.
 			if (tool.verification !== "tree-manifest") {
+				const env = trustScopedSpawnEnv();
 				const probe = await probeToolAsync(tool.checkCommand, ["--version"], {
+					...(env && { env }),
 					timeout: 5000,
 				});
 				status.version =
@@ -3419,7 +3443,13 @@ async function getToolPathResolved(
 	// drift (#589) is about pi-lens's own managed installs, and feeding a
 	// system-installed version into it would turn every PATH tool at another
 	// version into a forced reinstall.
-	if (await isCommandAvailable(tool.checkCommand)) {
+	if (
+		await isCommandAvailable(
+			tool.checkCommand,
+			undefined,
+			installerSearchPath(),
+		)
+	) {
 		// A `verification: "package-entry"` entry (#2722) is verified from the
 		// installed tree BESIDE its shim — `verifyNpmPackageEntry` derives the
 		// package dir from `<…>/node_modules/.bin/<shim>`. A bare PATH name has no
@@ -3780,8 +3810,10 @@ async function getPythonUserBaseCandidates(): Promise<string[]> {
 				? [probe.command, ...probe.args].join(" ")
 				: probe.command;
 			let proc: ReturnType<typeof spawn>;
+			const env = trustScopedSpawnEnv();
 			try {
 				proc = spawn(spawnCmd, isWin ? [] : probe.args, {
+					...(env && { env }),
 					stdio: ["ignore", "pipe", "pipe"],
 					shell: isWin,
 				});
@@ -4590,8 +4622,10 @@ async function probeManagedToolVersion(
 ): Promise<string | undefined> {
 	const cached = (await readProbeCache())[tool.id];
 	if (!cached?.path || !existsSync(cached.path)) return undefined;
+	const env = trustScopedSpawnEnv();
 	try {
 		const result = await probeToolAsync(cached.path, tool.checkArgs, {
+			...(env && { env }),
 			timeout: getToolVerificationTimeout(tool),
 			input: "",
 			ignoreAmbientSignal: true,
@@ -5740,7 +5774,9 @@ async function installNpmTool(
 		const runInstallAttempt = async (
 			args: string[],
 		): Promise<{ ok: boolean; stderr: string }> => {
+			const env = trustScopedSpawnEnv();
 			const result = await safeSpawnAsync(pmCommand, args, {
+				...(env && { env }),
 				cwd: TOOLS_DIR,
 				timeout: INSTALL_TIMEOUT_MS,
 				ignoreAmbientSignal: true,
@@ -6079,10 +6115,12 @@ async function installPipTool(
 			// it: its `run_subprocess` starts from `dict(os.environ)` and blocklists
 			// only PYTHONPATH/__PYVENV_LAUNCHER__ (pipx 1.16.7 src/pipx/util.py
 			// `_fix_subprocess_env`), so PIP_CONSTRAINT reaches the pip it drives.
+			// #4530: every rung resolves through the trust-scoped PATH.
+			const baseEnv = env ?? trustScopedSpawnEnv();
 			const spawnEnv =
 				Object.keys(pipConstraintEnv).length > 0
-					? { ...(env ?? process.env), ...pipConstraintEnv }
-					: env;
+					? { ...(baseEnv ?? process.env), ...pipConstraintEnv }
+					: baseEnv;
 			return safeSpawnAsync(command, args, {
 				timeout: 120_000,
 				ignoreAmbientSignal: true,
@@ -6223,7 +6261,9 @@ async function installPipTool(
 				const base = await new Promise<string>((resolve) => {
 					let probe: ReturnType<typeof spawn>;
 					try {
+						const env = trustScopedSpawnEnv();
 						probe = spawn(candidate.command, ["-m", "site", "--user-base"], {
+							...(env && { env }),
 							stdio: ["ignore", "pipe", "pipe"],
 							shell: isWindows,
 						});
@@ -6306,10 +6346,12 @@ async function installGemTool(
 	packageName: string,
 ): Promise<string | undefined> {
 	try {
+		const env = trustScopedSpawnEnv();
 		const gemResult = await safeSpawnAsync(
 			"gem",
 			["install", packageName, "--no-document"],
 			{
+				...(env && { env }),
 				timeout: 120_000,
 				ignoreAmbientSignal: true,
 				lifetimeCoupled: true,
@@ -6900,8 +6942,9 @@ async function ensureToolResolved(
  */
 export async function getToolEnvironment(): Promise<NodeJS.ProcessEnv> {
 	const localBin = path.join(TOOLS_DIR, "node_modules", ".bin");
-	const currentPath =
-		process.env.PATH || process.env.Path || process.env.path || "";
+	// #4530: managed tools and the language servers started with this env never
+	// resolve a name through an untrusted project's PATH entries.
+	const currentPath = installerSearchPath();
 	const separator = process.platform === "win32" ? ";" : ":";
 	const nodeDir = path.dirname(process.execPath);
 	const withNode = nodeDir

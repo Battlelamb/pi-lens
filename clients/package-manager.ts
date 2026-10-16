@@ -33,7 +33,14 @@ import {
 	createGenerationSource,
 	type GenerationHandle,
 } from "./generation-guard.js";
-import { isAtOrAboveHomeDir, isUnderDir, walkUpDirs } from "./path-utils.js";
+import {
+	isAtOrAboveHomeDir,
+	isUnderCanonicalDir,
+	isUnderDir,
+	normalizeFilePath,
+	pathsEqual,
+	walkUpDirs,
+} from "./path-utils.js";
 import { getProjectTrustState } from "./project-trust.js";
 import { recordDegradationOnce } from "./degradation-ledger.js";
 import { logExtension } from "./extension-log.js";
@@ -154,7 +161,12 @@ async function probeAvailability(pm: NodePackageManager): Promise<boolean> {
 	let result: Awaited<ReturnType<typeof safeSpawnAsync>>;
 	let hostStallMs: number;
 	try {
-		result = await probeToolAsync(finder, [pm], { timeout: PROBE_TIMEOUT_MS });
+		// #4530: the lookup resolves through the trust-scoped PATH.
+		const env = trustScopedSpawnEnv();
+		result = await probeToolAsync(finder, [pm], {
+			timeout: PROBE_TIMEOUT_MS,
+			...(env && { env }),
+		});
 	} finally {
 		hostStallMs = sampler.stop();
 	}
@@ -412,7 +424,8 @@ export function execArgs(
  * a session reset cannot repopulate the fresh memo. Reset clears the flight
  * map separately, so later callers cannot share the pre-reset probe.
  */
-const globalBinDirCache = new Map<NodePackageManager, string[]>();
+// Keyed by trust scope too (#4530): a scoped query answers differently.
+const globalBinDirCache = new Map<string, string[]>();
 const packageManagerCacheGeneration = createGenerationSource(
 	"package-manager-global-bin",
 );
@@ -420,28 +433,30 @@ const globalBinDirProbeFlights = createAvailabilityProbeFlight<string[]>();
 
 /** Directories where a given manager installs global binaries. */
 async function globalBinDirsFor(pm: NodePackageManager): Promise<string[]> {
-	const cached = globalBinDirCache.get(pm);
+	const key = `${getProjectTrustState() === "trusted" ? "trusted" : "scoped"}:${pm}`;
+	const cached = globalBinDirCache.get(key);
 	if (cached) return cached;
 	const generation = packageManagerCacheGeneration.capture();
 
 	// Concurrent callers (dispatch runs several tools per edit) must share ONE
 	// probe rather than each spawning their own `npm config get prefix` (#1602).
-	const shared = globalBinDirProbeFlights.run(pm, () =>
-		probeGlobalBinDirs(pm, generation),
+	const shared = globalBinDirProbeFlights.run(key, () =>
+		probeGlobalBinDirs(pm, key, generation),
 	);
 	return shared.promise;
 }
 
 async function probeGlobalBinDirs(
 	pm: NodePackageManager,
+	key: string,
 	generation: GenerationHandle,
 ): Promise<string[]> {
 	if (pm === "bun") {
 		// bun has no per-call query cost — the global bin dir is deterministic.
 		const base = process.env.BUN_INSTALL || path.join(os.homedir(), ".bun");
 		const dirs = [path.join(base, "bin")];
-		generation.guardedWrite(pm, () => {
-			globalBinDirCache.set(pm, dirs);
+		generation.guardedWrite(key, () => {
+			globalBinDirCache.set(key, dirs);
 		});
 		return dirs;
 	}
@@ -452,7 +467,14 @@ async function probeGlobalBinDirs(
 			: pm === "pnpm"
 				? ["bin", "-g"]
 				: ["global", "bin"]; // yarn
-	const res = await safeSpawnAsync(pmBinary(pm), query, { timeout: 5000 });
+	// #4530: under an untrusted project the query resolves through the
+	// trust-scoped PATH and runs from HOME, so project configuration cannot
+	// redirect a global lookup.
+	const env = trustScopedSpawnEnv();
+	const res = await safeSpawnAsync(pmBinary(pm), query, {
+		timeout: 5000,
+		...(env && { env, cwd: os.homedir() }),
+	});
 	if (res.status !== 0 || res.error) return [];
 	const out = res.stdout.trim();
 	if (!out) return [];
@@ -461,8 +483,8 @@ async function probeGlobalBinDirs(
 	// on Windows. pnpm/yarn already print the bin dir directly.
 	const dirs =
 		pm === "npm" ? [onWindows() ? out : path.join(out, "bin")] : [out];
-	generation.guardedWrite(pm, () => {
-		globalBinDirCache.set(pm, dirs);
+	generation.guardedWrite(key, () => {
+		globalBinDirCache.set(key, dirs);
 	});
 	return dirs;
 }
@@ -489,6 +511,9 @@ export async function allAvailableGlobalBinDirs(
 			const normalized = path.resolve(dir);
 			if (seen.has(normalized)) continue;
 			seen.add(normalized);
+			// #4530: a global bin dir that reaches an untrusted project is no
+			// global one.
+			if (trustScopedPath(normalized) !== normalized) continue;
 			dirs.push(normalized);
 		}
 	}
@@ -609,40 +634,112 @@ function refuseLocalBin(tool: string, root: string): LocalBinTrustRefusal {
 	return { kind: "refused-by-trust", tool, root: resolvedRoot, trust };
 }
 
+/** Every project-local bin dir of `cwd` and its ancestors below HOME. */
+function* projectLocalBinDirs(cwd: string): Generator<string> {
+	for (const ancestor of walkUpDirs(cwd)) {
+		if (isAtOrAboveHomeDir(ancestor, os.homedir())) return;
+		for (const binDir of PROJECT_LOCAL_BIN_DIRS)
+			yield path.join(ancestor, binDir);
+	}
+}
+
 /** Keep trust classification beside the resolver's canonical directory set. */
 export function isProjectLocalBinPath(
 	resolvedCommand: string,
 	cwd: string,
 ): boolean {
-	for (const ancestor of walkUpDirs(cwd)) {
-		if (isAtOrAboveHomeDir(ancestor, os.homedir())) break;
-		if (
-			PROJECT_LOCAL_BIN_DIRS.some((binDir) =>
-				isUnderDir(resolvedCommand, path.join(ancestor, binDir)),
-			)
-		)
-			return true;
+	for (const binDir of projectLocalBinDirs(cwd)) {
+		if (isUnderDir(resolvedCommand, binDir)) return true;
 	}
 	return false;
 }
 
 /**
- * #4515: whether a bare command spawned with this process's PATH can resolve
- * into the project at `cwd`. An entry counts when it is a project-local bin dir
- * (the classifier above), lies at or under `cwd`, or is relative: a relative
- * entry follows each spawn's cwd, and on POSIX an empty entry is the cwd.
+ * #4515: a test for whether one PATH entry (or a global bin dir) can resolve
+ * a bare command into the project at `cwd`. It counts when it is a
+ * project-local bin dir of `cwd` or an ancestor, lies at or under `cwd`, or is
+ * relative: a relative entry follows each spawn's cwd, and on POSIX an empty
+ * entry is the cwd. A `cwd` at or above HOME is no project, the ceiling the
+ * project-local walk already stops at (#4530), so HOME's own tool dirs stay
+ * usable there. Each directory is canonicalized once per test, not per entry.
  */
-export function commandSearchReachesProject(cwd: string): boolean {
+function projectReach(cwd: string): (entry: string) => boolean {
 	const posix = process.platform !== "win32";
-	return (process.env.PATH ?? "")
-		.split(path.delimiter)
-		.some((entry) =>
-			entry === ""
-				? posix
-				: !path.isAbsolute(entry) ||
-					isUnderDir(entry, cwd) ||
-					isProjectLocalBinPath(entry, cwd),
-		);
+	const dirs = [
+		...(isAtOrAboveHomeDir(cwd, os.homedir()) ? [] : [cwd]),
+		...projectLocalBinDirs(cwd),
+	].map(normalizeFilePath);
+	return (entry) => {
+		if (entry === "") return posix;
+		if (!path.isAbsolute(entry)) return true;
+		const canonical = normalizeFilePath(entry);
+		return dirs.some((dir) => isUnderCanonicalDir(canonical, dir));
+	};
+}
+
+/** #4515: whether a bare command spawned with this process's PATH can resolve into `cwd`. */
+export function commandSearchReachesProject(cwd: string): boolean {
+	return (process.env.PATH ?? "").split(path.delimiter).some(projectReach(cwd));
+}
+
+/**
+ * #4530: `pathValue` without the entries that reach the session project
+ * (`process.cwd()`) or `cwd`, while pi has not trusted the project; a trusted
+ * project gets `pathValue` back unchanged. pi-lens's own lookups, and the
+ * tools they start, resolve names through this PATH, so a binary inside the
+ * project never answers for a global one. Each ignored entry is recorded once
+ * per session.
+ */
+export function trustScopedPath(
+	pathValue: string,
+	cwd: string = process.cwd(),
+): string {
+	const trust = getProjectTrustState();
+	if (trust === "trusted") return pathValue;
+	const session = process.cwd();
+	const reaches = [session, ...(pathsEqual(cwd, session) ? [] : [cwd])].map(
+		projectReach,
+	);
+	const kept: string[] = [];
+	for (const entry of pathValue.split(path.delimiter)) {
+		if (!reaches.some((reach) => reach(entry))) {
+			kept.push(entry);
+			continue;
+		}
+		if (
+			recordDegradationOnce({
+				kind: "trust-refusal",
+				subject: `project-path-entry:${entry}`,
+				reason: `lookup dir inside the project ignored: pi project trust is ${trust}`,
+			})
+		) {
+			logExtension({
+				subsystem: "project-trust",
+				level: "warn",
+				message:
+					"lookup dir inside the project ignored: mark the project trusted in pi or upgrade pi",
+				metadata: { entry, trust },
+			});
+		}
+	}
+	return kept.join(path.delimiter);
+}
+
+/**
+ * #4530: the environment for a spawn pi-lens makes on its own behalf, with
+ * every PATH spelling scoped by {@link trustScopedPath}, or `undefined` when
+ * the project is trusted and the caller keeps its environment.
+ */
+export function trustScopedSpawnEnv(
+	cwd: string = process.cwd(),
+): NodeJS.ProcessEnv | undefined {
+	if (getProjectTrustState() === "trusted") return undefined;
+	const env: NodeJS.ProcessEnv = { ...process.env };
+	for (const key of Object.keys(env)) {
+		if (key.toLowerCase() === "path")
+			env[key] = trustScopedPath(env[key] ?? "", cwd);
+	}
+	return env;
 }
 
 /** Tuning for {@link findLocalBinUpwards}. */

@@ -979,7 +979,8 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/gzip-stage-write.ts": 2,
 		"clients/inline-blocker-dispositions.ts": 2,
 		"clients/install-diagnostics.ts": 11,
-		"clients/installer/index.ts": 107,
+		// 107 -> 106 (#4530): two inline PATH-env reads fold into ambientPath().
+		"clients/installer/index.ts": 106,
 		"clients/installer/managed-tool-refresh.ts": 4,
 		"clients/instance-reaper.ts": 4,
 		// 8 -> 9 (#3498): the own-hold skip's degradation `subject`,
@@ -1055,7 +1056,9 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/opengrep-config.ts": 3,
 		// 21 -> 23 (#4515 r2): commandSearchReachesProject splits PATH on
 		// `path.delimiter` and tests each entry with `path.isAbsolute`.
-		"clients/package-manager.ts": 23,
+		// 23 -> 25 (#4530): the trust-scoped PATH filter splits and joins on
+		// `path.delimiter`.
+		"clients/package-manager.ts": 25,
 		"clients/package-root.ts": 5,
 		"clients/path-keyed-map.ts": 11,
 		// 30 -> 34: findNearestMarkerRootDetailed (#3691) adds its own marker/root
