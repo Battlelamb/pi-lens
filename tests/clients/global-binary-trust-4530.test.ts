@@ -47,6 +47,8 @@ import {
 import {
 	_resetPackageManagerCache,
 	findGlobalBinary,
+	normalizeSearchPath,
+	resolveNodePackageManager,
 	trustScopedPath,
 } from "../../clients/package-manager.js";
 import {
@@ -397,6 +399,37 @@ describe.skipIf(process.platform === "win32")(
 
 			await ensureTool("mypy");
 
+			expect(project.ran()).toBe("");
+		});
+
+		it("runs the private-prefix pip rung without a project interpreter", async () => {
+			const project = makeProject();
+			const venvBin = path.join(project.root, ".venv", "bin");
+			for (const name of ["pip3", "pip", "python3", "python"]) {
+				plant(path.join(venvBin, name), project.marker);
+			}
+			const outside = tempDir("pi-lens-4530-outside-");
+			const privateMarker = path.join(outside, "private-rung.argv");
+			// Refusing the venv rung and reporting PEP 668 for the --user rung is
+			// the only way into the private-prefix rung.
+			writeScript(
+				path.join(outside, "pip3"),
+				`#!/bin/sh\ncase "$*" in *--break-system-packages*) echo "$*" >> ${JSON.stringify(privateMarker)};; esac\necho "error: externally-managed-environment" >&2\nexit 1\n`,
+			);
+			writeScript(path.join(outside, "python3"), "#!/bin/sh\nexit 1\n");
+			process.env.PATH = [venvBin, outside].join(path.delimiter);
+			delete process.env.PI_LENS_DISABLE_TOOL_INSTALL;
+			process.env.PI_LENS_TEST_MODE = "0";
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			expect(await ensureTool("mypy")).toBeUndefined();
+
+			// The rung ran the OUTSIDE interpreter...
+			expect(fs.readFileSync(privateMarker, "utf8")).toContain(
+				"--break-system-packages",
+			);
+			// ...and the project's own pip3 never did.
 			expect(project.ran()).toBe("");
 		});
 
@@ -846,3 +879,115 @@ describe.skipIf(process.platform === "win32")("round 2 compiler lookup", () => {
 		expect(project.ran()).toBe("");
 	});
 });
+
+// lane: Linux and macOS unit shards; the fixtures are POSIX shell scripts and
+// real `which`/`spawn` children.
+describe.skipIf(process.platform === "win32")(
+	"round 9: scoped PATH, command targets, and the availability latch (#4530)",
+	() => {
+		it("omits PATH rather than leaving an empty one when every entry is refused", async () => {
+			const project = makeProject();
+			// A `which` at the project ROOT is exactly the cwd search an empty
+			// PATH performs: the finder would run the project's own copy.
+			plant(path.join(project.root, "which"), project.marker);
+			plant(path.join(project.bin, FIXTURE_TOOL), project.marker);
+			process.env.PATH = project.bin;
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			expect(trustScopedSpawnEnv()).not.toHaveProperty("PATH");
+
+			await findGlobalBinary(FIXTURE_TOOL);
+
+			expect(project.ran()).toBe("");
+		});
+
+		it("composes the managed tool PATH without an empty entry", async () => {
+			const project = makeProject();
+			// Only reachable through the child's cwd, never through a real dir.
+			plant(path.join(project.root, FIXTURE_TOOL), project.marker);
+			process.env.PATH = project.bin;
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			// The composed env is what managed tools and language servers get, so
+			// the assertion is on the value itself: a zero-length entry is the
+			// child's cwd for the kernel (measured outside this suite — `PATH=""`
+			// ran `./pnpm-shim`, a removed PATH did not), and no spawn here would
+			// prove more than a second reading of the same string.
+			const env = await getToolEnvironment();
+			expect((env.PATH ?? "").split(path.delimiter)).not.toContain("");
+		});
+
+		it("refuses a global bin link whose target is inside the project", async () => {
+			const project = makeProject();
+			const prefix = path.join(tempDir("pi-lens-4530-prefix-"), "prefix");
+			const planted = plant(
+				path.join(project.bin, FIXTURE_TOOL),
+				project.marker,
+			);
+			const link = path.join(prefix, "bin", FIXTURE_TOOL);
+			fs.mkdirSync(path.dirname(link), { recursive: true });
+			fs.symlinkSync(planted, link);
+			process.env.npm_config_prefix = prefix;
+			process.chdir(project.root);
+
+			setProjectTrustState("unknown");
+			expect(await findGlobalBinary(FIXTURE_TOOL)).toBeUndefined();
+			expect(trustRows("global-command-target:")).toHaveLength(1);
+
+			setProjectTrustState("trusted");
+			expect(await findGlobalBinary(FIXTURE_TOOL)).toBe(link);
+		});
+
+		it("joins a search path without a zero-length entry", () => {
+			// Recurrence: a zero-length entry is the child's cwd for the kernel,
+			// so a joined value that keeps one re-opens the lookup trust closed.
+			expect(normalizeSearchPath(["/a", "", "/b::/c"], ":")).toBe("/a:/b:/c");
+			expect(normalizeSearchPath(["/a", ""], ":")).toBe("/a");
+			expect(normalizeSearchPath(["", ""], ":")).toBe("");
+		});
+
+		it("never composes a managed tool environment with an empty PATH entry", async () => {
+			// No directories at all: the pre-#4530-round-9 join emitted a trailing
+			// separator, and a child then searched its own cwd.
+			process.env.PATH = "";
+			setProjectTrustState("trusted");
+			const cwd = tempDir("pi-lens-4530-managed-");
+			const { getManagedToolEnvironment } =
+				await import("../../clients/dispatch/runners/utils/runner-helpers.js");
+
+			const managed = await getManagedToolEnvironment("knip", cwd);
+			const entries = (managed.PATH ?? "").split(path.delimiter);
+			expect(entries).not.toContain("");
+			// The project's bin dir is still FIRST; nothing empty follows it.
+			expect(entries[0]).toBe(path.join(cwd, "node_modules", ".bin"));
+
+			const tools = await getToolEnvironment();
+			expect((tools.PATH ?? "").split(path.delimiter)).not.toContain("");
+		});
+
+		it("re-probes package-manager availability when trust changes mid-session", async () => {
+			const project = makeProject();
+			// The manager the project declares lives only in the project's own
+			// bin dir, so its availability is exactly what trust decides.
+			fs.writeFileSync(
+				path.join(project.root, "package.json"),
+				JSON.stringify({ packageManager: "pnpm@9.0.0" }),
+			);
+			plant(path.join(project.bin, "pnpm"), project.marker);
+			process.env.PATH = [project.bin, savedEnv.get("PATH")].join(
+				path.delimiter,
+			);
+			process.chdir(project.root);
+
+			setProjectTrustState("unknown");
+			expect(await resolveNodePackageManager(project.root)).toBe("npm");
+
+			// turn_start re-adopts the host's answer; the old verdict is not it.
+			setProjectTrustState("trusted");
+			expect(await resolveNodePackageManager(project.root)).toBe("pnpm");
+			expect(project.ran()).toBe("");
+		});
+	},
+);

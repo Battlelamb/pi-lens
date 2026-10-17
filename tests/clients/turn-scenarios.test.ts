@@ -30,8 +30,13 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { KnipClient } from "../../clients/knip-client.js";
+import {
+	resetProjectTrust,
+	setProjectTrustState,
+} from "../../clients/project-trust.js";
 import {
 	defineTurnScenario,
 	runTurnScenario,
@@ -105,6 +110,23 @@ const managedKnipBinDir = (() => {
 	return fs.existsSync(dir) ? dir : null;
 })();
 
+// CI and the pre-push hook have no managed install, and their only knip is this
+// checkout's own devDependency: a bare `knip` reaches it only when
+// `node_modules/.bin` is on PATH, which `npm test` arranges and a direct vitest
+// run does not. Name it so both environments drive the same binary (#4566 CI red).
+const checkoutKnipBinDir = (() => {
+	const dir = path.resolve(
+		path.dirname(fileURLToPath(import.meta.url)),
+		"..",
+		"..",
+		"node_modules",
+		".bin",
+	);
+	return fs.existsSync(path.join(dir, "knip")) ? dir : null;
+})();
+
+const knipBinDir = managedKnipBinDir ?? checkoutKnipBinDir;
+
 /**
  * Probe the BINARY, not the directory that usually holds it.
  *
@@ -118,8 +140,8 @@ const managedKnipBinDir = (() => {
  */
 function knipUnavailableReason(): string | undefined {
 	const env = { ...process.env };
-	if (managedKnipBinDir) {
-		env.PATH = `${managedKnipBinDir}${path.delimiter}${env.PATH ?? ""}`;
+	if (knipBinDir) {
+		env.PATH = `${knipBinDir}${path.delimiter}${env.PATH ?? ""}`;
 	}
 	try {
 		if (
@@ -146,9 +168,16 @@ const knipStaleCache = defineTurnScenario({
 	harnessOptions: () => ({ knipClient: new KnipClient(false) }),
 	async run(h) {
 		const originalPath = process.env.PATH;
-		if (managedKnipBinDir) {
-			process.env.PATH = `${managedKnipBinDir}${path.delimiter}${originalPath ?? ""}`;
+		if (knipBinDir) {
+			process.env.PATH = `${knipBinDir}${path.delimiter}${originalPath ?? ""}`;
 		}
+		// knip is a project-local binary, so pi-lens runs it only for a trusted
+		// project (#4530). A dev box reaches this scenario through the real
+		// home's managed install above; CI has neither that install nor a pi
+		// trust record, and the checkout's own `node_modules/.bin` is the
+		// project, so the run reads "Knip not available" (#4566 CI red). Plant
+		// the trust the checkout has on a dev box.
+		setProjectTrustState("trusted");
 		try {
 			h.write(
 				"package.json",
@@ -212,6 +241,7 @@ const knipStaleCache = defineTurnScenario({
 			expect(view.text).not.toContain("assertSafeForCmdShell");
 		} finally {
 			process.env.PATH = originalPath;
+			resetProjectTrust();
 		}
 	},
 });

@@ -3,8 +3,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import * as os from "node:os";
+import { fileURLToPath } from "node:url";
 import { getProjectDataDir } from "../../clients/file-utils.js";
 import { KnipClient } from "../../clients/knip-client.js";
+import {
+	resetProjectTrust,
+	setProjectTrustState,
+} from "../../clients/project-trust.js";
 import { setupTestEnvironment } from "./test-utils.js";
 
 // End-to-end proof for #1630 against the real knip binary. knip's glob cache
@@ -44,7 +49,32 @@ const managedKnipBinDir = (() => {
 	return fs.existsSync(dir) ? dir : null;
 })();
 
-const knipAvailable = probeKnip() || managedKnipBinDir !== null;
+// A dev box answers knip through that managed install. CI and the pre-push hook
+// have none, and their only knip is this checkout's own devDependency, which a
+// bare `knip` reaches only when `node_modules/.bin` is on PATH — `npm test`
+// arranges that, a direct vitest run does not. Name it here so both
+// environments drive the same binary (#4566 CI red).
+const checkoutKnipBinDir = (() => {
+	const dir = path.resolve(
+		path.dirname(fileURLToPath(import.meta.url)),
+		"..",
+		"..",
+		"node_modules",
+		".bin",
+	);
+	return fs.existsSync(path.join(dir, "knip")) ? dir : null;
+})();
+
+const knipBinDir = managedKnipBinDir ?? checkoutKnipBinDir;
+
+const knipAvailable = probeKnip(
+	knipBinDir
+		? {
+				...process.env,
+				PATH: `${knipBinDir}${path.delimiter}${process.env.PATH ?? ""}`,
+			}
+		: undefined,
+);
 
 describe("knip cache consumer-import staleness (#1630)", () => {
 	it.skipIf(!knipAvailable)(
@@ -52,9 +82,16 @@ describe("knip cache consumer-import staleness (#1630)", () => {
 		async () => {
 			const { tmpDir, cleanup } = setupTestEnvironment("pi-lens-knip-1630-");
 			const originalPath = process.env.PATH;
+			// knip is a project-local binary, so pi-lens runs it only for a trusted
+			// project (#4530), and a Vitest process never adopts a host answer, so
+			// trust is `unknown` here. Without this plant the checkout's own knip is
+			// refused and the run reads "Knip not available" — which is what CI
+			// reported while a dev box passed through the managed install above
+			// (#4566 CI red). Plant the trust the checkout has on a dev box.
+			setProjectTrustState("trusted");
 			try {
-				if (managedKnipBinDir) {
-					process.env.PATH = `${managedKnipBinDir}${path.delimiter}${originalPath ?? ""}`;
+				if (knipBinDir) {
+					process.env.PATH = `${knipBinDir}${path.delimiter}${originalPath ?? ""}`;
 				}
 
 				fs.mkdirSync(path.join(tmpDir, "src"), { recursive: true });
@@ -117,6 +154,7 @@ describe("knip cache consumer-import staleness (#1630)", () => {
 				);
 			} finally {
 				process.env.PATH = originalPath;
+				resetProjectTrust();
 				cleanup();
 			}
 		},

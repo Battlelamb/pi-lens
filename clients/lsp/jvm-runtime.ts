@@ -22,7 +22,10 @@ import {
 	startHostStallSampler,
 } from "../dispatch/runners/utils/availability-policy.js";
 import { getGlobalPiLensDir } from "../file-utils.js";
-import { trustScopedSpawnEnv } from "../package-manager.js";
+import {
+	normalizeSearchPath,
+	trustScopedSpawnEnv,
+} from "../package-manager.js";
 import { safeSpawnAsync } from "../safe-spawn.js";
 
 const JAVA_EXE = process.platform === "win32" ? "java.exe" : "java";
@@ -318,7 +321,7 @@ export async function resolveJavaRuntimeEnv(): Promise<
 		_cachedEnv = {
 			value: {
 				JAVA_HOME: home,
-				PATH: binDir + path.delimiter + currentPath,
+				PATH: normalizeSearchPath([binDir, currentPath]),
 			},
 		};
 		return _cachedEnv.value;

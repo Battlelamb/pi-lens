@@ -150,19 +150,43 @@ const PROBE_TIMEOUT_MS = 5_000;
  * only a genuine absence (`where`/`which` exits non-zero, or ENOENT) latches;
  * a timeout, abort or host stall expires on a cooldown and is re-probed.
  */
-const availabilityLatches = new Map<NodePackageManager, AvailabilityLatch>();
+/**
+ * #4530 round 9: the availability of a package manager now depends on project
+ * trust (a manager reachable only through an untrusted project's PATH is not
+ * available), so the latch and the in-flight probe are keyed by the trust
+ * scope as well as the manager. `turn_start` re-adopts the host's answer, and a
+ * flip reads the other scope's keys — empty, so the next lookup re-probes —
+ * instead of serving a verdict the other trust state produced.
+ */
+function trustScope(): "trusted" | "scoped" {
+	return getProjectTrustState() === "trusted" ? "trusted" : "scoped";
+}
 
-function getLatch(pm: NodePackageManager): AvailabilityLatch {
-	let latch = availabilityLatches.get(pm);
+function availabilityKey(pm: NodePackageManager): string {
+	return `${trustScope()}:${pm}`;
+}
+
+const availabilityLatches = new Map<string, AvailabilityLatch>();
+
+function getLatch(key: string): AvailabilityLatch {
+	let latch = availabilityLatches.get(key);
 	if (!latch) {
 		latch = createAvailabilityLatch();
-		availabilityLatches.set(pm, latch);
+		availabilityLatches.set(key, latch);
 	}
 	return latch;
 }
 
-async function probeAvailability(pm: NodePackageManager): Promise<boolean> {
-	const latch = getLatch(pm);
+/**
+ * Whether `pm` can run. `key` is captured by the caller (with the manager that
+ * goes with it) so a trust flip during an awaited probe cannot make a later
+ * stage read a latch it did not start under (defect shapes 19 and 58).
+ */
+async function probeAvailability(
+	pm: NodePackageManager,
+	key: string,
+): Promise<boolean> {
+	const latch = getLatch(key);
 	const startedAt = Date.now();
 	const finder = onWindows() ? "where" : "which";
 	const sampler = startHostStallSampler();
@@ -238,7 +262,8 @@ function isAvailable(
 	pm: NodePackageManager,
 	onTransient?: () => void,
 ): Promise<boolean> {
-	const latch = getLatch(pm);
+	const key = availabilityKey(pm);
+	const latch = getLatch(key);
 
 	const reportIfTransient = (result: boolean): boolean => {
 		if (!result && isTransientDecision({ outcome: latch.getOutcome() })) {
@@ -252,8 +277,8 @@ function isAvailable(
 
 	// A verdict can now expire, so concurrent callers arriving just after a
 	// cooldown must share ONE probe rather than each spawning their own.
-	const shared = packageManagerProbeFlights.run(`package-manager:${pm}`, () =>
-		probeAvailability(pm),
+	const shared = packageManagerProbeFlights.run(key, () =>
+		probeAvailability(pm, key),
 	);
 	return shared.promise.then(reportIfTransient);
 }
@@ -386,7 +411,7 @@ const globalBinDirProbeFlights = createAvailabilityProbeFlight<string[]>();
 
 /** Directories where a given manager installs global binaries. */
 async function globalBinDirsFor(pm: NodePackageManager): Promise<string[]> {
-	const key = `${getProjectTrustState() === "trusted" ? "trusted" : "scoped"}:${pm}`;
+	const key = availabilityKey(pm);
 	const cached = globalBinDirCache.get(key);
 	if (cached) return cached;
 	const generation = packageManagerCacheGeneration.capture();
@@ -497,7 +522,16 @@ export async function findGlobalBinary(
 		for (const binDir of await allAvailableGlobalBinDirs()) {
 			for (const name of candidates) {
 				const full = path.join(binDir, name);
-				if (isAcceptedCommandFile(full)) return full;
+				if (!isAcceptedCommandFile(full)) continue;
+				// #4530 round 9: the directory is outside the project, but the file
+				// it holds can still be a link into it (an npm-linked language
+				// server, say), and `isAcceptedCommandFile` follows that link. The
+				// trust verdict therefore belongs to the target, not the directory.
+				if (commandResolvesIntoProject(full)) {
+					refuseGlobalCommandTarget(full);
+					continue;
+				}
+				return full;
 			}
 		}
 	} catch {
@@ -638,6 +672,49 @@ export function commandSearchReachesProject(cwd: string): boolean {
 }
 
 /**
+ * #4530 round 9: whether a RESOLVED command's real target lies in the project
+ * pi has not trusted. A trust check on the directory that holds the command
+ * answers a different question: a global bin dir outside the project (or an
+ * outside PATH entry) can hold a link into it — an npm-linked language server
+ * is the ordinary case — and the resolver follows that link when it spawns.
+ * The target is what runs, so the target is what the trust gate judges
+ * (#4566 round 9).
+ */
+export function commandResolvesIntoProject(
+	resolvedCommand: string,
+	cwd: string = process.cwd(),
+): boolean {
+	if (getProjectTrustState() === "trusted") return false;
+	const target = normalizeFilePath(realpathOrResolve(resolvedCommand));
+	return projectReach(cwd)(target);
+}
+
+/**
+ * One bounded record per (target, session) for a global command that resolves
+ * into the project; the link's own spelling is kept in the metadata so the
+ * global directory that holds it stays identifiable.
+ */
+function refuseGlobalCommandTarget(resolvedCommand: string): void {
+	const trust = getProjectTrustState() as "untrusted" | "unknown";
+	const target = normalizeFilePath(realpathOrResolve(resolvedCommand));
+	if (
+		recordDegradationOnce({
+			kind: "trust-refusal",
+			subject: `global-command-target:${target}`,
+			reason: `global command target inside the project ignored: pi project trust is ${trust}`,
+		})
+	) {
+		logExtension({
+			subsystem: "project-trust",
+			level: "warn",
+			message:
+				"global command points into the project: mark the project trusted in pi or upgrade pi",
+			metadata: { command: resolvedCommand, target, trust },
+		});
+	}
+}
+
+/**
  * #4530: the user-facing PATH-refusal notice is once per session, not once per
  * refused entry. Several entries can reach the same project (an absolute
  * `node_modules/.bin` and husky's relative one), and each warns with the same
@@ -696,6 +773,54 @@ export function trustScopedPath(
 }
 
 /**
+ * #4530 round 9: a PATH value built from `parts`, never carrying a
+ * zero-length entry. POSIX makes the kernel search the child's own working
+ * directory for a zero-length PATH and for a zero-length entry between
+ * separators, so a value pi-lens composes must not contain one — a trust-scoped
+ * PATH that lost every entry is the case that made this visible (measured on
+ * Linux: `PATH=""` ran `./pnpm-shim` from the cwd, a removed PATH did not).
+ * The ONE seam every composer in the tree joins through, so the rule cannot
+ * drift per call site.
+ */
+export function normalizeSearchPath(
+	parts: readonly string[],
+	separator: string = path.delimiter,
+): string {
+	return parts
+		.flatMap((part) => part.split(separator))
+		.filter((entry) => entry !== "")
+		.join(separator);
+}
+
+/**
+ * #4530 round 9: put `pathValue`, scoped by {@link trustScopedPath}, onto a
+ * child's environment, or REMOVE the key when every entry was refused.
+ *
+ * A scoped result can be empty — every entry reached the project — and an empty
+ * PATH is not "no directories": it hands project code back the lookup the trust
+ * gate just took away (see {@link normalizeSearchPath}). A child with no PATH
+ * falls back to the system default search path, which never contains the cwd.
+ */
+export function setTrustScopedPath(
+	env: NodeJS.ProcessEnv,
+	pathValue: string,
+	cwd: string = process.cwd(),
+): void {
+	const scoped = trustScopedPath(pathValue, cwd);
+	// Rewrite every spelling the caller already had, and always the one a POSIX
+	// child reads; every one of them is removed when nothing is left.
+	const spellings = new Set(
+		Object.keys(env).filter((key) => key.toLowerCase() === "path"),
+	);
+	if (scoped !== "") spellings.add("PATH");
+	for (const key of spellings) {
+		if (scoped === "") delete env[key];
+		else env[key] = scoped;
+	}
+	if (scoped !== "" && process.platform === "win32") env.Path = scoped;
+}
+
+/**
  * #4530: the environment for a spawn pi-lens makes on its own behalf, with
  * every PATH spelling scoped by {@link trustScopedPath}, or `undefined` when
  * the project is trusted and the caller keeps its environment.
@@ -705,10 +830,10 @@ export function trustScopedSpawnEnv(
 ): NodeJS.ProcessEnv | undefined {
 	if (getProjectTrustState() === "trusted") return undefined;
 	const env: NodeJS.ProcessEnv = { ...process.env };
-	for (const key of Object.keys(env)) {
-		if (key.toLowerCase() === "path")
-			env[key] = trustScopedPath(env[key] ?? "", cwd);
-	}
+	const spelling = Object.keys(env).find((key) => key.toLowerCase() === "path");
+	// One call rewrites (or removes) every PATH spelling there is; an env with
+	// no PATH spelling at all already inherits the system default search path.
+	if (spelling !== undefined) setTrustScopedPath(env, env[spelling] ?? "", cwd);
 	return env;
 }
 

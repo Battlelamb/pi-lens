@@ -97,6 +97,7 @@ import { resolveToolCwd } from "../tool-cwd.js";
 import {
 	allAvailableGlobalBinDirs,
 	installArgs,
+	normalizeSearchPath,
 	pmBinary,
 	resolveNodePackageManager,
 	trustScopedPath,
@@ -6151,7 +6152,10 @@ async function installPipTool(
 					.split(separator)
 					.includes(binDir.toLowerCase())
 			) {
-				const updatedPath = `${binDir}${separator}${currentPath}`;
+				const updatedPath = normalizeSearchPath(
+					[binDir, currentPath],
+					separator,
+				);
 				process.env.PATH = updatedPath;
 				if (isWindows) process.env.Path = updatedPath;
 			}
@@ -6302,7 +6306,14 @@ async function installPipTool(
 			);
 
 		const privateBase = path.join(getGlobalPiLensDir(), "pip-user");
-		const privateEnv = { ...process.env, PYTHONUSERBASE: privateBase };
+		// #4530 round 9: build this rung's env from the SCOPED environment. Passing
+		// an env built from `process.env` skipped the trust scope entirely (a
+		// present env is what `run` uses instead of scoping), so a project `pip`
+		// or `python3` earlier on PATH could answer this rung.
+		const privateEnv = {
+			...(trustScopedSpawnEnv() ?? process.env),
+			PYTHONUSERBASE: privateBase,
+		};
 		for (const candidate of pipCandidates) {
 			const args =
 				candidate.command === "pip" || candidate.command === "pip3"
@@ -6946,14 +6957,17 @@ async function ensureToolResolved(
 export async function getToolEnvironment(): Promise<NodeJS.ProcessEnv> {
 	const localBin = path.join(TOOLS_DIR, "node_modules", ".bin");
 	// #4530: managed tools and the language servers started with this env never
-	// resolve a name through an untrusted project's PATH entries.
+	// resolve a name through an untrusted project's PATH entries. #4530 round 9:
+	// the scoped value can be empty (every entry refused), and a zero-length
+	// entry — a trailing separator — makes the kernel search the child's cwd,
+	// which is the project. Compose directories only.
 	const currentPath = installerSearchPath();
 	const separator = process.platform === "win32" ? ";" : ":";
 	const nodeDir = path.dirname(process.execPath);
-	const withNode = nodeDir
-		? `${nodeDir}${separator}${currentPath}`
-		: currentPath;
-	const augmentedPath = `${GITHUB_BIN_DIR}${separator}${localBin}${separator}${withNode}`;
+	const augmentedPath = normalizeSearchPath(
+		[GITHUB_BIN_DIR, localBin, nodeDir, currentPath],
+		separator,
+	);
 
 	const env: NodeJS.ProcessEnv = {
 		...process.env,

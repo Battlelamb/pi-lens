@@ -51,6 +51,7 @@ import {
 	findLocalBinsUpwards,
 	findLocalBinUpwards,
 	localBinPath,
+	normalizeSearchPath,
 	VENDOR_BIN_DIRS,
 	VENV_BIN_DIRS,
 } from "../../../package-manager.js";
@@ -710,7 +711,7 @@ export async function getManagedToolEnvironment(
 	const separator = process.platform === "win32" ? ";" : ":";
 	const currentPath = env.PATH || env.Path || process.env.PATH || "";
 	const localBin = path.join(cwd, "node_modules", ".bin");
-	const augmentedPath = `${localBin}${separator}${currentPath}`;
+	const augmentedPath = normalizeSearchPath([localBin, currentPath], separator);
 	return {
 		...env,
 		PATH: augmentedPath,

@@ -20,10 +20,11 @@ import path from "node:path";
 import { isTestMode } from "../env-utils.js";
 import { getGlobalPiLensDir } from "../file-utils.js";
 import { getGlobalPiLensLogDir } from "../probe-home-state.js";
-import { isFullyQualified } from "../path-utils.js";
+import { isFullyQualified, realpathOrResolve } from "../path-utils.js";
 import {
 	findGlobalBinary,
 	isProjectLocalBinPath,
+	setTrustScopedPath,
 	trustScopedPath,
 } from "../package-manager.js";
 import {
@@ -796,8 +797,12 @@ export async function launchLSP(
 	const mergedEnv = { ...process.env, ...options.env };
 	// #4530: while the project is not trusted, nothing this launch resolves
 	// through PATH (the lookup below, or the server's own) comes from a PATH
-	// entry inside the project.
-	const augmentedPath = trustScopedPath(
+	// entry inside the project. #4530 round 9: when every entry is refused the
+	// PATH key is removed rather than set to "", because an empty PATH makes
+	// the kernel search the server's cwd — the project.
+	const env: NodeJS.ProcessEnv = { ...mergedEnv };
+	setTrustScopedPath(
+		env,
 		await buildAugmentedPath(resolvePathValue(mergedEnv)),
 		cwd,
 	);
@@ -807,11 +812,6 @@ export async function launchLSP(
 	// host's inherited PI_LENS_OWNER may name a dead foreign owner, and an
 	// untagged server is spared where a wrongly tagged one is reaped.
 	const ownerTag = await ownerTagForChildren({ timeoutMs: OWNER_TAG_READ_MS });
-	const env: NodeJS.ProcessEnv = {
-		...mergedEnv,
-		PATH: augmentedPath,
-		...(isWindows ? { Path: augmentedPath } : {}),
-	};
 	if (ownerTag === undefined) delete env[OWNER_TAG_ENV];
 	else env[OWNER_TAG_ENV] = ownerTag;
 
@@ -857,7 +857,16 @@ export async function launchLSP(
 	// registry. Once PATH resolution selects a project-local installed binary,
 	// trusted session ownership is required (#4248 R2-1, #4299 R2-F1). Global and managed
 	// fallbacks remain compatible because they resolve outside the project root.
-	if (isProjectLocalLspBinary(spawnCommand, cwd)) {
+	// #4530 round 9: they resolve outside the project only if their real target
+	// does — an outside PATH entry or global bin dir can hold a link into the
+	// project's dependency tree (an npm-linked language server is the ordinary
+	// case), and the verdict belongs to the binary that runs, not the path that
+	// names it. An explicitly passed absolute command keeps its own contract: the
+	// registry's project-executable gate judges that one.
+	if (
+		isProjectLocalLspBinary(spawnCommand, cwd) ||
+		isProjectLocalLspBinary(realpathOrResolve(spawnCommand), cwd)
+	) {
 		refuseUntrustedLspExecution({
 			kind: "project-local-binary",
 			command,

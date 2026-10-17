@@ -53,6 +53,7 @@ import {
 import * as installer from "../installer/index.js";
 import {
 	commandSearchReachesProject,
+	normalizeSearchPath,
 	trustScopedSpawnEnv,
 } from "../package-manager.js";
 import {
@@ -2521,7 +2522,10 @@ export async function tryGemInstall(gem: string): Promise<boolean> {
 	if (ok) {
 		const sep = process.platform === "win32" ? ";" : ":";
 		if (!process.env.PATH?.includes(binDir)) {
-			process.env.PATH = `${binDir}${sep}${process.env.PATH ?? ""}`;
+			process.env.PATH = normalizeSearchPath(
+				[binDir, process.env.PATH ?? ""],
+				sep,
+			);
 		}
 	}
 	return ok;

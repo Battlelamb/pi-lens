@@ -150,6 +150,27 @@ describe.skipIf(process.platform === "win32")(
 			expect(project.ran()).toBe(false);
 		});
 
+		it("never launches a server whose real target is inside the project", async () => {
+			const project = makeProject();
+			// The project's own dependency tree holds the binary...
+			const planted = plant(
+				path.join(project.root, "node_modules", ".bin", SERVER),
+				project.marker,
+			);
+			// ...and an outside PATH directory holds a link that names it.
+			const outside = tempDir("pi-lens-4530-launch-link-");
+			const link = path.join(outside, SERVER);
+			fs.symlinkSync(planted, link);
+			process.env.PATH = [outside, originalPath].join(path.delimiter);
+			setProjectTrustState("unknown");
+
+			// A bare name, so the launcher resolves it through PATH.
+			const result = await launch(SERVER, project.root);
+
+			expect(result).toBeInstanceOf(Error);
+			expect(project.ran()).toBe(false);
+		});
+
 		it("still launches a server from a project PATH entry for a trusted project", async () => {
 			const project = makeProject();
 			const direnvBin = path.join(project.root, "bin");
