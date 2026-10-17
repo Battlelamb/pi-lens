@@ -23,7 +23,9 @@ import {
 	launchLSP,
 	stopLSP,
 } from "../../../clients/lsp/launch.js";
+import { resolveAndLaunch } from "../../../clients/lsp/server.js";
 import { _resetPackageManagerCache } from "../../../clients/package-manager.js";
+import { SpawnFailureError } from "../../../clients/safe-spawn.js";
 import {
 	resetProjectTrust,
 	setProjectTrustState,
@@ -31,6 +33,8 @@ import {
 import { removeTempDirSync } from "../test-utils.js";
 
 const SERVER = "pi-lens-4530-fixture-server";
+/** A server name nothing installs: the launcher resolves it to no file at all. */
+const MISSING_SERVER = "pi-lens-4530-fixture-not-installed";
 const originalCwd = process.cwd();
 const originalPath = process.env.PATH;
 const originalPrefix = process.env.npm_config_prefix;
@@ -221,6 +225,39 @@ describe.skipIf(process.platform === "win32")(
 
 			expect(result).not.toBeInstanceOf(Error);
 			expect(project.ran()).toBe(true);
+		});
+
+		// #4566 round 11: a bare name that resolved to nothing is ABSENT, not
+		// project-reaching. Resolving the unresolved name against the project made
+		// every uninstalled server a trust refusal, which also skipped pi-lens's own
+		// managed install. Recurrence guarded: an absence reported as a refusal.
+		it("reports an uninstalled bare server name as tool-not-found, not a trust refusal", async () => {
+			const project = makeProject();
+			// The served root is the session's own root, so resolving the bare name
+			// against `process.cwd()` lands inside the project.
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			const result = await launch(MISSING_SERVER, project.root);
+
+			expect(result).toBeInstanceOf(SpawnFailureError);
+			expect((result as SpawnFailureError).kind).toBe("tool-not-found");
+			// The resolver's turn at a missing server, not the launcher's refusal:
+			// no trust row, and no throw out of the production launch route.
+			expect(
+				getDegradationSummary().filter(
+					(group) => group.kind === "lsp-registry-decision",
+				),
+			).toEqual([]);
+			const resolved = await resolveAndLaunch(
+				{
+					candidates: [MISSING_SERVER],
+					args: ["--stdio"],
+					cwd: project.root,
+				},
+				false,
+			);
+			expect(resolved).toBeUndefined();
 		});
 	},
 );

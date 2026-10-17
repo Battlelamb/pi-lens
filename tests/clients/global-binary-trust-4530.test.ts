@@ -745,6 +745,34 @@ describe.skipIf(process.platform === "win32")("round 2 child lookups", () => {
 			if (trust === "unknown") expect(project.ran()).toBe("");
 		}
 	});
+	// #4566 round 11: the availability probe answers for the root being served,
+	// not `process.cwd()`. An adopted root outside the session kept that root's
+	// own PATH entries, so a probe asked about a foreign root reported the
+	// project's tool as available. Recurrence guarded: a trust question answered
+	// against the wrong root.
+	it("scopes LSP runtime availability to the served root, not process.cwd()", async () => {
+		const project = makeProject();
+		plant(path.join(project.bin, FIXTURE_TOOL), project.marker);
+		plant(path.join(project.bin, "which"), project.marker);
+		process.env.PATH = [project.bin, dirOf("which")].join(path.delimiter);
+		// No chdir: the session stays outside `project.root`, an adopted root.
+		process.env.PI_LENS_DISABLE_TOOL_INSTALL = "0";
+		setProjectTrustState("unknown");
+		const install = vi.fn(async () => false);
+
+		await resolveAndLaunch(
+			{
+				candidates: [],
+				args: [],
+				cwd: project.root,
+				runtimeInstall: { runtimeCommand: FIXTURE_TOOL, install },
+			},
+			true,
+		);
+
+		expect(install).not.toHaveBeenCalled();
+		expect(project.ran()).toBe("");
+	});
 	it("extracts GitHub archives through an outside utility until trusted", async () => {
 		const project = makeProject();
 		const outside = tempDir("pi-lens-4530-extractor-");

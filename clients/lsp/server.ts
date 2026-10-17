@@ -1331,7 +1331,7 @@ export async function resolveAndLaunch(
 	// Step 4 — language-native runtime install (go install, gem install, …)
 	const runtimeInstall = trustRefused ? undefined : spec.runtimeInstall;
 	const runtimeAvailable = runtimeInstall
-		? await isOnPath(runtimeInstall.runtimeCommand)
+		? await isOnPath(runtimeInstall.runtimeCommand, spec.cwd)
 		: false;
 	if (staleLaunch(generation, `${toolLabel}:runtimeAvailability`)) {
 		return undefined;
@@ -1403,7 +1403,7 @@ async function resolveAndLaunchBundle(
 	// hang; just probe). No runtime → graceful skip (coverage notice).
 	let runtime: string | undefined;
 	for (const candidate of spec.runtimeCandidates) {
-		if (await isOnPath(candidate)) {
+		if (await isOnPath(candidate, spec.cwd)) {
 			runtime = candidate;
 			break;
 		}
@@ -2002,11 +2002,14 @@ export const createRootDetector = NearestRoot;
  * fall-through path (Step 4, runtime-install gate). The shared
  * `isCommandAvailableAsync` spawns the same finder via `safeSpawnAsync` with a
  * 5s timeout and a trust-scoped environment, so a stalled finder cannot freeze
- * the loop and a project-local finder cannot answer under unknown trust.
+ * the loop and a project-local finder cannot answer under unknown trust. The
+ * scope is the root being served, not `process.cwd()`: an adopted root outside
+ * the session would otherwise keep the project's own PATH entries (#4530
+ * round 11).
  * Returns true iff the finder exits 0.
  */
-function isOnPath(command: string): Promise<boolean> {
-	return isCommandAvailableAsync(command, trustScopedSpawnEnv());
+function isOnPath(command: string, root?: string): Promise<boolean> {
+	return isCommandAvailableAsync(command, trustScopedSpawnEnv(root));
 }
 
 /**
@@ -2225,9 +2228,10 @@ async function hasTypescriptPackageDir(tscPath: string): Promise<boolean> {
  */
 async function absoluteCommandPath(
 	command: string | undefined,
+	root?: string,
 ): Promise<string | undefined> {
 	if (!command || path.isAbsolute(command)) return command;
-	const found = await findCommandAsync(command, trustScopedSpawnEnv());
+	const found = await findCommandAsync(command, trustScopedSpawnEnv(root));
 	return found ? realpath(found).catch(() => undefined) : undefined;
 }
 
@@ -2333,6 +2337,7 @@ async function findTsserverPath(
 	// read below see the same absolute path a managed or npm-global hit has.
 	const discoveredTsc = await absoluteCommandPath(
 		await ensureTool("typescript", { allowInstall: installAllowed }),
+		root,
 	);
 	const discoveredTsserver = await tsserverForTsc(discoveredTsc);
 	if (
@@ -2368,6 +2373,7 @@ async function findTsserverPath(
 			allowInstall: true,
 			forceReinstall: true,
 		}),
+		root,
 	);
 	return tsserverForTsc(repairedTsc);
 }

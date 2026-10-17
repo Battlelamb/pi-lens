@@ -477,11 +477,14 @@ interface PathTscTree {
 
 /** An npm-global style compiler: `<root>/bin/tsc` symlinks into
  * `<root>/lib/node_modules/typescript/bin/tsc`. `withTsserver: false` models a
- * compiler whose package ships no classic `lib/tsserver.js` (TypeScript 7). */
+ * compiler whose package ships no classic `lib/tsserver.js` (TypeScript 7).
+ * `insideProject` places that global tree under the project root itself, which
+ * is what an adopted root's own PATH entry holds (#4566 round 11). */
 function buildPathTscTree(
 	label: string,
 	withTsserver = true,
 	version = "5.9.3",
+	insideProject = false,
 ): PathTscTree {
 	const tmp = fs.mkdtempSync(
 		path.join(os.tmpdir(), `pi-lens-bare-tsc-${label}-`),
@@ -499,7 +502,7 @@ function buildPathTscTree(
 	);
 	fs.writeFileSync(wrapper, "#!/usr/bin/env node\n");
 
-	const globalRoot = path.join(tmp, "global");
+	const globalRoot = path.join(insideProject ? project : tmp, "global");
 	const pkg = path.join(globalRoot, "lib", "node_modules", "typescript");
 	fs.mkdirSync(path.join(pkg, "bin"), { recursive: true });
 	fs.mkdirSync(path.join(pkg, "lib"), { recursive: true });
@@ -660,6 +663,54 @@ describe.skipIf(process.platform === "win32")(
 				);
 			},
 		);
+
+		// #4566 round 11: the bare-compiler lookup scopes PATH to the root being
+		// served, not `process.cwd()`. An adopted root outside the session kept its
+		// own PATH entry, so a compiler that root planted resolved and was then
+		// recorded as a project compiler refused for trust, for a probe that never
+		// asked about that root. Recurrence guarded: a trust question answered
+		// against the wrong root.
+		it("does not resolve a compiler from a PATH entry inside an adopted root", async () => {
+			const tree = buildPathTscTree("adopted-root", true, "5.9.3", true);
+			// The session stays outside `tree.project`: this root is adopted.
+			const finder = (originalPath ?? "")
+				.split(path.delimiter)
+				.find((dir) => dir && fs.existsSync(path.join(dir, "which")));
+			if (!finder) throw new Error("which is not on PATH");
+			process.env.PATH = [tree.pathBin, finder].join(path.delimiter);
+			const ledger = await import("../../../clients/degradation-ledger.js");
+			ledger.resetDegradationLedger();
+			const { setProjectTrustState } =
+				await import("../../../clients/project-trust.js");
+			setProjectTrustState("unknown");
+			const { TypeScriptServer } =
+				await import("../../../clients/lsp/server.js");
+
+			const spawned = await TypeScriptServer.spawn(tree.project, {
+				allowInstall: false,
+			});
+
+			expect(spawned).toBeUndefined();
+			expect(launchLSPMock).not.toHaveBeenCalled();
+			// Nothing observed a compiler, so nothing claims one was refused.
+			expect(
+				warnMessages().filter((message) =>
+					/project-local LSP binary refused/.test(message),
+				),
+			).toEqual([]);
+			// The only ledger word is the honest one: no compiler resolved. A refusal
+			// row would claim this root's compiler was seen and vetoed.
+			const rows = ledger
+				.getDegradationSummary()
+				.filter((entry) => entry.kind === "lsp-registry-decision");
+			expect(rows).toHaveLength(1);
+			expect(rows[0]?.latestReasons[0]?.subject).toMatch(
+				/^typescript-compiler:/,
+			);
+			expect(rows[0]?.latestReasons[0]?.reason).toMatch(
+				/no absolute TypeScript compiler/,
+			);
+		});
 
 		// #4530 F3 round 5: refusing an unrelated PATH directory is not evidence
 		// that a compiler was refused. Cover every family in the state table.

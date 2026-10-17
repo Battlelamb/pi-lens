@@ -864,11 +864,16 @@ export async function launchLSP(
 	// case), and the verdict belongs to the binary that runs, not the path that
 	// names it. An explicitly passed absolute command keeps its own contract: the
 	// registry's project-executable gate judges that one.
+	// #4530 round 11: judge that target only when a resolver named one. An
+	// uninstalled bare name stays the bare name, and resolving it against the
+	// project turns a missing tool into a trust refusal (which also skips the
+	// managed install); absence is not project reach.
 	if (
 		isProjectLocalLspBinary(spawnCommand, cwd) ||
 		(!isFullyQualified(command) &&
 			!command.includes(path.sep) &&
 			!command.includes("/") &&
+			spawnCommand !== command &&
 			commandResolvesIntoProject(spawnCommand, cwd))
 	) {
 		refuseUntrustedLspExecution({
