@@ -402,11 +402,12 @@ describe("lsp launch", () => {
 				);
 				expect(launched.pid).toBe(9876);
 				// R14-V1: on win32 a `.cmd` goes through `computeNeedsShell`, so
-				// `spawn` receives the QUOTED command string `"<shim>" ` with
-				// `shell: true` — the command itself still names the shim.
+				// `spawn` receives the QUOTED command string `"<shim>" ` — quoted
+				// with a TRAILING SPACE, so trim before unwrapping the quotes —
+				// with `shell: true`. The command itself still names the shim.
 				expect(
 					spawn.mock.calls.map(([command]) =>
-						command.replace(/^"|"$/g, "").trim(),
+						command.trim().replace(/^"(.*)"$/, "$1"),
 					),
 				).toContain(shim);
 				expect(spawn.mock.calls[0]?.[2]).toMatchObject(
