@@ -3,7 +3,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { removeTempDirSync } from "../clients/test-utils.js";
+import {
+	pinTestHome,
+	removeTempDirSync,
+	setupTestEnvironment,
+} from "../clients/test-utils.js";
+import {
+	addRenameClient,
+	makeRenameClient,
+} from "../support/lsp-rename-client-double.js";
+import { LSPService } from "../../clients/lsp/index.js";
 import { makeLspServiceDouble } from "../support/lsp-service-double.js";
 import { CacheManager } from "../../clients/cache-manager.js";
 import {
@@ -1680,6 +1689,290 @@ describe("lsp_navigation tool", () => {
 		}
 	});
 
+	// #4578: the `rename_file` destination is a WRITE target, so it resolves
+	// through the same host-path seam pi's own write tool uses
+	// (`resolveHostToolPath`, clients/path-utils.ts): `~` expands to `$HOME`, a
+	// leading `@` mention prefix is dropped, pi's unicode space class folds to
+	// U+0020, and a `file://` URL converts. Pre-fix the destination took a bare
+	// `path.resolve(cwd, x)`, so `~/renamed.ts` became `<cwd>/~/renamed.ts`: the
+	// rename created a literal `~` directory inside the project and rewrote every
+	// importer to point into it. These cells drive the real tool over a real
+	// `LSPService`, so the rename, the confinement check, and the importer
+	// rewrite are the production ones.
+	describe("rename_file destination resolution (#4578)", () => {
+		/**
+		 * A real `LSPService` rename behind the factory-seeded service double.
+		 *
+		 * `renameFile` is the PRODUCTION implementation on a real service, so the
+		 * destination resolution, the workspace confinement and the importer
+		 * rewrite are the shipped ones. Every other member is the double's `vi.fn`,
+		 * which is what keeps a language server from starting: the tool resyncs the
+		 * renamed file through `openFileBestEffort` -> `touchFile`, and a bare real
+		 * service SPAWNS for that call (measured here: `touchFile` on a `.ts` file
+		 * left `deno` running, `getAliveClientCount()` 1). This suite is not the
+		 * `lsp-spawn-heavy` lane and must start no server.
+		 */
+		const makeRenameHarness = () => {
+			const realService = new LSPService();
+			const service = makeLspServiceDouble({
+				// The tool's own dispatch gate: a file operation is only reached
+				// when the service reports a server for the file (tools/lsp-navigation.ts
+				// `supportsLSP` gate). This is the double saying "yes", not a server.
+				supportsLSP: vi.fn(() => true),
+				hasLSP: vi.fn(async () => true),
+				renameFile: (
+					oldFilePath: string,
+					newFilePath: string,
+					options: Parameters<LSPService["renameFile"]>[2],
+				) => realService.renameFile(oldFilePath, newFilePath, options),
+			});
+			return {
+				realService,
+				service,
+				touchFile: service.touchFile as ReturnType<typeof vi.fn>,
+				/**
+				 * The real service's own `touchFile` is the only call that can
+				 * discover and spawn a server, so instrument it (the spy keeps the
+				 * implementation) and assert it is never reached.
+				 */
+				realTouchFile: vi.spyOn(realService, "touchFile"),
+				/** Nothing the case started may outlive it, before its fixture goes. */
+				stop: async (): Promise<void> => {
+					await realService.shutdown();
+				},
+			};
+		};
+
+		type RenameHarness = ReturnType<typeof makeRenameHarness>;
+
+		const renameThroughTool = async (
+			harness: RenameHarness,
+			cwd: string,
+			callId: string,
+			sourcePath: string,
+			newFilePath: string,
+		) => {
+			mocked.service = harness.service;
+			const tool = createLspNavigationTool((flag) => flag === "lens-lsp");
+			return tool.execute(
+				callId,
+				{
+					operation: "rename_file",
+					path: sourcePath,
+					newFilePath,
+					apply: true,
+				},
+				new AbortController().signal,
+				null,
+				{ cwd },
+			);
+		};
+
+		/**
+		 * No language server was started. Two arms, same claim: the real service
+		 * never reached its spawn-capable `touchFile`, and its live clients are
+		 * exactly the fixture's — a real spawn adds a `serverId` entry.
+		 */
+		const expectNoServerStarted = (
+			harness: RenameHarness,
+			registeredServerIds: string[],
+		): void => {
+			expect(harness.realTouchFile).not.toHaveBeenCalled();
+			expect(
+				harness.realService.getStatus().map((entry) => entry.serverId),
+			).toEqual(registeredServerIds);
+		};
+
+		it("expands a ~ destination to $HOME and rewrites the importer there, never a ~ directory under the cwd", async () => {
+			const env = setupTestEnvironment("pi-lens-lsp-nav-4578-home-");
+			const oldPath = path.join(env.tmpDir, "old.ts");
+			const importPath = path.join(env.tmpDir, "import.ts");
+			const renamedPath = path.join(env.tmpDir, "renamed.ts");
+			fs.writeFileSync(oldPath, "export const value = 1;\n");
+			fs.writeFileSync(importPath, "import { value } from './old';\n");
+			// #3601: an importer no language client has open is refused when its
+			// mtime sits within 2 s of the rename request. An old mtime is the
+			// fixture for "the server read these bytes earlier", not a wait.
+			const past = new Date(Date.now() - 60_000);
+			fs.utimesSync(importPath, past, past);
+
+			const harness = makeRenameHarness();
+			const client = makeRenameClient(env.tmpDir, {
+				changes: {
+					[pathToFileURL(importPath).href]: [
+						{
+							range: {
+								start: { line: 0, character: 25 },
+								end: { line: 0, character: 28 },
+							},
+							newText: "renamed",
+						},
+					],
+				},
+			});
+			addRenameClient(harness.realService, "typescript", env.tmpDir, client);
+			// Pin the host homes at the fixture and prove the pin TOOK: the rename
+			// writes at the resolved destination, so a pin that silently fell through
+			// would put a test file in the developer's real home.
+			const restoreHome = pinTestHome(env.tmpDir);
+			expect(os.homedir(), "the fixture HOME did not take effect").toBe(
+				env.tmpDir,
+			);
+
+			try {
+				const result = await renameThroughTool(
+					harness,
+					env.tmpDir,
+					"rename-file-tilde-home",
+					oldPath,
+					"~/renamed.ts",
+				);
+
+				expect(result.isError).toBeUndefined();
+				// The defect: `~/renamed.ts` joined onto the cwd as `<cwd>/~/renamed.ts`.
+				expect(fs.existsSync(path.join(env.tmpDir, "~"))).toBe(false);
+				expect(fs.readFileSync(renamedPath, "utf-8")).toBe(
+					"export const value = 1;\n",
+				);
+				expect(fs.existsSync(oldPath)).toBe(false);
+				// The server was asked about the expanded destination, so the importer
+				// rewrite it computed names the file that actually landed.
+				expect(client.willRenameFiles).toHaveBeenCalledWith(
+					oldPath,
+					renamedPath,
+				);
+				expect(fs.readFileSync(importPath, "utf-8")).toBe(
+					"import { value } from './renamed';\n",
+				);
+				// The post-rename resync ran, and it reached the double only.
+				expectNoServerStarted(harness, ["typescript"]);
+				expect(harness.touchFile).toHaveBeenCalled();
+			} finally {
+				restoreHome();
+				await harness.stop();
+				env.cleanup();
+			}
+		});
+
+		it("expands a ~ destination outside the workspace and refuses it without creating a ~ directory", async () => {
+			const home = setupTestEnvironment("pi-lens-lsp-nav-4578-home-outside-");
+			const project = setupTestEnvironment("pi-lens-lsp-nav-4578-project-");
+			const oldPath = path.join(project.tmpDir, "old.ts");
+			fs.writeFileSync(oldPath, "export const value = 1;\n");
+			const harness = makeRenameHarness();
+			const restoreHome = pinTestHome(home.tmpDir);
+			expect(os.homedir(), "the fixture HOME did not take effect").toBe(
+				home.tmpDir,
+			);
+
+			try {
+				const result = await renameThroughTool(
+					harness,
+					project.tmpDir,
+					"rename-file-tilde-outside",
+					oldPath,
+					"~/renamed.ts",
+				);
+
+				// The existing rename confinement refuses a destination outside the
+				// workspace, and its message names the EXPANDED destination: the
+				// refusal is about `$HOME/renamed.ts`, not about a `~` under the cwd.
+				expect(result.isError).toBe(true);
+				expect(String(result.content[0]?.text)).toContain(
+					`workspace edit path escapes workspace: ${pathToFileURL(path.join(home.tmpDir, "renamed.ts")).href}`,
+				);
+				expect(result.details?.failureKind).toBe("lsp_error");
+				expect(fs.existsSync(oldPath)).toBe(true);
+				expect(fs.existsSync(path.join(project.tmpDir, "~"))).toBe(false);
+				expect(fs.existsSync(path.join(home.tmpDir, "renamed.ts"))).toBe(false);
+				expectNoServerStarted(harness, []);
+			} finally {
+				restoreHome();
+				await harness.stop();
+				project.cleanup();
+				home.cleanup();
+			}
+		});
+
+		it("drops a leading @ mention prefix on the destination, as pi's write path does", async () => {
+			const env = setupTestEnvironment("pi-lens-lsp-nav-4578-at-prefix-");
+			const oldPath = path.join(env.tmpDir, "old.ts");
+			fs.writeFileSync(oldPath, "export const value = 1;\n");
+			const harness = makeRenameHarness();
+
+			try {
+				// pi's `normalizePath` drops ONE leading `@` (its file-mention prefix),
+				// so a destination spelled `@renamed.ts` names the file `renamed.ts`.
+				// A file genuinely called `@renamed.ts` stays reachable as
+				// `./@renamed.ts`, exactly as it does for pi's own write tool.
+				const result = await renameThroughTool(
+					harness,
+					env.tmpDir,
+					"rename-file-at-prefix",
+					oldPath,
+					"@renamed.ts",
+				);
+
+				expect(result.isError).toBeUndefined();
+				expect(fs.existsSync(path.join(env.tmpDir, "renamed.ts"))).toBe(true);
+				expect(fs.existsSync(path.join(env.tmpDir, "@renamed.ts"))).toBe(false);
+
+				// Only a LEADING `@` is pi's mention prefix, so the `./@…` spelling keeps
+				// the character: a file genuinely called `@kept.ts` stays reachable,
+				// exactly as it does for pi's own write tool.
+				const literal = await renameThroughTool(
+					harness,
+					env.tmpDir,
+					"rename-file-at-literal",
+					path.join(env.tmpDir, "renamed.ts"),
+					"./@kept.ts",
+				);
+
+				expect(literal.isError).toBeUndefined();
+				expect(fs.existsSync(path.join(env.tmpDir, "@kept.ts"))).toBe(true);
+				expect(fs.existsSync(path.join(env.tmpDir, "kept.ts"))).toBe(false);
+				expectNoServerStarted(harness, []);
+				expect(harness.touchFile).toHaveBeenCalled();
+			} finally {
+				await harness.stop();
+				env.cleanup();
+			}
+		});
+
+		it("folds pi's unicode space class on the destination, as pi's write path does", async () => {
+			const env = setupTestEnvironment("pi-lens-lsp-nav-4578-nbsp-");
+			const oldPath = path.join(env.tmpDir, "old.ts");
+			fs.writeFileSync(oldPath, "export const value = 1;\n");
+			const foldedPath = path.join(env.tmpDir, "renamed a.ts");
+			const harness = makeRenameHarness();
+
+			try {
+				// U+00A0 is in pi's unicode space class, which folds to U+0020 before
+				// resolution, so a destination typed with it names the plain-space file.
+				const result = await renameThroughTool(
+					harness,
+					env.tmpDir,
+					"rename-file-unicode-space",
+					oldPath,
+					`renamed${String.fromCharCode(0x00a0)}a.ts`,
+				);
+
+				expect(result.isError).toBeUndefined();
+				expect(fs.existsSync(foldedPath)).toBe(true);
+				expect(
+					fs.existsSync(
+						path.join(env.tmpDir, `renamed${String.fromCharCode(0x00a0)}a.ts`),
+					),
+				).toBe(false);
+				expectNoServerStarted(harness, []);
+				expect(harness.touchFile).toHaveBeenCalled();
+			} finally {
+				await harness.stop();
+				env.cleanup();
+			}
+		});
+	});
+
 	// #2450 fix round 3 (F4) note: `isRecordable`'s cwd-vs-projectRoot
 	// divergence is NOT reachable through this file's mocked-service harness.
 	// `rename`'s real (unmocked) `applyWorkspaceEdit(edit, ctx.cwd, ...)`
@@ -1862,5 +2155,46 @@ describe("lsp_navigation workspaceDiagnostics delivery gate (#1634)", () => {
 				toolName: "lsp_navigation",
 			}),
 		);
+	});
+});
+
+/**
+ * #4577 M2: `path` is a host-supplied tool path, so it resolves through the
+ * shared host resolver. A bare `path.resolve(ctx.cwd, path)` turned `~/x` into
+ * `<cwd>/~/x`, so the server was asked about a document nothing had opened.
+ * The `rename_file` destination (`newFilePath`) keeps its bare join: it is a
+ * mutation target, filed as #4578.
+ */
+describe("lsp_navigation path resolution (#4577 M2)", () => {
+	it("resolves a ~ path to $HOME, not under the cwd", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-lens-nav-tilde-"));
+		const home = path.join(root, "home");
+		const filePath = path.join(home, "proj", "refs.ts");
+		fs.mkdirSync(path.dirname(filePath), { recursive: true });
+		fs.writeFileSync(filePath, "const a = normalizeMapKey('x');\n");
+		const restoreHome = pinTestHome(home);
+		try {
+			expect(os.homedir()).toBe(home);
+			const tool = createLspNavigationTool((flag) => flag === "lens-lsp");
+			await tool.execute(
+				"refs-tilde",
+				{
+					operation: "references",
+					path: "~/proj/refs.ts",
+					line: 1,
+					character: 12,
+				},
+				new AbortController().signal,
+				null,
+				{ cwd: path.join(home, "proj") },
+			);
+			const references = (
+				mocked.service as { references: ReturnType<typeof vi.fn> }
+			).references;
+			expect(references.mock.calls[0]?.[0]).toBe(filePath);
+		} finally {
+			restoreHome();
+			removeTempDirSync(root);
+		}
 	});
 });

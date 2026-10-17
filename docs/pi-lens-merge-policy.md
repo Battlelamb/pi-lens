@@ -30,7 +30,9 @@ moved lines; include only structural views that changed.
 1. **Review.** Spawn `pi-lens-reviewer` (worktree isolation) with the PR
    number, a one-paragraph summary of the claim, and any PR-specific attack
    angles. Self-authored and small PRs get reviewed too — the depth follows
-   the review tier below, never the priority label.
+   the review tier below, never the priority label. Bots review the PR as well:
+   every bot thread (Greptile and others) gets a disposition reply, `fixed in
+   <sha>`, `accepted and disclosed`, or `rejected because <reason>`.
 2. **Fix rounds.** Send findings back to the PR's original author agent when
    its worktree survives (SendMessage — cheapest context); otherwise spawn
    `pi-lens-fixer` on the branch with the findings inlined.
@@ -75,7 +77,8 @@ moved lines; include only structural views that changed.
    sweeps is not green — run the sweep on the merge before merging. Apply
    AGENTS.md's one mutation layer (#4005): new-guard proof and demonstrated
    correctness gaps gate the merge. `ci-verdict` prints no mutation line, and
-   the nightly Stryker report is not a merge input.
+   the nightly Stryker report is not a merge input. Every bot review thread
+   carries its disposition reply and is resolved before the merge.
 5. **Merge.** `gh pr merge <N> --merge` (merge commit, repo convention).
    If "not up to date", `gh api -X PUT .../pulls/<N>/update-branch`, wait for
    CI, re-gate, merge. On GitHub 503s: retry with backoff, never switch to
@@ -802,3 +805,11 @@ Each row cost a lane at least once; the prose above carries the record.
 | Importing `dist/` from a script a workflow runs before any build | #4525's `scripts/assert-evaluated.mjs` reached `dist/` through `lib/clean-signal.mjs`, so `tool-smoke-prs` would fail on every refresh PR. #4531 pins the import graph with a test and plants |
 | Pinning workflow step shell as text instead of running it | #4531 r1: four mutations of the Swift, APFS and handshake shell survived, including deleting `set +e`. Run the extracted step shell against stubs in a test |
 | Filing gap after gap on one mechanism without an audit | Eleven freshness gaps went into #4532 before anyone asked why there were eleven; the cause was one missing fan-out (#4535). Three issues on one mechanism open a consolidation audit (`AGENTS.md` "Orchestration and delegated work") |
+| Landing with an unresolved bot review thread | #4548 and #4558 merged with open Greptile threads (2026-10-17); each one's disposition arrived or never did, and nothing held the land. Every bot thread gets a disposition reply and is resolved before the merge (step 1 and step 4 of "The loop, per PR") |
+| Pushing a worker tree on a stale "failed" settlement | The #4575 r5 settlement read as failed while its resumed turn was live and about to push (plegma #752). The orchestrator's push-verify now refuses a tree with a live agent process, and its wait loop takes a `turnId`. |
+| Settling a fix round with unpushed commits | #4582 r1 settled with the commits still local and nobody noticed (plegma #753). The settlement hook now prints `UNPUSHED` or `DIRTY` for the tree it just settled. |
+| Switching `closes` to `refs` through a raw `gh pr edit` body edit | The #4581 land was refused because commit `d068be947` still closed #4488. `pr-body.sh` now refuses a body that drops a commit's close keyword, and the orchestrator guard denies raw body edits. |
+| Reading an empty DeepSeek turn as a worker stall and resuming it | Four resumes on one backend exhausted the balance (plegma #751). Two empty turns on one backend mean check the backend or the quota before any resume. |
+| Proving a workflow floor with a test that matched the step's shell text | The step's exit code was never checked, and the body claimed a shared helper had not landed (#4584 review F1/F3). The reviewer caught both under the existing tautological-test and reuse-the-seam rules, and the round moves the case to `tests/scripts/floor-steps-executed.test.ts`. |
+| Taking a local `vitest --shard=3/5` soak as CI's shard 3 | The shard never contained the target file, so four runs were wasted (#4488). The soak now asserts the target is in the set it recovered from CI's own job log before it runs. |
+| Trusting fixers and reviewers to read the bot threads on their own | Greptile threads and code-scanning alerts reached a round only when the orchestrator relayed them (#4566, #4575). The role contracts now carry a conditional read-and-dispose rule; a missing bot review is never evidence, and the reviewer's own pass stands alone. |

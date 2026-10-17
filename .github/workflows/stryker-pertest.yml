@@ -116,17 +116,33 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/pertest"
+          executed=""
           if [ -f reports/mutation/pertest.json ]; then
             cp reports/mutation/pertest.json "$RUNNER_TEMP/pertest/pertest.json"
             node scripts/stryker-pertest.mjs candidates --report reports/mutation/pertest.json --module "$MODULE" --out "$RUNNER_TEMP/pertest/candidates.md" --json-out "$RUNNER_TEMP/pertest/candidates.json"
-            cat "$RUNNER_TEMP/pertest/candidates.md" >> "$GITHUB_STEP_SUMMARY"
-            if [ -s "$RUNNER_TEMP/pertest/dropped.txt" ]; then
-              { echo; echo "Test files the threads pool could not run (not in this report):"; echo '```'; cat "$RUNNER_TEMP/pertest/dropped.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-            fi
-            echo "wall seconds: ${{ steps.stryker.outputs.wall_seconds }}" >> "$GITHUB_STEP_SUMMARY"
+            executed="$(node -e 'try{const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(j.summary.total)}catch{}' "$RUNNER_TEMP/pertest/candidates.json")"
           else
             echo "::error::no mutation report was written"
           fi
+          # #4518: the mutant count is the verdict, not the report's presence. A
+          # missing report and a zero-mutant one both evaluated nothing: Stryker
+          # writes `{"files":{}}` and exits 0 for a mutated range that reachable
+          # code never populates, and the candidates file then says every test
+          # killed a mutant. The shared floor seam (scripts/assert-evaluated.mjs)
+          # judges the count, writes the step-summary row, and its exit status is
+          # this step's verdict.
+          floor=0
+          node scripts/assert-evaluated.mjs --count "stryker-pertest=${executed}" --floor 1 || floor=$?
+          # A red run keeps the dropped-file note and the wall time (they explain
+          # an empty report) and writes no "every test killed a mutant" claim.
+          if [ "$floor" -eq 0 ]; then
+            cat "$RUNNER_TEMP/pertest/candidates.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -s "$RUNNER_TEMP/pertest/dropped.txt" ]; then
+            { echo; echo "Test files the threads pool could not run (not in this report):"; echo '```'; cat "$RUNNER_TEMP/pertest/dropped.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "wall seconds: ${{ steps.stryker.outputs.wall_seconds }}" >> "$GITHUB_STEP_SUMMARY"
+          exit "$floor"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -135,7 +151,10 @@ jobs:
           if-no-files-found: error
           overwrite: true
       - name: Fail the job when Stryker failed
-        if: steps.stryker.outcome == 'failure'
+        # `!cancelled()`: a step `if:` that names no status-check function gets a
+        # default `success()`, so this step was skipped whenever the candidates
+        # step above failed first, losing the one line that names why (#4518).
+        if: ${{ !cancelled() && steps.stryker.outcome == 'failure' }}
         run: |
           echo "::error::stryker run failed; see the step log"
           exit 1

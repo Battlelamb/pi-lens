@@ -17,7 +17,7 @@ import {
 	installTmpRootInterposer,
 	sampleTmpRoots,
 	sweepTmpRoots,
-	type MkdtempTarget,
+	type TmpRootFsTarget,
 } from "./tmp-root-registry.js";
 // The tail's dependency leaf, never `instance-registry.js`: this file loads
 // before every test file's `vi.mock`, so whatever it imports is cached before
@@ -83,6 +83,7 @@ delete process.env.PI_LENS_STARTUP_MODE;
 // owner observes the same namespace as production. Workers report additions;
 // the serialized owner removes entries after its assertion.
 const tmpHygieneRealTmp = os.tmpdir();
+
 const tmpHygieneHome = process.env.PI_LENS_HOME
 	? path.resolve(process.env.PI_LENS_HOME)
 	: path.join(process.cwd(), ".probe-home");
@@ -390,7 +391,7 @@ afterEach(() => touchTmpHygieneOwnerMarker());
 const tmpRootRegistry = getTmpRootRegistry();
 installTmpRootInterposer(
 	tmpRootRegistry,
-	nodeFs as unknown as MkdtempTarget,
+	nodeFs as unknown as TmpRootFsTarget,
 	tmpHygieneRealTmp,
 	() => tmpHygieneOwnFile,
 );
@@ -486,16 +487,27 @@ interface TmpHygieneBaseline {
 	 *  written by a run of an older checkout has none, and the census then says
 	 *  so instead of guessing. */
 	repoRoot?: string[];
+	/** Non-`pi-lens-` entries at the real tmp root at run start (#4560), so a
+	 *  write at the tmp root — a sibling of the fixtures,
+	 *  `path.join(<fixture>, "..")` — is judged against what the host already
+	 *  had. Optional: a record written by an older checkout has none, and the
+	 *  widened census then reports `unknown` instead of a clean zero. */
+	tmpRootWrites?: string[];
 }
 
 let tmpHygieneBefore: Set<string>;
 let backstopRootBefore: Record<string, number>;
 let repoRootBefore: readonly string[] | undefined;
+let tmpRootWritesBefore: ReadonlySet<string> | undefined;
 
 function adoptBaseline(baseline: TmpHygieneBaseline): void {
 	tmpHygieneBefore = new Set(baseline.tmp);
 	backstopRootBefore = baseline.backstopRoot;
 	repoRootBefore = baseline.repoRoot;
+	tmpRootWritesBefore =
+		baseline.tmpRootWrites === undefined
+			? undefined
+			: new Set(baseline.tmpRootWrites);
 }
 
 try {
@@ -509,6 +521,9 @@ try {
 		tmp: snapshotTmpPiLensEntries(readTmpDirEntries(tmpHygieneRealTmp)),
 		backstopRoot: rootBackstopSnapshot(),
 		repoRoot: readTmpDirEntries(process.cwd()),
+		tmpRootWrites: readTmpDirEntries(tmpHygieneRealTmp).filter(
+			(name) => !name.startsWith("pi-lens-"),
+		),
 	};
 	try {
 		const fd = fs.openSync(tmpHygieneBaselinePath, "wx");
@@ -1110,6 +1125,19 @@ export function tmpHygieneObservedEntries(): string[] {
 	);
 }
 
+/** New non-`pi-lens-` entries at the real tmp root (#4560): a fixture sibling
+ *  written at `path.join(<fixture>, "..")`, which the `pi-lens-`-only census
+ *  never saw. Observation only — the destructive sweep stays on the pi-lens
+ *  census, so an entry another host process wrote is reported, never removed.
+ *  `undefined` when the run's baseline predates this census, so the owner can
+ *  say `unknown` rather than a clean zero. */
+export function tmpHygieneTmpRootWrites(): string[] | undefined {
+	if (tmpRootWritesBefore === undefined) return undefined;
+	return readTmpDirEntries(tmpHygieneRealTmp).filter(
+		(name) => !name.startsWith("pi-lens-") && !tmpRootWritesBefore?.has(name),
+	);
+}
+
 export function tmpHygieneLeakReport(): {
 	testFile: string;
 	leftovers: string[];
@@ -1336,9 +1364,23 @@ export function formatTmpHygieneOwnerSummary(
 	scan: TmpHygieneOwnerScan,
 	otherInvocationEntries = 0,
 	reaped = 0,
+	/** #4560: fixture siblings at the tmp root, `judged` (a test process created
+	 *  it, so it is asserted) over `observed` (the widened census saw it at all),
+	 *  or `unknown` when the run's baseline predates the widened census. Both
+	 *  numbers: a judged zero over an observed entry is exactly the shape a
+	 *  closed report hides (AGENTS: a child's own tmp cache is counted, not
+	 *  asserted). */
+	tmpRootWrites: { judged: number; observed: number } | "unknown" = {
+		judged: 0,
+		observed: 0,
+	},
 ): string {
 	const { counts } = scan;
-	return `[tmp-hygiene-owners] live=${counts.live} orphaned=${counts.orphaned} malformed=${counts.malformed} foreign=${counts.foreign} self=${counts.self} otherInvocationEntries=${otherInvocationEntries} reaped=${reaped}`;
+	const tmpRootWriteCount =
+		tmpRootWrites === "unknown"
+			? "unknown"
+			: `${tmpRootWrites.judged}/${tmpRootWrites.observed}`;
+	return `[tmp-hygiene-owners] live=${counts.live} orphaned=${counts.orphaned} malformed=${counts.malformed} foreign=${counts.foreign} self=${counts.self} otherInvocationEntries=${otherInvocationEntries} reaped=${reaped} tmpRootWrites=${tmpRootWriteCount}`;
 }
 
 /** Reclaim abandoned owner records at the serialized census. A run id is the

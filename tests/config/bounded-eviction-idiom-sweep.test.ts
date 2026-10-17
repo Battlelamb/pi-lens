@@ -168,6 +168,14 @@ const DEFINITION_FILE = "clients/bounded-cache.ts";
  * paste it in.
  */
 const EXEMPT_SITES: Readonly<Record<string, string>> = {
+	"clients/lsp/document-drift.ts#DocumentDriftTracker:add9342e":
+		"Not evict-OLDEST (#4503): the walk SKIPS every record whose document a " +
+		"live server still holds and evicts the oldest one nobody holds, because " +
+		"dropping a held document's record leaves its stale view with nothing " +
+		"comparing disk against it. When every record is held, nothing is evicted " +
+		"at all. BoundedFifoMap can only drop its head, so it cannot express a " +
+		"skip-held victim policy, and growing it a skip policy to serve one caller " +
+		"is the same trade the debug-handles entry above already declined.",
 	"clients/debug-handles.ts#recordTrackedInit:3737b5dc":
 		"Not evict-OLDEST: this walk deliberately SKIPS the first " +
 		"TRACKER_PROTECTED_COUNT insertion-order entries and evicts the " +

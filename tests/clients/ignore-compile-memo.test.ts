@@ -61,7 +61,6 @@ describe("#1976 compiled-glob memo", () => {
 	it("refreshes a previously ignored path after a nested .gitignore edit", () => {
 		const env = setupTestEnvironment("pi-lens-2071-ignore-");
 		try {
-			fs.mkdirSync(path.join(env.tmpDir, ".git"));
 			const nested = path.join(env.tmpDir, "packages", "app");
 			fs.mkdirSync(nested, { recursive: true });
 			const ignoredPath = path.join(nested, "generated.ts");
@@ -81,7 +80,6 @@ describe("#1976 compiled-glob memo", () => {
 	it("refreshes a previously allowed path after a nested .gitignore edit", () => {
 		const env = setupTestEnvironment("pi-lens-2071-allow-");
 		try {
-			fs.mkdirSync(path.join(env.tmpDir, ".git"));
 			const nested = path.join(env.tmpDir, "packages", "app");
 			fs.mkdirSync(nested, { recursive: true });
 			const ignoredPath = path.join(nested, "generated.ts");
@@ -101,7 +99,6 @@ describe("#1976 compiled-glob memo", () => {
 	it("handles nested .gitignore creation and deletion without flushing siblings", () => {
 		const env = setupTestEnvironment("pi-lens-2071-lifecycle-");
 		try {
-			fs.mkdirSync(path.join(env.tmpDir, ".git"));
 			const changedDir = path.join(env.tmpDir, "packages", "changed");
 			const siblingDir = path.join(env.tmpDir, "packages", "sibling");
 			fs.mkdirSync(changedDir, { recursive: true });
@@ -149,7 +146,6 @@ describe("#1976 compiled-glob memo", () => {
 	it("refreshes an outer matcher when a nested git root changes", () => {
 		const env = setupTestEnvironment("pi-lens-2071-nested-git-");
 		try {
-			fs.mkdirSync(path.join(env.tmpDir, ".git"));
 			const nested = path.join(env.tmpDir, "submodule");
 			fs.mkdirSync(path.join(nested, ".git"), { recursive: true });
 			const ignoredPath = path.join(nested, "generated.ts");

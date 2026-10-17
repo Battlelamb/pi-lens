@@ -21,7 +21,11 @@ let pathUtils: typeof import("../../clients/path-utils.js");
 let previousHome: string | undefined;
 
 beforeEach(async () => {
-	home = setupTestEnvironment("pi-lens-tool-cwd-").tmpDir;
+	// #4560: this home is a scratch PI_LENS_HOME, and the markerless-root
+	// cells need it to stay out of the project-root walk.
+	home = setupTestEnvironment("pi-lens-tool-cwd-", {
+		rootMarker: false,
+	}).tmpDir;
 	previousHome = process.env.PI_LENS_HOME;
 	process.env.PI_LENS_HOME = home;
 	process.env.PI_LENS_TEST_MODE = "0";

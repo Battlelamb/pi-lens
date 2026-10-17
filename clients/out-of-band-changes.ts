@@ -13,14 +13,14 @@
  * old declarations for its whole life, and the diagnostics cache served
  * entries whose ambient scope had changed under them.
  *
- * At each #4493 look (a bash tool_result, every tool_call) this module:
- * - compares the root's install stamps (lockfiles and package-manager install
- *   markers): a change is an install no event can enumerate, so the root's
- *   live primary clients restart, and every cache entry scanned before it is
- *   refused;
- * - compares a bounded walk of the root's declaration files: each one created,
- *   edited or deleted goes to the live clients as an exact-URI watched-files
- *   event, and the cache refuses the entries whose scope holds it.
+ * At each #4493 look (a bash tool_result, every tool_call) this module
+ * compares the root's install stamps (lockfiles and package-manager install
+ * markers) and a bounded walk of the root's declaration files, then publishes
+ * what changed as one `DiskChange` (#4535). The publisher allocates the
+ * project sequence; its subscribers restart the root's primary clients and
+ * send the exact-URI watched-files events (#4528), and move the
+ * diagnostics-cache clock so the entries whose scope holds a changed path or
+ * an install are refused. This module names no consumer.
  *
  * The records are process-wide per root, as the servers are (two sessions on
  * one root share them, so one install restarts once). They describe the disk,
@@ -31,13 +31,17 @@ import { promises as fsp } from "node:fs";
 import { join } from "node:path";
 import { BoundedFifoMap } from "./bounded-cache.js";
 import { recordDegradationOnce } from "./degradation-ledger.js";
+import {
+	type DiskChangeInput,
+	type DiskChangeRuntime,
+	publishDiskChange,
+} from "./disk-changes.js";
+import {
+	ensureDiskChangeSubscribers,
+	LSP_CONSUMER,
+} from "./disk-change-subscribers.js";
 import { isExcludedDirName } from "./file-utils.js";
 import { logLatency } from "./latency-logger.js";
-import { peekLSPService } from "./lsp/capabilities.js";
-import {
-	noteWorkspaceDependenciesChanged,
-	noteWorkspaceFilesChangedOnDisk,
-} from "./lsp/workspace-diagnostics-session.js";
 import { normalizeMapKey } from "./path-utils.js";
 import { createSingleFlight } from "./single-flight.js";
 
@@ -211,21 +215,74 @@ function diffDeclarations(
 
 /**
  * Look at `root` for an install or a declaration-file change since its last
- * look, and act on what changed (see the module doc). Looks of one root run
+ * look, and publish what changed (see the module doc). Looks of one root run
  * one at a time, each against the record the previous one left (`looks`).
+ *
+ * The consumers are subscribers of the disk-change publisher (#4535): this
+ * detector no longer names the LSP service or the diagnostics cache. `runtime`
+ * is the bulk mutation seam the publisher allocates the existing project
+ * sequence through; without it the change still reaches every subscriber, but
+ * no sequence is allocated.
  */
 export function lookForOutOfBandChanges(
 	root: string,
 	trigger: "tool_call" | "tool_result",
+	runtime?: DiskChangeRuntime,
 ): Promise<void> {
 	const key = normalizeMapKey(root);
-	return looks.run(key, () => lookOnce(root, key, trigger));
+	return looks.run(key, () => lookOnce(root, key, trigger, runtime));
+}
+
+/** `diffDeclarations`'s watched-files type codes, as the record names them. */
+const CHANGE_TYPE = {
+	1: "created",
+	2: "changed",
+	3: "deleted",
+} as const;
+
+/**
+ * One look's record. `paths` is the population the cache refuses entries for
+ * (normalized); `pathChanges` keeps the detector's own spelling for the
+ * exact-URI watched-files events. An install cannot be enumerated, so a
+ * look that only saw one records `paths: "unknown"`, never an empty list.
+ */
+function outOfBandChange(
+	root: string,
+	installed: boolean,
+	changes: ReadonlyArray<{ filePath: string; type: number }>,
+	at: number,
+): DiskChangeInput {
+	const sources = [
+		...(installed ? ["install"] : []),
+		...(changes.length > 0 ? ["declarations"] : []),
+	];
+	const pathChanges = changes.map((change) => ({
+		filePath: change.filePath,
+		type: CHANGE_TYPE[change.type as 1 | 2 | 3],
+	}));
+	return {
+		root,
+		origin: "out-of-band",
+		sources,
+		// A stat fingerprint, not the bytes: an `inferred` change may never by
+		// itself confirm that a finding was not reproduced.
+		kind: "inferred",
+		paths:
+			changes.length > 0
+				? changes.map((change) => normalizeMapKey(change.filePath))
+				: installed
+					? "unknown"
+					: [],
+		...(pathChanges.length > 0 ? { pathChanges } : {}),
+		at,
+	};
 }
 
 async function lookOnce(
 	root: string,
 	key: string,
 	trigger: "tool_call" | "tool_result",
+	runtime: DiskChangeRuntime | undefined,
 ): Promise<void> {
 	const started = Date.now();
 	const prior = records.get(key);
@@ -257,20 +314,17 @@ async function lookOnce(
 			: [];
 	if (!installed && changes.length === 0) return;
 	const at = Date.now();
-	const service = peekLSPService();
-	let restarted = 0;
-	if (installed) {
-		noteWorkspaceDependenciesChanged(at);
-		restarted = (await service?.restartPrimaryClientsUnder(root)) ?? 0;
-	}
-	if (changes.length > 0) {
-		noteWorkspaceFilesChangedOnDisk(
-			root,
-			changes.map((change) => normalizeMapKey(change.filePath)),
-			at,
-		);
-		service?.notifyOutOfBandFileChanges(changes);
-	}
+	// I1: the per-root record is committed above, before any consumer runs.
+	ensureDiskChangeSubscribers();
+	const { results } = await publishDiskChange(
+		outOfBandChange(root, installed, changes, at),
+		runtime,
+	);
+	// The restart count belongs to the LSP subscriber's own answer; the row
+	// keeps reporting it rather than the publisher growing a special case.
+	const restarted =
+		(results.get(LSP_CONSUMER) as { restarted?: number } | undefined)
+			?.restarted ?? 0;
 	const count = (type: number) =>
 		changes.reduce((n, change) => n + (change.type === type ? 1 : 0), 0);
 	logLatency({

@@ -2,22 +2,10 @@
 	"about": "Test files the shuffle census (scripts/ci-shuffle-census.mjs, #4405) found order-dependent and nobody has fixed at the cause yet. One entry per FILE: a file stays listed until the census finds it clean under every seed, because which cases of a file fail under a seed moves with its case count. `seam` names the group the fix belongs to (first-error evidence, not a root-cause analysis); `seed` and `test` are one example failing case, for the fixer, and the last segment of `test` must still appear in the file. The list only shrinks: delete an entry in the PR that fixes the file, and lower PINNED_FILES in tests/scripts/ci-shuffle-census.test.ts. Reproduce with `npx vitest run <file> --sequence.shuffle --sequence.seed=<seed>`.",
 	"members": [
 		{
-			"file": "tests/clients/ast-grep-rule-manager.test.ts",
-			"seam": "module-latch-singleton",
-			"seed": 202,
-			"test": "checkAstGrepRulesHealth > refreshes descriptions at the next dispatch cycle after an edit or a removal"
-		},
-		{
 			"file": "tests/clients/debug-handles.test.ts",
 			"seam": "once-per-session-sink",
 			"seed": 202,
 			"test": "debug-handles: PI_LENS_DEBUG_HANDLES=1 unset (default) > dumpActiveHandles is a no-op — writes nothing to disk"
-		},
-		{
-			"file": "tests/clients/dispatch/runners/cwd-probe-latching.test.ts",
-			"seam": "module-latch-singleton",
-			"seed": 424,
-			"test": "createCwdCachedProbe latch policy (#1494) > does not book an overrun for a probe that returned a timeout verdict"
 		},
 		{
 			"file": "tests/clients/dispatch/runners/lsp-real-runner.test.ts",
@@ -44,12 +32,6 @@
 			"test": "LSP Client Integration — mutation-bridge fallback for server-initiated edits (#2450) > records turn-state and a change-log receipt for a server-initiated applyEdit with no mutationContext threaded through executeCommand"
 		},
 		{
-			"file": "tests/clients/lsp/managed-bin-fastpath.test.ts",
-			"seam": "lsp-real-server-timing",
-			"seed": 202,
-			"test": "resolveAndLaunch — managed-bin availability telemetry (#2140) > does not swallow the negative case: unavailable then the install-path override both emit when the binary is absent"
-		},
-		{
 			"file": "tests/clients/lsp/service-aux-grace.test.ts",
 			"seam": "lsp-real-server-timing",
 			"seed": 202,
@@ -60,12 +42,6 @@
 			"seam": "once-per-session-sink",
 			"seed": 202,
 			"test": "createNdjsonLogger > bounds a wedged shutdown drain and records one degradation"
-		},
-		{
-			"file": "tests/clients/read-bridge.test.ts",
-			"seam": "declaration-order",
-			"seed": 424,
-			"test": "bridge is absent before registerReadBridge is called"
 		},
 		{
 			"file": "tests/clients/review-graph/wasm-trap-containment.test.ts",
@@ -80,46 +56,10 @@
 			"test": "a one-off trap's entry decays after a healthy parse (#3678 F-A) > decays when the SAME consumer parses the same unchanged content"
 		},
 		{
-			"file": "tests/clients/runtime-session-dispatch-reset.test.ts",
-			"seam": "module-latch-singleton",
-			"seed": 424,
-			"test": "dispatch availability suppression is reset at session start (#1266) > re-probes PowerShell after handleSessionStart"
-		},
-		{
-			"file": "tests/clients/sgconfig-scratch-bound.test.ts",
-			"seam": "once-per-session-sink",
-			"seed": 202,
-			"test": "sgconfig scratch bound > caps baseline entries and records the eviction once per session"
-		},
-		{
-			"file": "tests/clients/spawn-timeout-cooldown.test.ts",
-			"seam": "module-latch-singleton",
-			"seed": 202,
-			"test": "seam unit semantics > note → cooldown hot; reset → cool"
-		},
-		{
 			"file": "tests/clients/test-utils-fake-timers.test.ts",
 			"seam": "declaration-order",
 			"seed": 202,
 			"test": "useTrackedTempDirs under a fake clock (#4019) > drained that dir on a real clock before the next test ran"
-		},
-		{
-			"file": "tests/clients/tree-sitter-heal-batch-cache.test.ts",
-			"seam": "tree-sitter-wasm-state",
-			"seed": 202,
-			"test": "tree-sitter batch cache healing (#3834) > defers native disposal until an in-flight batch consumer releases it"
-		},
-		{
-			"file": "tests/clients/word-index-memo-lifecycle.test.ts",
-			"seam": "once-per-session-sink",
-			"seed": 202,
-			"test": "word-index serialized memo lifecycle (#4124) > logs one row when a held memo is released and none when nothing is held"
-		},
-		{
-			"file": "tests/index-2992-integration.test.ts",
-			"seam": "index-activation-state",
-			"seed": 202,
-			"test": "#2992 read bridge lifecycle > records a stale read through the real bridge before authorizing an edit"
 		},
 		{
 			"file": "tests/index-3248-git-guard-latch-witness.test.ts",

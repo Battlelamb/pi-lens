@@ -878,7 +878,11 @@ describe("review graph service", () => {
 	});
 
 	it("stops the size-gate walk at cap+1 visited entries", async () => {
-		const env = setupTestEnvironment("pi-lens-review-graph-cap-bound-");
+		// #4560: this cell measures the walk's ENTRY population, so the shared
+		// fixture marker (one extra root entry) must not be in it.
+		const env = setupTestEnvironment("pi-lens-review-graph-cap-bound-", {
+			rootMarker: false,
+		});
 		const previous = process.env.PI_LENS_REVIEW_GRAPH_MAX_FILES;
 		process.env.PI_LENS_REVIEW_GRAPH_MAX_FILES = "3";
 		let visited = 0;
@@ -947,7 +951,10 @@ describe("review graph service", () => {
 	});
 
 	it("keeps the complete under-cap walk and does not report a near miss", async () => {
-		const env = setupTestEnvironment("pi-lens-review-graph-cap-under-");
+		// #4560: exact entry count, so no shared fixture marker in the walk.
+		const env = setupTestEnvironment("pi-lens-review-graph-cap-under-", {
+			rootMarker: false,
+		});
 		const previous = process.env.PI_LENS_REVIEW_GRAPH_MAX_FILES;
 		process.env.PI_LENS_REVIEW_GRAPH_MAX_FILES = "3";
 		let visited = 0;

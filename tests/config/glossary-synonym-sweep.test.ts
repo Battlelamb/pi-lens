@@ -865,6 +865,12 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/ast-grep-rule-manager.ts": 4,
 		"clients/ast-grep-tool-logger.ts": 3,
 		"clients/atomic-write-staging.ts": 2,
+		// 7 -> 10 (#4577 M1): `resolveCandidate` follows SHELL rules again
+		// (bash expands `~` itself), so it keeps its own `path.isAbsolute` /
+		// `path.resolve` pair instead of the host-tool resolver, which applied
+		// host-argument stages a shell word never sees.
+		// 10 -> 9 (#4577 R4): an absolute operand keeps the spelling the command
+		// carried, so the re-resolving `path.resolve(operand)` is gone.
 		"clients/bash-file-access.ts": 9,
 		// 10 -> 7 (#4268): the hand-built `path.join` candidate list folds onto the
 		// shared `findLocalBinAt` trust seam, one construction site for the shim.
@@ -1048,7 +1054,10 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/lsp/workspace-diagnostics-session.ts": 2,
 		// 6 -> 5 (#3643): removed the obsolete ring path-comparison branch;
 		// dispatch identity now arrives on DispatchResult.
-		"clients/mcp/analyze.ts": 5,
+		// 5 -> 6 (#4583): the adopted warm entry keys its map lookup through
+		// `path.resolve(cwd)`, the same sense (a path operation) the entry's own
+		// creation site already uses.
+		"clients/mcp/analyze.ts": 6,
 		// 4 -> 7 (#4376): OS path namespace calls build the pid-first endpoint
 		// name and the stale-socket owner marker. No path-key owner changes.
 		"clients/mcp/ipc.ts": 7,
@@ -1136,7 +1145,10 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		// 32 -> 33 (#4484 round 4): the anchor moves onto its record, re-set
 		// under the display key every record writer uses; its reads route
 		// through the keyed map.
-		"clients/runtime-coordinator.ts": 33,
+		// 33 -> 34 (#4535): the bulk mutation writer resolves each path into the
+		// durable change-log entry, the same `path.resolve` the single writer
+		// uses, so the log's spelling does not depend on which form recorded it.
+		"clients/runtime-coordinator.ts": 34,
 		"clients/runtime-session.ts": 15,
 		// 22 -> 21 (#4137): the baseline slot's `path.resolve` moved into
 		// `opaqueBaselineSlot` (clients/opaque-mutation-scan.ts).
@@ -1147,7 +1159,9 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/runtime-tool-call.ts": 22,
 		// 22 -> 20 (#3650): the tool_result path read is routed through
 		// readToolResultPathField; the open-coded input.path cast is gone.
-		"clients/runtime-tool-result.ts": 19,
+		// 19 -> 18 (#4576): the tool_result path resolves through
+		// `resolveToolCallFilePath`, dropping the bare `path.*` pair.
+		"clients/runtime-tool-result.ts": 18,
 		// 25 -> 27 (#3218): the resolved-blocker filter keys both the current
 		// blocker set and each resolved entry with `path.resolve`.
 		// 27 -> 26 (#2542 ask 3): `deferralEntryKey` moved to
@@ -1211,14 +1225,33 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"tools/ast-grep-outline.ts": 5,
 		"tools/ast-grep-search.ts": 2,
 		"tools/effective-config.ts": 2,
-		"tools/lens-diagnostic-mark.ts": 6,
-		"tools/lens-diagnostics.ts": 30,
-		"tools/lsp-diagnostics.ts": 10,
+		// 6 -> 4 (#4577 M2): the `path` argument folds onto
+		// `resolveHostToolPath`, dropping the `path.isAbsolute`/`path.resolve`
+		// pair.
+		"tools/lens-diagnostic-mark.ts": 4,
+		// 30 -> 27 (#4576): `resolvePathsScope` folds onto
+		// `resolveHostToolPath`, dropping three `path.*` calls.
+		"tools/lens-diagnostics.ts": 27,
+		// 10 -> 8 (#4577 M2): the scalar and batch `path`/`paths` arguments fold
+		// onto `resolveHostToolPath`, dropping one `path.resolve` each.
+		"tools/lsp-diagnostics.ts": 8,
 		// 14 -> 15 (#4403 round 5): `noServerAnsweredText` names the file by
 		// its `path.basename`, beside the install hint's own.
-		"tools/lsp-navigation.ts": 15,
-		"tools/module-report.ts": 29,
+		// 15 -> 11: both concurrent folds land here. #4578 takes the `rename_file`
+		// destination, #4577 M2 the navigation `path` argument, so each pair of
+		// `path.isAbsolute`/`path.resolve` calls goes and the merged file keeps
+		// path OPERATIONS only (`path.basename`, `path.resolve` of a read target),
+		// the sense the glossary does not retire.
+		"tools/lsp-navigation.ts": 11,
+		// 29 -> 27 (#4577 M2): `resolveFile` folds onto `resolveHostToolPath`,
+		// dropping the `path.isAbsolute`/`path.resolve` pair.
+		"tools/module-report.ts": 27,
 		"tools/render-compact.ts": 3,
+		// 0 -> 2 (#4577 R2-2): the defaulted (no `paths`) target is now built by
+		// `path.resolve(base)` alone instead of going through
+		// `resolveHostToolPath`, because that generated path is pi-lens's own and
+		// must keep its bytes.
+		"tools/shared.ts": 2,
 		"tools/symbol-search.ts": 5,
 		"mcp/analyze-cli.ts": 4,
 		"mcp/cli.ts": 2,

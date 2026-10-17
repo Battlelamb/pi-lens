@@ -127,7 +127,8 @@ describe("a JSON file with no language server and no auxiliary (#4322)", () => {
 			path.join(workspace, "package.json"),
 			'{"name":"synthetic-json-fixture","private":true}\n',
 		);
-		fs.mkdirSync(path.join(workspace, ".git"));
+		// The shared fixture marker supplies the `.git` the JSON primary walks to
+		// (#4560); planting a second one threw EEXIST and skipped this suite.
 		fs.mkdirSync(path.join(workspace, ".pi-lens"), { recursive: true });
 		fs.writeFileSync(
 			path.join(workspace, ".pi-lens", "lsp.json"),

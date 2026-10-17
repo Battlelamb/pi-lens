@@ -279,6 +279,29 @@ export type DegradationKind =
 	| "deferred-format-unsettled"
 	| "demoted-finding-retired"
 	| "diagnostic-retained-unreconciled"
+	/**
+	 * #4535: the change-log append a publish allocated its sequence through
+	 * failed, so the subscribers hold a `seq` the durable log does not
+	 * (clients/disk-changes.ts). Before this record the publish swallowed the
+	 * failure and the whole fan-out proceeded on a sequence nothing could
+	 * replay. Subject: the normalized project root; one row per root per
+	 * session, the count carrying the repeat.
+	 */
+	| "disk-change-append-failed"
+	/**
+	 * #4535: one publish carried more paths than
+	 * `DISK_CHANGE_MAX_RECORDED_PATHS`, so the tail got no sequence and the
+	 * record is reported as unenumerable (clients/disk-changes.ts). Once per
+	 * root per session; the conservative direction for every subscriber.
+	 */
+	| "disk-change-paths-truncated"
+	/**
+	 * #4535: one disk-change subscriber threw while a publish delivered to it
+	 * (clients/disk-changes.ts). The publish continues to the next subscriber;
+	 * the record names the consumer and the root, once per consumer per session,
+	 * so a broken consumer cannot spam the agent-facing summary.
+	 */
+	| "disk-change-subscriber-failed"
 	| "dispatch-non-absolute-baseline-path"
 	/**
 	 * A server-initiated `workspace/applyEdit` fell back to the mutation

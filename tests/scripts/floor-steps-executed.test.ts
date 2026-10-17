@@ -80,6 +80,19 @@ function runStep(
 	});
 }
 
+/** `${{ steps.<id>.outputs.<name> }}` inside a `run:` body, resolved before the script runs. */
+function resolveInline(
+	run: string,
+	stepId: string | undefined,
+	outputs: Record<string, string>,
+) {
+	return run.replaceAll(
+		/\$\{\{\s*steps\.([\w-]+)\.outputs\.([\w-]+)\s*\}\}/g,
+		(whole: string, id: string, name: string) =>
+			id === stepId ? (outputs[name] ?? "") : whole,
+	);
+}
+
 /** `${{ steps.<id>.outputs.<name> }}` against the outputs the earlier step wrote. */
 function resolveOutput(
 	expression: string | undefined,
@@ -288,4 +301,119 @@ describe("lint.yml advisory report pipes, executed (#4518)", () => {
 			}
 		},
 	);
+});
+
+describe("stryker-pertest candidates floor, executed (#4518)", () => {
+	const wf = workflow("stryker-pertest.yml");
+	const candidates = stepNamed(wf, "mutate", "List tests that kill no mutant");
+	const mutate = stepNamed(wf, "mutate", "Mutate the module");
+
+	// The report shape Stryker's mutation-test-report helper writes. Two killed
+	// mutants is a run that evaluated something; `{"files":{}}` is what an empty
+	// mutant list becomes (`reportAll([])` -> `files: {}`), which Stryker reaches
+	// on exit 0 when the mutated range holds nothing to mutate.
+	const evaluated = JSON.stringify({
+		files: {
+			"clients/run-duration.js": {
+				mutants: [
+					{ id: "1", status: "Killed", coveredBy: ["t1"], killedBy: ["t1"] },
+					{ id: "2", status: "Killed", coveredBy: ["t1"], killedBy: ["t1"] },
+				],
+			},
+		},
+		testFiles: {
+			"tests/clients/run-duration.test.ts": {
+				tests: [{ id: "t1", name: "reads the median" }],
+			},
+		},
+	});
+
+	/**
+	 * The step runs `scripts/stryker-pertest.mjs` and `scripts/assert-evaluated.mjs`
+	 * by repo-relative path from the scratch cwd. A `node` on PATH maps those to the
+	 * real files and leaves every other argv shape to the real node: both subjects
+	 * stay real, and their module-URL entry guards still match an absolute argv[1].
+	 */
+	function run(report: string | null) {
+		const dir = scratch();
+		fakeNode(
+			dir,
+			"scripts/*",
+			'f="$1"; shift; exec "$REAL_NODE" "$REPO_ROOT/$f" "$@"',
+		);
+		if (report !== null) {
+			fs.mkdirSync(path.join(dir, "reports", "mutation"), { recursive: true });
+			fs.writeFileSync(
+				path.join(dir, "reports", "mutation", "pertest.json"),
+				report,
+			);
+		}
+		const summary = path.join(dir, "summary.md");
+		fs.writeFileSync(summary, "");
+		const result = runStep(
+			{
+				...candidates,
+				run: resolveInline(candidates.run ?? "", mutate.id, {
+					wall_seconds: "42",
+				}),
+			},
+			dir,
+			{
+				MODULE: "clients/run-duration.ts",
+				REPO_ROOT: ROOT,
+				GITHUB_STEP_SUMMARY: summary,
+			},
+			dir,
+		);
+		return { result, summary: fs.readFileSync(summary, "utf8") };
+	}
+
+	// Recurrence (#4518): a producer under `continue-on-error` that evaluated
+	// nothing read green. The report's PRESENCE is not the population: Stryker
+	// writes `{"files":{}}` and exits 0 for a range with nothing to mutate, and
+	// the candidates file then says every test killed a mutant.
+	it.each([
+		["no report at all", null],
+		["an empty report", '{"files":{}}'],
+		[
+			"a report with an empty mutants list",
+			'{"files":{"clients/run-duration.js":{"mutants":[]}}}',
+		],
+		["a truncated report", '{"files":'],
+	])("reds the step for %s", (_label, report) => {
+		expect(run(report).result.status).toBe(1);
+	});
+
+	it("passes a report that holds an evaluated mutant", () => {
+		const { result } = run(evaluated);
+		expect(result.status, result.stderr).toBe(0);
+	});
+
+	// N1: the red path printed only an ::error::, so the run's summary page was
+	// empty. The shared floor seam writes a row naming the count and the floor.
+	it("names the count and the floor on the step summary it reds on", () => {
+		expect(run('{"files":{}}').summary).toContain(
+			"| stryker-pertest | 0 | 1 |",
+		);
+		expect(run(null).summary).toContain("| stryker-pertest | 0 | 1 |");
+	});
+
+	// The candidates table, the dropped-file note and the wall time survive a
+	// green run in this order; a red one never claims every test killed a mutant.
+	it("writes the candidates table and the wall time only for a green run", () => {
+		const green = run(evaluated).summary;
+		expect(green).toContain("Mutants: total: 2");
+		expect(green).toContain("wall seconds: 42");
+		expect(run('{"files":{}}').summary).not.toContain(
+			"kills at least one mutant",
+		);
+	});
+
+	// Recurrence: renaming `id: stryker` leaves the wall-time line reading an
+	// empty output under `set -u`; the ids must line up as in the Swift case.
+	it("resolves the wall time from the step that writes it", () => {
+		expect(candidates.run).toContain(
+			`\${{ steps.${mutate.id}.outputs.wall_seconds }}`,
+		);
+	});
 });

@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	assertNonEmptyScan,
 	listSourceFiles,
@@ -30,6 +30,7 @@ import {
 	formatTmpHygieneOwnerSummary,
 	realTmpHygieneProcessProbe,
 	resetTmpHygieneHeartbeatThrottle,
+	tmpHygieneTmpRootWrites,
 	touchTmpHygieneOwnerMarker,
 	TMP_HYGIENE_HOME,
 	TMP_HYGIENE_OWNER_STALE_MS,
@@ -54,6 +55,7 @@ import {
 	waitForProjectSnapshotPersistsForTests,
 } from "../../clients/project-snapshot.js";
 import { RuntimeCoordinator } from "../../clients/runtime-coordinator.js";
+import { findNearestProjectRoot } from "../../clients/startup-scan.js";
 
 const REPO_ROOT = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
@@ -441,15 +443,53 @@ function repoRootEntryCandidates(entry: string): string[] {
 	return hits;
 }
 
+/** Every creator this process can name at census time: the run-scoped persisted
+ *  record PLUS this process's in-memory registry. The persisted record is
+ *  written by the shared setup's `afterAll`, which runs AFTER this file's own,
+ *  and `cleanupTmpHygiene` then closes and deletes it — so without the merge
+ *  this file's own creations are unreadable at its own census and leak green
+ *  (#4560 F4). The in-memory side wins: it is the newer observation. */
+function censusTmpRootCreators(): Map<string, string> {
+	return new Map([
+		...tmpHygieneCreators(),
+		...recordedTmpRootCreators(getTmpRootRegistry()),
+	]);
+}
+
+/** The widened census's JUDGMENT (#4560): of the new entries at the tmp root,
+ *  the ones a TEST PROCESS created (the shared interposer recorded a creator).
+ *  A child process's own tmp cache (`jiti` and friends) has no creator on
+ *  record, so it is counted on the census line, never asserted — the #4307-4
+ *  direction that keeps an innocent file out of the report. */
+function judgedTmpRootWrites(
+	entries: readonly string[],
+	creators: ReadonlyMap<string, string> = censusTmpRootCreators(),
+): string[] {
+	return entries.filter((entry) => creators.has(entry));
+}
+
 /** The pre-#4354 shape of the foreign-run cases: no creator on record. */
 const NO_CREATORS: ReadonlyMap<string, string> = new Map();
+
+// #4560 N2/S: keep the caller's compatibility decision on the real sink seam.
+function writeCensusSummary(
+	scan: Parameters<typeof formatTmpHygieneOwnerSummary>[0],
+	otherInvocation: number,
+	reaped: number,
+	tmpRootWrites: string[] | undefined,
+	judged: number,
+): void {
+	process.stderr.write(
+		`${formatTmpHygieneOwnerSummary(scan, otherInvocation, reaped, tmpRootWrites === undefined ? "unknown" : { judged, observed: tmpRootWrites.length })}\n`,
+	);
+}
 
 describe("tmp-fixture-hygiene", () => {
 	afterAll(async () => {
 		const scan = await tmpHygieneWaitForOwnerDrain();
 		const liveOwners = scan.live;
 		const { testFile, leftovers } = tmpHygieneLeakReport();
-		const creators = tmpHygieneCreators();
+		const creators = censusTmpRootCreators();
 		// #3314: entries whose every candidate owner is a file no worker of THIS
 		// run id loaded belong to another vitest invocation sharing this TMPDIR.
 		// They are dropped before attribution AND spared by the sweep below.
@@ -480,10 +520,31 @@ describe("tmp-fixture-hygiene", () => {
 			process.stderr.write(
 				`[tmp-hygiene] repo-root census could not run: ${rootCensus.unknown}\n`,
 			);
+		// #4560: a write at the tmp root (`path.join(<fixture>, "..")`) is now in
+		// the census, not only `pi-lens-` names. A host process's tmp file is not
+		// asserted; it is counted on the census line (`observed`) beside the judged
+		// count, so an observed-but-unjudged entry is never reported as a clean
+		// zero.
+		const tmpRootWrites = tmpHygieneTmpRootWrites();
+		const tmpRootWriteLeaks = judgedTmpRootWrites(
+			tmpRootWrites ?? [],
+			creators,
+		);
 		try {
 			expect(
 				attributable,
 				`[tmp-hygiene] tests/${testFile} leaked ${attributable.length} top-level entries: ${described.join(",")}; live owners: ${[...liveOwners].join(",") || "none"}`,
+			).toEqual([]);
+			expect(
+				tmpRootWriteLeaks,
+				`[tmp-hygiene] tests/${testFile} left ${tmpRootWriteLeaks.length} fixture sibling(s) at the tmp root: ${tmpRootWriteLeaks
+					.map(
+						(entry) =>
+							`${entry} (created by tests/${creators.get(entry) ?? "unknown"})`,
+					)
+					.join(
+						"; ",
+					)}. Write the sibling inside the fixture, or remove it: a directory at \`path.join(<fixture>, "..")\` never belongs to the fixture that made it (#4546, #4559, #4560).`,
 			).toEqual([]);
 			expect(
 				rootCensus.leaked,
@@ -501,9 +562,38 @@ describe("tmp-fixture-hygiene", () => {
 			// Bounded observability (#3186, extended by #3314): ONE census line per
 			// hygiene run, not one record per marker or per entry, so a suppressed,
 			// ignored, attributed, or reaped entry is explicable from this run.
-			process.stderr.write(
-				`${formatTmpHygieneOwnerSummary(scan, otherInvocation.size, reaped)}\n`,
+			writeCensusSummary(
+				scan,
+				otherInvocation.size,
+				reaped,
+				tmpRootWrites,
+				tmpRootWriteLeaks.length,
 			);
+		}
+	});
+
+	it("reports an unknown baseline through the census caller (#4560)", async () => {
+		// N2/S: formatting unknown directly misses the caller converting it to 0/N.
+		const output = vi
+			.spyOn(process.stderr, "write")
+			.mockImplementation(() => true);
+		try {
+			const readOldBaseline = () => undefined;
+			writeCensusSummary(
+				{
+					live: new Set<string>(),
+					counts: { live: 0, orphaned: 0, malformed: 0, foreign: 0, self: 1 },
+				},
+				0,
+				0,
+				readOldBaseline(),
+				0,
+			);
+			expect(output.mock.calls.flat().join("")).toContain(
+				"tmpRootWrites=unknown",
+			);
+		} finally {
+			output.mockRestore();
 		}
 	});
 
@@ -621,7 +711,12 @@ describe("tmp-fixture-hygiene", () => {
 	// decides what is a leak, an entry git cannot classify is reported as
 	// unknown rather than clean, and the REAL baseline is live.
 	it("names the entries a run added to the repo root, and only those", () => {
-		const env = setupTestEnvironment("pi-lens-3715-root-diff-");
+		// #4560: this fixture stands in for a CHECKOUT root, so it must not carry
+		// the shared tmp fixture's marker: a `.git` entry would be a new repo-root
+		// entry the census then has to classify.
+		const env = setupTestEnvironment("pi-lens-3715-root-diff-", {
+			rootMarker: false,
+		});
 		try {
 			for (const name of ["kept", "added-dir", ".added-dot"])
 				fs.mkdirSync(path.join(env.tmpDir, name));
@@ -659,7 +754,9 @@ describe("tmp-fixture-hygiene", () => {
 	// file became order-dependent. A new build-output name is a leak even when
 	// ignored, and a pre-existing one is not.
 	it("flags a new dist/ or .pack-backup/ in the repo root even though git ignores it", () => {
-		const env = setupTestEnvironment("pi-lens-4003-build-output-");
+		const env = setupTestEnvironment("pi-lens-4003-build-output-", {
+			rootMarker: false,
+		});
 		try {
 			for (const name of ["dist", ".pack-backup", "kept-dist"])
 				fs.mkdirSync(path.join(env.tmpDir, name));
@@ -678,7 +775,9 @@ describe("tmp-fixture-hygiene", () => {
 	// for the OTHER new entries; reporting only `unknown` there would let a new
 	// dist/ pass in a tree git cannot read.
 	it("still flags a new dist/ when git cannot classify another new entry", () => {
-		const env = setupTestEnvironment("pi-lens-4003-build-output-unknown-");
+		const env = setupTestEnvironment("pi-lens-4003-build-output-unknown-", {
+			rootMarker: false,
+		});
 		try {
 			for (const name of ["dist", "stray"])
 				fs.mkdirSync(path.join(env.tmpDir, name));
@@ -691,7 +790,9 @@ describe("tmp-fixture-hygiene", () => {
 	});
 
 	it("reports unknown, never clean, when git cannot classify, and when the baseline predates the census", () => {
-		const env = setupTestEnvironment("pi-lens-3715-no-git-");
+		const env = setupTestEnvironment("pi-lens-3715-no-git-", {
+			rootMarker: false,
+		});
 		try {
 			fs.mkdirSync(path.join(env.tmpDir, "stray"));
 			expect(untrackedUnignoredEntries(["stray"], env.tmpDir)).toBeUndefined();
@@ -1015,6 +1116,94 @@ describe("tmp-fixture-hygiene", () => {
 		} finally {
 			for (const dir of [...created, fabricated])
 				fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	// #4560: the census used to observe only `pi-lens-` names, so a fixture
+	// sibling written at `path.join(<fixture>, "..")` went unseen and stayed on
+	// the host. These cases pin the widened population and both directions of
+	// its attribution.
+	it("judges a fixture sibling the test process created, and only counts an entry no test created (#4560)", () => {
+		const env = setupTestEnvironment("pi-lens-4560-sibling-judgment-");
+		// Assembled so this file's own source does not spell the name it asserts
+		// absent: a literal here would make the source a candidate on any host.
+		const unrelated = ["host", "tool", "scratch", process.pid].join("-");
+		const sibling = path.join(os.tmpdir(), `4560-sibling-${process.pid}`);
+		try {
+			fs.mkdirSync(sibling, { recursive: true });
+			const creators = recordedTmpRootCreators(getTmpRootRegistry());
+			expect(creators.get(path.basename(sibling))).toBe(
+				"config/tmp-fixture-hygiene.test.ts",
+			);
+			expect(
+				judgedTmpRootWrites([path.basename(sibling), unrelated], creators),
+			).toEqual([path.basename(sibling)]);
+			// A child process's tmp cache has no creator on record.
+			expect(judgedTmpRootWrites(["jiti"], creators)).toEqual([]);
+		} finally {
+			fs.rmSync(sibling, { recursive: true, force: true });
+			env.cleanup();
+		}
+	});
+
+	it("sees a new entry written at the tmp root, not only pi-lens-prefixed ones (#4560)", () => {
+		const sibling = path.join(
+			os.tmpdir(),
+			`4560-widened-tmp-root-${process.pid}`,
+		);
+		fs.rmSync(sibling, { recursive: true, force: true });
+		try {
+			fs.mkdirSync(sibling);
+			expect(tmpHygieneTmpRootWrites()).toContain(path.basename(sibling));
+		} finally {
+			fs.rmSync(sibling, { recursive: true, force: true });
+		}
+	});
+
+	// #4560, recurrence #4546 / #4559: `setupTestEnvironment` plants `.git` by
+	// default so a fixture cannot adopt an ancestor marker. The opt-out is the
+	// one named escape for a cell that asserts marker-less resolution.
+	it("gives every fixture its own project root, with a named opt-out (#4560)", () => {
+		const marked = setupTestEnvironment("pi-lens-4560-root-marker-");
+		const unmarked = setupTestEnvironment("pi-lens-4560-no-root-marker-", {
+			rootMarker: false,
+		});
+		try {
+			expect(findNearestProjectRoot(marked.tmpDir)).toBe(
+				path.resolve(marked.tmpDir),
+			);
+			expect(findNearestProjectRoot(unmarked.tmpDir)).not.toBe(
+				path.resolve(unmarked.tmpDir),
+			);
+		} finally {
+			marked.cleanup();
+			unmarked.cleanup();
+		}
+	});
+
+	// #4560 F4: the persisted creators record is written by the shared setup's
+	// `afterAll`, which runs after THIS file's own, and `cleanupTmpHygiene` then
+	// closes and deletes it — so at this file's own census only the in-process
+	// registry can name what this file created. The default judge input merges
+	// it; without the merge the sibling below is observed, unjudged, and left on
+	// the host with `tmpRootWrites=0/1`.
+	it("judges a sibling THIS file created, from the process's own creator record (#4560)", () => {
+		const sibling = path.join(
+			os.tmpdir(),
+			`4560-own-file-sibling-${process.pid}`,
+		);
+		fs.rmSync(sibling, { recursive: true, force: true });
+		try {
+			// A real filesystem call through the shared interposer, not a stub.
+			fs.mkdirSync(sibling);
+			expect(censusTmpRootCreators().get(path.basename(sibling))).toBe(
+				"config/tmp-fixture-hygiene.test.ts",
+			);
+			expect(judgedTmpRootWrites([path.basename(sibling)])).toEqual([
+				path.basename(sibling),
+			]);
+		} finally {
+			fs.rmSync(sibling, { recursive: true, force: true });
 		}
 	});
 
@@ -1373,7 +1562,37 @@ describe("tmp-fixture-hygiene", () => {
 					},
 				}),
 			).toBe(
-				"[tmp-hygiene-owners] live=1 orphaned=2 malformed=3 foreign=4 self=1 otherInvocationEntries=0 reaped=0",
+				"[tmp-hygiene-owners] live=1 orphaned=2 malformed=3 foreign=4 self=1 otherInvocationEntries=0 reaped=0 tmpRootWrites=0/0",
+			);
+			// #4560 F6: the line carries what the census OBSERVED beside what it
+			// JUDGED, so an entry a host process made is visible as counted, never
+			// as a clean zero. And a run whose baseline predates the widened census
+			// says `unknown`, not 0.
+			expect(
+				formatTmpHygieneOwnerSummary(
+					{
+						live: new Set<string>(),
+						counts: { live: 0, orphaned: 0, malformed: 0, foreign: 0, self: 1 },
+					},
+					0,
+					0,
+					{ judged: 0, observed: 2 },
+				),
+			).toBe(
+				"[tmp-hygiene-owners] live=0 orphaned=0 malformed=0 foreign=0 self=1 otherInvocationEntries=0 reaped=0 tmpRootWrites=0/2",
+			);
+			expect(
+				formatTmpHygieneOwnerSummary(
+					{
+						live: new Set<string>(),
+						counts: { live: 0, orphaned: 0, malformed: 0, foreign: 0, self: 1 },
+					},
+					0,
+					0,
+					"unknown",
+				),
+			).toBe(
+				"[tmp-hygiene-owners] live=0 orphaned=0 malformed=0 foreign=0 self=1 otherInvocationEntries=0 reaped=0 tmpRootWrites=unknown",
 			);
 			// #3314's field is part of the same ONE line, not a second record: the
 			// entries this run ignored as another invocation's are explicable from
@@ -1393,7 +1612,7 @@ describe("tmp-fixture-hygiene", () => {
 					3,
 				),
 			).toBe(
-				"[tmp-hygiene-owners] live=0 orphaned=0 malformed=0 foreign=2 self=1 otherInvocationEntries=3 reaped=0",
+				"[tmp-hygiene-owners] live=0 orphaned=0 malformed=0 foreign=2 self=1 otherInvocationEntries=3 reaped=0 tmpRootWrites=0/0",
 			);
 		});
 

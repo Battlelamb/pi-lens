@@ -163,6 +163,10 @@ const DECLARED_EXCEPTIONS: Readonly<Record<string, string>> = {
 		"degradation ledger, not a production population sweep",
 	"tests/clients/instance-reaper-prune-concurrency.test.ts":
 		"concurrency cases, not a production population sweep",
+	"tests/clients/instance-reaper-backstop.test.ts":
+		"reaper behavior cases; one case lists its own fixture home's backstop " +
+		"lock directory and asserts a settled sweep left no canonical or " +
+		"quarantine name (#4581), not a production source-population sweep",
 	"tests/clients/instance-registry-lock.test.ts":
 		"lock behavior cases; it lists one lock directory and asserts an empty " +
 		"degradation ledger, not a production population sweep",

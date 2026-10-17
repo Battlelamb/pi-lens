@@ -3,6 +3,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, vi } from "vitest";
+import { PROJECT_ROOT_MARKERS } from "../../clients/project-root-markers.js";
 import {
 	getTmpRootRegistry,
 	registerTmpRoot,
@@ -62,11 +63,44 @@ export function removeTempDirSync(dir: string): void {
 	}
 }
 
-export function setupTestEnvironment(prefix = "pi-lens-test-"): {
+/** The project-root marker every `setupTestEnvironment` root carries unless a
+ *  cell opts out (#4560). `.git` is honoured by `findNearestProjectRoot` and is
+ *  the marker this suite's own project fixtures already plant
+ *  (`makeProject`, `makeWarmableProject`, `writeSourceFiles`), so the shared
+ *  default replaces those copies instead of adding a second vocabulary.
+ *  An EMPTY directory is not a real Git marker (`isRealGitMarker` requires a
+ *  `HEAD`), so the callers of that predicate (`resolveToolCwd`'s formatter cwd,
+ *  `ephemeral-root`'s checkout classification) keep answering "not a repo",
+ *  while `findNearestProjectRoot` (existence only) sees the fixture as its own
+ *  root. `gitleaks-client`'s `hasGitRepo` is a bare existence check, so a
+ *  `mode=full` scan now finds a repo in a fixture; the cells that pin that gate
+ *  are part of this change.
+ *  The directory is also invisible to the tree walks (`.git` is in
+ *  `EXCLUDED_DIRS`), so no fixture file count moves.
+ *
+ *  Recurrence (#4546 / #4559): a bare fixture under `os.tmpdir()` resolved its
+ *  project root by walking UP past the fixture. A stray empty `/tmp/.git` on
+ *  the dev host made `findNearestProjectRoot` return `/tmp`, so a cell that
+ *  saved and read a project snapshot under its fixture saw an empty one and
+ *  redded with `expected undefined`. Planting the marker here makes every
+ *  fixture its own root. A cell that asserts marker-less resolution passes
+ *  `{ rootMarker: false }` and says why. */
+export const TEST_FIXTURE_ROOT_MARKER =
+	".git" satisfies (typeof PROJECT_ROOT_MARKERS)[number];
+
+export function setupTestEnvironment(
+	prefix = "pi-lens-test-",
+	options: { rootMarker?: boolean } = {},
+): {
 	tmpDir: string;
 	cleanup: () => void;
 } {
 	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+	if (options.rootMarker !== false) {
+		fs.mkdirSync(path.join(tmpDir, TEST_FIXTURE_ROOT_MARKER), {
+			recursive: true,
+		});
+	}
 	activeTestEnvironments.add(tmpDir);
 	// #2912: the shared setup removes this root at file teardown and on SIGTERM,
 	// so a timeout or a failed assertion before `cleanup()` cannot leak it.
@@ -311,6 +345,28 @@ export function createTempFile(
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	fs.writeFileSync(filePath, content);
 	return filePath;
+}
+
+/**
+ * Point `os.homedir()` at `home` for the rest of the test and return the undo.
+ *
+ * `homedir()` reads `HOME` (Windows: `USERPROFILE`) on every call, so pinning
+ * both is what makes a `~` path expand inside a temp root instead of the
+ * maintainer's real home. The caller restores in a `finally`: a failing
+ * assertion must not leave the process pointed at a temp directory that the
+ * next test then reads.
+ */
+export function pinTestHome(home: string): () => void {
+	const previousHome = process.env.HOME;
+	const previousUserProfile = process.env.USERPROFILE;
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	return () => {
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = previousUserProfile;
+	};
 }
 
 /** How a connect to a Unix socket path ends: `connected` when a server

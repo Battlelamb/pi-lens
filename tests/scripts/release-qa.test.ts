@@ -43,6 +43,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { gitExecFileSync } from "../../scripts/lib/git-fixture-env.mjs";
+import { copyFixtureGitHelper } from "../support/fixture-git-copy.js";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import * as os from "node:os";
 import {
@@ -1592,13 +1593,15 @@ describe("release-QA pack call site (#3887 F1)", () => {
 				"scripts/lib/latency-log-phases.mjs",
 				"scripts/lib/md-matrix.mjs",
 				"scripts/lib/mcp-stdio-client.mjs",
-				"scripts/lib/git-fixture-env.mjs",
 				"scripts/supply-host-provided-deps.mjs",
 				"scripts/lib/host-provided-deps.mjs",
 				"package.json",
 			]) {
 				fs.copyFileSync(path.join(REPO_ROOT, rel), path.join(root, rel));
 			}
+			// release-qa's Git calls go through the copied helper, which resolves
+			// its maintenance policy relative to itself (#4552 R2).
+			copyFixtureGitHelper(root);
 			gitInit(root, true);
 
 			// `ci` succeeds; `pack --json` writes lifecycle noise (including a
@@ -1711,10 +1714,11 @@ describe("release-QA dirty-checkout refusal (#2619 review F1)", () => {
 				"scripts/lib/latency-log-phases.mjs",
 				"scripts/lib/md-matrix.mjs",
 				"scripts/lib/mcp-stdio-client.mjs",
-				"scripts/lib/git-fixture-env.mjs",
 			]) {
 				fs.copyFileSync(path.join(REPO_ROOT, rel), path.join(root, rel));
 			}
+			// The copied helper's policy file travels with it (#4552 R2).
+			copyFixtureGitHelper(root);
 			gitInit(root);
 			fs.writeFileSync(path.join(root, "uncommitted.txt"), "dirty\n");
 

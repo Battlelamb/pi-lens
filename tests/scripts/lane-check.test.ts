@@ -16,6 +16,7 @@ import {
 } from "../../scripts/lane-check.mjs";
 import { acquireTestLock, getLockPath } from "../../scripts/lib/suite-lock.mjs";
 import { setupTestEnvironment } from "../clients/test-utils.js";
+import { copyFixtureGitHelper } from "../support/fixture-git-copy.js";
 import { gitExecFileSync, gitFixtureEnv } from "../support/git-fixture-env.js";
 
 const LANE_CHECK = path.resolve("scripts/lane-check.mjs");
@@ -93,6 +94,10 @@ function makeLane(spec: LaneSpec) {
 	// A copy, not a symlink: with-test-lock.mjs is a no-op behind a symlinked
 	// `scripts/` (its entry-point check compares real paths).
 	fs.cpSync(REAL_SCRIPTS, path.join(root, "scripts"), { recursive: true });
+	// The copied scripts run their own Git reads (lane-check's changelog check,
+	// check-pr-body, red-on-base), so the copied helper needs its policy file:
+	// without it the helper refuses, every case lands on `unproven` (#4552 R2).
+	copyFixtureGitHelper(root);
 	fs.copyFileSync(OXFMTRC, path.join(root, ".oxfmtrc.json"));
 	fs.symlinkSync(REAL_NODE_MODULES, path.join(root, "node_modules"), "dir");
 	const write = (files: Files) => {

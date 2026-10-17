@@ -184,7 +184,18 @@ describe("whole-package fixer restores agent edits (#3598)", () => {
 		_resetAgentNudgeForTests();
 		previousDebounce = process.env.PI_LENS_TOOL_RESULT_DEBOUNCE_MS;
 		process.env.PI_LENS_TOOL_RESULT_DEBOUNCE_MS = "0";
-		const env = setupTestEnvironment("pi-lens-fix-run-restore-");
+		// `{ rootMarker: false }`: this describe drives the real `runPipeline` and
+		// `handleToolResult`, so a fixture that carries the shared `.git` marker is
+		// a *project root* to the LSP seam, and every case booted the auxiliary
+		// language servers (`opengrep lsp`, `typos-lsp`) against a root it does not
+		// assert anything about: 53 pairs of children for this file, and with them
+		// the neighbours it starved in CI (#4574: the census file beside it ran
+		// 4.5-5.5 s against a 5000 ms budget, master 0.9-2.4 s). The cell asserts no
+		// root resolution, and its Rust root comes from the `Cargo.toml` markers it
+		// writes below, not from `.git`.
+		const env = setupTestEnvironment("pi-lens-fix-run-restore-", {
+			rootMarker: false,
+		});
 		tmpDir = env.tmpDir;
 		cleanup = env.cleanup;
 		const crateDir = path.join(tmpDir, "crate");

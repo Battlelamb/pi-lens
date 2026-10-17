@@ -1109,6 +1109,7 @@ async function buildOrRefreshWordIndex(args: {
 			refreshWordIndexIncrementally,
 			countWordIndexPostingEntries,
 			estimateWordIndexResidentBytes,
+			notifyWordIndexPublished,
 		} = await import("./word-index.js");
 		const deserializeStartMs = Date.now();
 		const index = deserializeWordIndex(snapshot.wordIndex);
@@ -1139,6 +1140,7 @@ async function buildOrRefreshWordIndex(args: {
 					});
 				} else {
 					runtime.wordIndex = index;
+					notifyWordIndexPublished(snapshotRoot, index, "session_start");
 					let snapshotSaveSyncMs = 0;
 					// A stale project seq must be advanced even when mtimes prove every
 					// indexed document reusable. Fresh snapshots with no changes avoid
@@ -1222,6 +1224,7 @@ async function buildOrRefreshWordIndex(args: {
 		collectWordIndexDocs,
 		countWordIndexPostingEntries,
 		estimateWordIndexResidentBytes,
+		notifyWordIndexPublished,
 	} = await import("./word-index.js");
 	const docs = await collectWordIndexDocs(
 		analysisRoot,
@@ -1249,6 +1252,7 @@ async function buildOrRefreshWordIndex(args: {
 	}
 	if (!runtime.isCurrentSession(sessionGeneration)) return;
 	runtime.wordIndex = rebuiltIndex;
+	notifyWordIndexPublished(snapshotRoot, rebuiltIndex, "session_start");
 	saveRuntimeProjectSnapshot({ cwd: snapshotRoot, runtime, dbg });
 	dbg(
 		`session_start word-index: rebuilt (absent/stale, seq=${effectiveSeq}) ` +

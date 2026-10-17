@@ -76,7 +76,11 @@ snapshots; no additional telemetry sink is created.
    re-activates and uses them. MCP remains connection-scoped and owns the
    terminal latch.
 6. **Backlogs**: `lsp_document_drift` rows by disposition, files affected,
-   `driftAgeMs` p50/p95/max; `agent_end_deferred_mutation_drain` durations and
+   `driftAgeMs` p50/p95/max; `lsp_document_drift_cap` rows (at most one per
+   session) with `tracked` and `cap` when the tracked-document set stands above
+   `DRIFT_TRACK_CAP` because every record belongs to a document a live server
+   still holds (#4503) — `tracked - cap` is the excess at the first crossing,
+   not the held-document count or later growth; `agent_end_deferred_mutation_drain` durations and
    coalesced path counts; `deferred_format_file` runs with `changed:true`
    versus total. A formatter that never settles is visible only as an
    anti-join (#3828): a `deferred_format_post_exit_resync` row with

@@ -165,7 +165,8 @@ describe("a JSON file whose language server cannot start (#4322)", () => {
 		);
 		// typos roots at the nearest `.git` (clients/lsp/server.ts `TyposServer`);
 		// without one it falls back to this process's cwd, outside the workspace.
-		fs.mkdirSync(path.join(workspace, ".git"));
+		// The shared fixture marker IS that `.git` (#4560); planting a second one
+		// threw EEXIST here and skipped the whole suite.
 		fs.mkdirSync(path.join(workspace, ".pi-lens"), { recursive: true });
 		fs.writeFileSync(
 			path.join(workspace, ".pi-lens", "lsp.json"),

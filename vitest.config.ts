@@ -591,6 +591,10 @@ export const wallClockBudgetInclude = [
 	// #3511 review round 3: the quick-mode warmup witness joins session_start's
 	// background save with vi.waitFor (flake-shape admission).
 	"tests/clients/word-index-lifecycle.test.ts",
+	// #4583: the cold build is fire-and-forget (`triggerBackgroundWordIndexBuild`
+	// returns a status, not a joinable), so the witness joins the snapshot it
+	// publishes with a real-time vi.waitFor (flake-shape admission).
+	"tests/clients/word-index.test.ts",
 	// #2603 (was #2591 review round 2, F1): the workspace-member matcher's
 	// budget asserts a real elapsed-time bound through detectPythonEnvironment;
 	// the defect it pins is wall-clock (2^N regex backtracking on an interleaved
@@ -794,6 +798,10 @@ export const wallClockBudgetInclude = [
 	// so the pool's SIGTERM of each fixture fork and a real hook timeout are
 	// what the file observes (flake-shape admission).
 	"tests/support/vitest-setup-registry-teardown.test.ts",
+	// #4583: same fire-and-forget cold build as its clients sibling above; the
+	// pi-tool witness joins it with a real-time vi.waitFor (flake-shape
+	// admission).
+	"tests/tools/symbol-search.test.ts",
 ];
 
 // #2912: the tmp-fixture governance sweep compares the real process-wide

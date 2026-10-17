@@ -888,8 +888,11 @@ describe("a clean-tree HEAD move resyncs held documents (#4493)", () => {
 	// Recurrence: the 512-record drift-tracker eviction dropped the record of
 	// a document the server still held, so a resync driven by the records
 	// would skip it. The HEAD-move targets come from the clients' open
-	// documents, so the evicted document still heals before the return.
-	it("resyncs a held document whose drift record was evicted", async () => {
+	// documents, so the document still heals before the return. #4503 made the
+	// eviction half of that state unreachable (a held record is never evicted),
+	// so the record is dropped through the tracker's own API to keep the case
+	// the move must answer: held, no record, still on the wire.
+	it("resyncs a held document whose drift record is gone", async () => {
 		const held = Array.from(
 			{ length: 513 },
 			(_, i) => `src/f${String(i).padStart(3, "0")}.ts`,
@@ -902,9 +905,18 @@ describe("a clean-tree HEAD move resyncs held documents (#4493)", () => {
 		await hold(repo, held);
 		const service = await lspService();
 		const drift = (
-			service as unknown as { documentDrift: { peek(file: string): unknown } }
+			service as unknown as {
+				documentDrift: {
+					peek(file: string): unknown;
+					forget(file: string): void;
+				};
+			}
 		).documentDrift;
-		// Precondition: f000's record was evicted while the server holds it.
+		// #4503: 513 held records no longer evict the oldest one, so the record
+		// of a document the server holds survives the cap.
+		expect(drift.peek(repo.file(held[0]!))).toBeDefined();
+		// The state #4493 is about: a held document with no drift record at all.
+		drift.forget(repo.file(held[0]!));
 		expect(drift.peek(repo.file(held[0]!))).toBeUndefined();
 		const s = session(repo, "s-evicted");
 		const mark = (await wire(repo, held[0]!)).length;

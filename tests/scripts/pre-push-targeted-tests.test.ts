@@ -30,6 +30,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { envFor, gitExecFileSync } from "../../scripts/lib/git-fixture-env.mjs";
+import { copyFixtureGitHelper } from "../support/fixture-git-copy.js";
 import {
 	loadHistorySelection,
 	resolveHeadPaths,
@@ -1310,9 +1311,11 @@ describe("pre-push ast-grep self-scan (#3886)", () => {
 			"scripts/lib/vitest-summary.mjs",
 			"scripts/run-astgrep-pi-lens.mjs",
 			"scripts/lib/astgrep-self-scan.mjs",
-			"scripts/lib/git-fixture-env.mjs",
 		])
 			put(root, rel, fs.readFileSync(path.join(repoRoot, rel), "utf8"));
+		// The scan lib's Git calls go through the copied helper, which resolves its
+		// maintenance policy relative to itself (#4552 R2).
+		copyFixtureGitHelper(root);
 		put(root, "clients/clean.ts", "export const clean = 1;\n");
 		put(root, "tests/clean.test.ts", "export const t = 1;\n");
 		// The scan lib imports compiled clients/; symlink the real twins so their

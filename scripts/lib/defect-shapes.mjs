@@ -64,17 +64,71 @@ export function sourceWithoutFencedBlocks(source, options = {}) {
 	return output.join("\n");
 }
 
+// The HTML spec's four comment ends, all of which GitHub renders
+// (13.2.5.43-46): `-->` closes a comment (comment end state), `--!>` closes it
+// too (comment end bang state), and `<!-->` and `<!--->` are complete empty
+// comments closed abruptly (comment start, and comment start dash, states).
+// Only a comment with none of them runs to the end of the text. Recurrence:
+// this rule knew `-->` alone, so a body writing `<!-- note --!>` or `<!-->`
+// blanked every line after it even though the reader sees that text, and a
+// gating rule then read a visible answer as absent (CodeQL js/bad-tag-filter
+// alert #70 flagged this class on a test fixture).
+const COMMENT_END = /--!?>/;
+
+/**
+ * Index just past the end of the HTML comment whose `<!--` ends at `from`, or
+ * -1 when it does not close in `text`. The two abrupt ends close inside the
+ * opener, in the `>` or `->` the start already left behind, so they answer
+ * only at the opener itself: a continuation line mid-comment starts in comment
+ * state, where `->` is body data (13.2.5.43: `-` to comment end dash, `>`
+ * appends `-` and reconsumes in comment state) and only `--!?>` closes it. The
+ * one spelling of the comment-end rule: a consumer with its own copy is how a
+ * renderer's spelling goes missing.
+ */
+export function htmlCommentEnd(text, from) {
+	const source = String(text ?? "");
+	const rest = source.slice(from);
+	const atOpener = source.slice(Math.max(0, from - 4), from) === "<!--";
+	if (atOpener && rest.startsWith(">")) return from + 1;
+	if (atOpener && rest.startsWith("->")) return from + 2;
+	const end = COMMENT_END.exec(rest);
+	return end === null ? -1 : from + end.index + end[0].length;
+}
+
+/**
+ * Blank HTML comments, keeping every line's length so line numbers and offsets
+ * still match the raw source (LF text). A consumer that masks one line at a
+ * time asks `htmlCommentEnd` rather than carrying its own end rule.
+ */
+export function blankHtmlComments(text) {
+	const source = String(text ?? "");
+	let output = "";
+	let index = 0;
+	while (index < source.length) {
+		const start = source.indexOf("<!--", index);
+		if (start === -1) {
+			output += source.slice(index);
+			break;
+		}
+		output += source.slice(index, start);
+		const end = htmlCommentEnd(source, start + 4);
+		const stop = end === -1 ? source.length : end;
+		output += source.slice(start, stop).replace(/[^\n]/g, " ");
+		index = stop;
+	}
+	return output;
+}
+
 /**
  * Blank fenced and indented code blocks (see `sourceWithoutFencedBlocks`) and
- * HTML comments, keeping line numbers. An unterminated `<!--` runs to the end
- * of the text, as GitHub renders it. A reference or heading quoted in an
- * example or a comment never counts as real content. Fences go first: a
- * `<!--` inside a fence is literal text.
+ * HTML comments (see `blankHtmlComments`), keeping line numbers. An
+ * unterminated `<!--` runs to the end of the text, as GitHub renders it. A
+ * reference or heading quoted in an example or a comment never counts as real
+ * content. Fences go first: a `<!--` inside a fence is literal text.
  */
 export function blankMarkdown(text, options = {}) {
-	return sourceWithoutFencedBlocks(String(text ?? ""), options).replace(
-		/<!--[\s\S]*?(?:-->|$)/g,
-		(comment) => comment.replace(/[^\n]/g, " "),
+	return blankHtmlComments(
+		sourceWithoutFencedBlocks(String(text ?? ""), options),
 	);
 }
 

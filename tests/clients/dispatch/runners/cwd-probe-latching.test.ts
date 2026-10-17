@@ -18,7 +18,10 @@ import {
 	createCwdCachedProbe,
 	resetDispatchAvailabilityState,
 } from "../../../../clients/dispatch/runners/utils/runner-helpers.js";
-import { getDegradationSummary } from "../../../../clients/degradation-ledger.js";
+import {
+	getDegradationSummary,
+	resetDegradationLedger,
+} from "../../../../clients/degradation-ledger.js";
 import {
 	cleanupTestEnvironmentsDrained,
 	setupTestEnvironment,
@@ -130,6 +133,12 @@ beforeEach(() => {
 	tryLazyInstall.mockReset();
 	tryLazyInstall.mockResolvedValue(false);
 	resetDispatchAvailabilityState();
+	// Recurrence (#4561, shuffle): the negative cases below read the
+	// `availability-probe-overrun` group the overrun case books, so their own
+	// "no row for this subject" claim was answered by a sibling's rows. Start
+	// each case from a fresh session ledger; `?? false` then means "this case
+	// booked nothing", not "some sibling booked something".
+	resetDegradationLedger();
 	vi.useFakeTimers({ toFake: ["Date"] });
 	return () => vi.useRealTimers();
 });
@@ -260,7 +269,7 @@ describe("createCwdCachedProbe latch policy (#1494)", () => {
 				(entry) =>
 					entry.subject ===
 					`timeout-widget:${path.resolve("/tmp/timeout-project")}`,
-			),
+			) ?? false,
 		).toBe(false);
 	});
 

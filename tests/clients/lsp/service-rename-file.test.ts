@@ -10,55 +10,13 @@ import {
 import { createLSPClient } from "../../../clients/lsp/client.js";
 import { LSPService } from "../../../clients/lsp/index.js";
 import { stopLSP } from "../../../clients/lsp/launch.js";
-import { normalizeMapKey } from "../../../clients/path-utils.js";
 import { spawnFakeLspServer } from "../../support/fake-lsp-server.js";
+import type { RenameClientDouble } from "../../support/lsp-rename-client-double.js";
+import {
+	addRenameClient,
+	makeRenameClient,
+} from "../../support/lsp-rename-client-double.js";
 import { removeTempDirSync } from "../test-utils.js";
-
-type MockRenameClient = {
-	root: string;
-	isAlive: ReturnType<typeof vi.fn>;
-	isDocumentOpen: ReturnType<typeof vi.fn>;
-	getDocumentUri: ReturnType<typeof vi.fn>;
-	closeDocument: ReturnType<typeof vi.fn>;
-	notify: {
-		open: ReturnType<typeof vi.fn>;
-		watchedFileChange: ReturnType<typeof vi.fn>;
-	};
-	willRenameFiles: ReturnType<typeof vi.fn>;
-	getOperationSupport: ReturnType<typeof vi.fn>;
-	getMalformedFileOperationRegistrations: ReturnType<typeof vi.fn>;
-	didRenameFiles: ReturnType<typeof vi.fn>;
-};
-
-function makeClient(root: string, edit: unknown): MockRenameClient {
-	return {
-		root,
-		isAlive: vi.fn(() => true),
-		isDocumentOpen: vi.fn(() => false),
-		getDocumentUri: vi.fn(() => undefined),
-		closeDocument: vi.fn(async () => undefined),
-		notify: { open: vi.fn(async () => undefined), watchedFileChange: vi.fn() },
-		willRenameFiles: vi.fn(async () => edit),
-		getOperationSupport: vi.fn(() => ({
-			willRenameFiles: true,
-			didRenameFiles: true,
-		})),
-		getMalformedFileOperationRegistrations: vi.fn(() => new Set()),
-		didRenameFiles: vi.fn(async () => undefined),
-	};
-}
-
-function addClient(
-	service: LSPService,
-	serverId: string,
-	root: string,
-	client: MockRenameClient,
-): void {
-	const state = (
-		service as unknown as { state: { clients: Map<string, unknown> } }
-	).state;
-	state.clients.set(`${serverId}:${normalizeMapKey(root)}`, client);
-}
 
 describe("LSPService.renameFile", () => {
 	it("merges willRenameFiles edits by client priority, renames, and notifies all active clients", async () => {
@@ -72,7 +30,7 @@ describe("LSPService.renameFile", () => {
 		fs.writeFileSync(importPath, "import { value } from './old';\n", "utf-8");
 		const importUri = pathToFileURL(importPath).href;
 
-		const primary = makeClient(tmpDir, {
+		const primary = makeRenameClient(tmpDir, {
 			changes: {
 				[importUri]: [
 					{
@@ -85,7 +43,7 @@ describe("LSPService.renameFile", () => {
 				],
 			},
 		});
-		const secondary = makeClient(tmpDir, {
+		const secondary = makeRenameClient(tmpDir, {
 			changes: {
 				[importUri]: [
 					{
@@ -100,8 +58,8 @@ describe("LSPService.renameFile", () => {
 		});
 
 		const service = new LSPService();
-		addClient(service, "typescript", tmpDir, primary);
-		addClient(service, "eslint", tmpDir, secondary);
+		addRenameClient(service, "typescript", tmpDir, primary);
+		addRenameClient(service, "eslint", tmpDir, secondary);
 
 		try {
 			const result = await service.renameFile(oldPath, newPath, {
@@ -135,7 +93,7 @@ describe("LSPService.renameFile", () => {
 		const oldPath = path.join(tmpDir, "old.ts");
 		const newPath = path.join(tmpDir, "new.ts");
 		fs.writeFileSync(oldPath, "export const value = 1;\n", "utf-8");
-		const malformed = makeClient(tmpDir, null);
+		const malformed = makeRenameClient(tmpDir, null);
 		malformed.getOperationSupport.mockReturnValue({
 			willRenameFiles: false,
 			didRenameFiles: false,
@@ -144,7 +102,7 @@ describe("LSPService.renameFile", () => {
 			new Set(["willRename", "didRename"]),
 		);
 		const service = new LSPService();
-		addClient(service, "malformed", tmpDir, malformed);
+		addRenameClient(service, "malformed", tmpDir, malformed);
 
 		try {
 			const result = await service.renameFile(oldPath, newPath, {
@@ -217,11 +175,11 @@ describe("LSPService.renameFile", () => {
 				root: tmpDir,
 			});
 			const service = new LSPService();
-			addClient(
+			addRenameClient(
 				service,
 				`real-${testCase.name}`,
 				tmpDir,
-				client as unknown as MockRenameClient,
+				client as unknown as RenameClientDouble,
 			);
 			try {
 				await service.renameFile(oldPath, newPath, {
@@ -249,7 +207,7 @@ describe("LSPService.renameFile", () => {
 		const importPath = path.join(tmpDir, "import.ts");
 		fs.writeFileSync(oldPath, "export const value = 1;\n", "utf-8");
 		fs.writeFileSync(importPath, "import { value } from './old';\n", "utf-8");
-		const supporting = makeClient(tmpDir, {
+		const supporting = makeRenameClient(tmpDir, {
 			changes: {
 				[pathToFileURL(importPath).href]: [
 					{
@@ -262,7 +220,7 @@ describe("LSPService.renameFile", () => {
 				],
 			},
 		});
-		const unsupported = makeClient(tmpDir, {
+		const unsupported = makeRenameClient(tmpDir, {
 			changes: { [pathToFileURL(importPath).href]: [] },
 		});
 		unsupported.getOperationSupport.mockReturnValue({
@@ -270,8 +228,8 @@ describe("LSPService.renameFile", () => {
 			didRenameFiles: false,
 		});
 		const service = new LSPService();
-		addClient(service, "typescript", tmpDir, supporting);
-		addClient(service, "eslint", tmpDir, unsupported);
+		addRenameClient(service, "typescript", tmpDir, supporting);
+		addRenameClient(service, "eslint", tmpDir, unsupported);
 
 		try {
 			const result = await service.renameFile(oldPath, newPath, {
@@ -297,8 +255,8 @@ describe("LSPService.renameFile", () => {
 		const oldPath = path.join(tmpDir, "old.ts");
 		const newPath = path.join(tmpDir, "new.ts");
 		fs.writeFileSync(oldPath, "export const value = 1;\n", "utf-8");
-		const first = makeClient(tmpDir, null);
-		const second = makeClient(tmpDir, null);
+		const first = makeRenameClient(tmpDir, null);
+		const second = makeRenameClient(tmpDir, null);
 		first.getOperationSupport.mockReturnValue({
 			willRenameFiles: false,
 			didRenameFiles: true,
@@ -308,8 +266,8 @@ describe("LSPService.renameFile", () => {
 			didRenameFiles: true,
 		});
 		const service = new LSPService();
-		addClient(service, "typescript", tmpDir, first);
-		addClient(service, "eslint", tmpDir, second);
+		addRenameClient(service, "typescript", tmpDir, first);
+		addRenameClient(service, "eslint", tmpDir, second);
 
 		try {
 			const result = await service.renameFile(oldPath, newPath, {
@@ -400,7 +358,7 @@ describe("LSPService.renameFile", () => {
 		fs.writeFileSync(oldPath, "export const value = 1;\n", "utf-8");
 		fs.writeFileSync(importPath, "import { value } from './old';\n", "utf-8");
 
-		const success = makeClient(tmpDir, {
+		const success = makeRenameClient(tmpDir, {
 			changes: {
 				[pathToFileURL(importPath).href]: [
 					{
@@ -413,11 +371,11 @@ describe("LSPService.renameFile", () => {
 				],
 			},
 		});
-		const failing = makeClient(tmpDir, null);
+		const failing = makeRenameClient(tmpDir, null);
 		failing.willRenameFiles.mockRejectedValueOnce(new Error("eslint down"));
 		const service = new LSPService();
-		addClient(service, "typescript", tmpDir, success);
-		addClient(service, "eslint", tmpDir, failing);
+		addRenameClient(service, "typescript", tmpDir, success);
+		addRenameClient(service, "eslint", tmpDir, failing);
 
 		try {
 			const result = await service.renameFile(oldPath, newPath, {
@@ -446,10 +404,10 @@ describe("LSPService.renameFile", () => {
 		const oldPath = path.join(tmpDir, "old.ts");
 		const newPath = path.join(tmpDir, "new.ts");
 		fs.writeFileSync(oldPath, "export const value = 1;\n", "utf-8");
-		const failing = makeClient(tmpDir, null);
+		const failing = makeRenameClient(tmpDir, null);
 		failing.willRenameFiles.mockRejectedValueOnce(new Error("server down"));
 		const service = new LSPService();
-		addClient(service, "typescript", tmpDir, failing);
+		addRenameClient(service, "typescript", tmpDir, failing);
 
 		try {
 			await expect(
@@ -472,10 +430,10 @@ describe("LSPService.renameFile", () => {
 		const oldPath = path.join(tmpDir, "old.ts");
 		const newPath = path.join(tmpDir, "new.ts");
 		fs.writeFileSync(oldPath, "export const value = 1;\n", "utf-8");
-		const client = makeClient(tmpDir, null);
+		const client = makeRenameClient(tmpDir, null);
 		client.isDocumentOpen.mockReturnValue(true);
 		const service = new LSPService();
-		addClient(service, "typescript", tmpDir, client);
+		addRenameClient(service, "typescript", tmpDir, client);
 
 		try {
 			const result = await service.renameFile(oldPath, newPath, {
@@ -500,11 +458,11 @@ describe("LSPService.renameFile", () => {
 		const oldPath = path.join(tmpDir, "old.ts");
 		const newPath = path.join(tmpDir, "new.ts");
 		fs.writeFileSync(oldPath, "export const value = 1;\n", "utf-8");
-		const client = makeClient(tmpDir, null);
+		const client = makeRenameClient(tmpDir, null);
 		client.isDocumentOpen.mockReturnValue(true);
 		client.closeDocument.mockRejectedValueOnce(new Error("close failed"));
 		const service = new LSPService();
-		addClient(service, "typescript", tmpDir, client);
+		addRenameClient(service, "typescript", tmpDir, client);
 
 		try {
 			const failure = await service
@@ -546,12 +504,12 @@ describe("LSPService.renameFile", () => {
 		const oldPath = path.join(tmpDir, "old.ts");
 		const newPath = path.join(tmpDir, "new.ts");
 		fs.writeFileSync(oldPath, "export const value = 1;\n", "utf-8");
-		const client = makeClient(tmpDir, null);
+		const client = makeRenameClient(tmpDir, null);
 		client.isDocumentOpen.mockReturnValue(true);
 		client.closeDocument.mockRejectedValueOnce(new Error("close timed out"));
 		client.notify.open.mockResolvedValueOnce(false);
 		const service = new LSPService();
-		addClient(service, "typescript", tmpDir, client);
+		addRenameClient(service, "typescript", tmpDir, client);
 
 		try {
 			await expect(
@@ -575,7 +533,7 @@ describe("LSPService.renameFile", () => {
 		const oldPath = path.join(tmpDir, "old.ts");
 		const newPath = path.join(tmpDir, "new.ts");
 		fs.writeFileSync(oldPath, "export const value = 1;\n", "utf-8");
-		const client = makeClient(tmpDir, null);
+		const client = makeRenameClient(tmpDir, null);
 		client.isDocumentOpen.mockReturnValue(true);
 		client.closeDocument.mockRejectedValueOnce(new Error("close timed out"));
 		client.notify.open.mockImplementationOnce(async () => {
@@ -583,7 +541,7 @@ describe("LSPService.renameFile", () => {
 			return false;
 		});
 		const service = new LSPService();
-		addClient(service, "typescript", tmpDir, client);
+		addRenameClient(service, "typescript", tmpDir, client);
 
 		try {
 			await expect(
@@ -603,11 +561,11 @@ describe("LSPService.renameFile", () => {
 		const oldPath = path.join(tmpDir, "old.unrecognized-ext");
 		const newPath = path.join(tmpDir, "new.unrecognized-ext");
 		fs.writeFileSync(oldPath, "content\n", "utf-8");
-		const client = makeClient(tmpDir, null);
+		const client = makeRenameClient(tmpDir, null);
 		client.isDocumentOpen.mockReturnValue(true);
 		client.closeDocument.mockRejectedValueOnce(new Error("close failed"));
 		const service = new LSPService();
-		addClient(service, "typescript", tmpDir, client);
+		addRenameClient(service, "typescript", tmpDir, client);
 
 		try {
 			await expect(
@@ -633,11 +591,11 @@ describe("LSPService.renameFile", () => {
 		const newPath = path.join(tmpDir, "new.ts");
 		fs.writeFileSync(oldPath, "value\n", "utf-8");
 		const originalUri = `file://localhost/${tmpDir.replace(/\\/g, "/")}/OLD%2Ets`;
-		const client = makeClient(tmpDir, null);
+		const client = makeRenameClient(tmpDir, null);
 		client.isDocumentOpen.mockReturnValue(true);
 		client.getDocumentUri.mockReturnValue(originalUri);
 		const service = new LSPService();
-		addClient(service, "typescript", tmpDir, client);
+		addRenameClient(service, "typescript", tmpDir, client);
 		try {
 			await service.renameFile(oldPath, newPath, { cwd: tmpDir, apply: true });
 			expect(client.didRenameFiles).toHaveBeenCalledWith(
@@ -690,7 +648,7 @@ describe("LSPService.renameFile", () => {
 		fs.writeFileSync(source, "inside", "utf-8");
 		fs.writeFileSync(outsideSource, "outside", "utf-8");
 		fs.writeFileSync(importPath, "import './inside';", "utf-8");
-		const client = makeClient(tmpDir, {
+		const client = makeRenameClient(tmpDir, {
 			changes: {
 				[pathToFileURL(importPath).href]: [
 					{
@@ -704,7 +662,7 @@ describe("LSPService.renameFile", () => {
 			},
 		});
 		const service = new LSPService();
-		addClient(service, "typescript", tmpDir, client);
+		addRenameClient(service, "typescript", tmpDir, client);
 		try {
 			for (const apply of [false, true]) {
 				await expect(
@@ -805,10 +763,10 @@ describe("LSPService.renameFile", () => {
 		const oldPath = path.join(tmpDir, "old.ts");
 		const newPath = path.join(tmpDir, "new.ts");
 		fs.writeFileSync(oldPath, "export const value = 1;\n", "utf-8");
-		const client = makeClient(tmpDir, null);
+		const client = makeRenameClient(tmpDir, null);
 		client.didRenameFiles.mockRejectedValueOnce(new Error("notify failed"));
 		const service = new LSPService();
-		addClient(service, "typescript", tmpDir, client);
+		addRenameClient(service, "typescript", tmpDir, client);
 
 		try {
 			const result = await service.renameFile(oldPath, newPath, {
@@ -844,11 +802,11 @@ describe("LSPService.getTrackedContent (#3601)", () => {
 			const filePath = path.join(tmpDir, "a.ts");
 			const service = new LSPService();
 			const untracking = {
-				...makeClient(tmpDir, null),
+				...makeRenameClient(tmpDir, null),
 				getSentContent: vi.fn(() => undefined),
 			};
 			const tracking = {
-				...makeClient(tmpDir, null),
+				...makeRenameClient(tmpDir, null),
 				getSentContent: vi.fn(
 					(): { hash: string; changedAtMs?: number } | undefined => ({
 						hash: "hash-in-root",
@@ -857,18 +815,18 @@ describe("LSPService.getTrackedContent (#3601)", () => {
 				),
 			};
 			const dead = {
-				...makeClient(tmpDir, null),
+				...makeRenameClient(tmpDir, null),
 				isAlive: vi.fn(() => false),
 				getSentContent: vi.fn(() => ({ hash: "hash-dead" })),
 			};
 			const elsewhere = {
-				...makeClient(other, null),
+				...makeRenameClient(other, null),
 				getSentContent: vi.fn(() => ({ hash: "hash-other-root" })),
 			};
-			addClient(service, "aux-a", tmpDir, untracking);
-			addClient(service, "aux-b", tmpDir, tracking);
-			addClient(service, "aux-c", tmpDir, dead);
-			addClient(service, "aux-d", other, elsewhere);
+			addRenameClient(service, "aux-a", tmpDir, untracking);
+			addRenameClient(service, "aux-b", tmpDir, tracking);
+			addRenameClient(service, "aux-c", tmpDir, dead);
+			addRenameClient(service, "aux-d", other, elsewhere);
 
 			expect(service.getTrackedContent(filePath, tmpDir)).toEqual({
 				hash: "hash-in-root",

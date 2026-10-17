@@ -1217,8 +1217,27 @@ export class LSPService {
 	 * The drift sweep compares disk (size, mtime) against these records and
 	 * resynchronizes anything an untracked edit moved behind the server's back.
 	 * See `document-drift.ts` for the key design and the pacing rules.
+	 *
+	 * #4503: the tracker is told which documents a live server still holds, so
+	 * its cap never evicts the record of one — that record is the only thing
+	 * comparing the server's stale view against disk. The same answer feeds the
+	 * per-pass drop, from this one wiring point, so eviction and the sweep can
+	 * never disagree.
 	 */
-	private readonly documentDrift = new DocumentDriftTracker();
+	private readonly documentDrift = new DocumentDriftTracker({
+		holdsDocument: (filePath) => this.hasLiveClientHoldingDocument(filePath),
+		onCapOverflow: ({ tracked, cap }) => {
+			// Bounded: at most one row per session, emitted when the tracked set
+			// first stands above the cap because every record is still held.
+			logLatency({
+				type: "phase",
+				phase: "lsp_document_drift_cap",
+				filePath: "",
+				durationMs: 0,
+				metadata: { tracked, cap },
+			});
+		},
+	});
 	/**
 	 * #1095: lazily verifies a stored {@link DiagnosticBinding} against current
 	 * disk bytes, memoizing the disk fingerprint per (file, mtime) so repeated
@@ -3721,8 +3740,9 @@ export class LSPService {
 						fingerprintDocumentContent(content)
 					);
 				},
-				holdsDocument: (filePath) =>
-					this.hasLiveClientHoldingDocument(filePath),
+				// #4503: the tracker's own `holdsDocument` answers this same question
+				// (wired once, where the tracker is built), so the pass does not repeat
+				// the wiring here.
 				onDrift: (event) => {
 					// A clean re-stamp, a deleted file and a closed document are all
 					// normal bookkeeping, not degradations. Only a real resync — or a

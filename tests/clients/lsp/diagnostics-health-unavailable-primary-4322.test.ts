@@ -68,8 +68,8 @@ describe("the getDiagnostics health record names no unavailable language server 
 			path.join(workspace, "package.json"),
 			'{"name":"synthetic-json-fixture","private":true}\n',
 		);
-		// typos roots at the nearest `.git` (clients/lsp/server.ts `TyposServer`).
-		fs.mkdirSync(path.join(workspace, ".git"));
+		// typos roots at the nearest `.git` (clients/lsp/server.ts `TyposServer`),
+		// which the shared fixture marker already provides (#4560).
 		fs.mkdirSync(path.join(workspace, ".pi-lens"), { recursive: true });
 		fs.writeFileSync(
 			path.join(workspace, ".pi-lens", "lsp.json"),

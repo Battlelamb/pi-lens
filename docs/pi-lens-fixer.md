@@ -155,6 +155,26 @@ exports change.
 
 ## Fix rounds
 
+- When bot threads or code-scanning alerts exist, read and dispose of each
+  one. A missing bot review is never evidence of anything: it never blocks the
+  round and never becomes something to wait for. The threads, every page:
+  `gh api graphql --paginate -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path line comments(first:1){nodes{author{login} body}}}}}}}' -F owner="$(gh repo view --json owner --jq .owner.login)" -F name="$(gh repo view --json name --jq .name)" -F number=<N> --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | "\(.id) \(.path):\(.line) \(.comments.nodes[0].author.login): \(.comments.nodes[0].body)"'`,
+  and the alerts:
+  `gh api --paginate "repos/{owner}/{repo}/code-scanning/alerts?ref=refs/heads/<branch>&state=open" --jq '.[] | "\(.number) \(.rule.id) \(.most_recent_instance.location.path):\(.most_recent_instance.location.start_line)"'`.
+  Both commands follow their cursor to the last page, so the list is clear
+  only after that page prints: one page is never read as the whole list.
+  An alert on another branch is not this round's; read the head you pushed.
+  Before the hand-back, reply to and resolve every thread this round fixes, and
+  name every other open thread and alert in the PR body with its disposition.
+  A round that finds none says so in one line and moves on. Where the brief
+  withholds GitHub writes
+  (`docs/pi-lens-subagent.md`),
+  put the same list in the body and the hand-back for the orchestrator to post
+  and resolve. The disposition words and the merge condition are
+  `docs/pi-lens-merge-policy.md` "The loop, per PR" step 1 and step 4
+  (`:34`, `:81`); this contract does not restate them. Recurrence: #4566 and
+  #4575 (2026-10-17), where the threads outlived the rounds that should have
+  read them.
 - On `FIX ROUND` findings, reproduce each finding before fixing it, add a
   red-first test for every behavioural fix, rebuild, re-run the targeted suites
   plus anything the findings touched, and push the same branch. If the PR reads
@@ -229,6 +249,12 @@ rigor (#2599).
   enforcer must be one catalog entry N names. The fix's own one-bug test is its
   regression test, not the closed gap. The body lint enforces both lines
   (#4439).
+- A `Shape: new: <name>` is a proposal, not a catalog entry: write the
+  proposed shape text in the PR body under "Proposed contract change
+  (maintainer decision)" and never edit `AGENTS.md`. Catalog shapes and rule
+  changes are the maintainer's decision; the orchestrator lands an approved
+  one in its own change (#4577's fixer added shape 74 unasked, and the
+  governance suites redded).
 - Every code fact in the PR body is a `` `path:line` `` citation the check
   verifies: the file must be in the committed tree (never an untracked or
   git-ignored path, which CI cannot read), and a fenced quote after it must

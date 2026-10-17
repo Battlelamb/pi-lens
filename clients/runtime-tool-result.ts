@@ -19,7 +19,7 @@ import {
 	serializeHeadLook,
 	shouldRunOpaqueRecovery,
 } from "./opaque-mutation-scan.js";
-import { normalizeMapKey } from "./path-utils.js";
+import { normalizeMapKey, resolveToolCallFilePath } from "./path-utils.js";
 import { detectFileKind } from "./file-kinds.js";
 import {
 	extractReadPathsFromCommand,
@@ -127,6 +127,7 @@ import {
 } from "./session-scope.js";
 import { requestBootstrapClients } from "./bootstrap.js";
 import { bounded } from "./deadline-utils.js";
+import type { DiskChangeRuntime } from "./disk-changes.js";
 import { lookForOutOfBandChanges } from "./out-of-band-changes.js";
 import { HOOK_WALL_BUDGET_MS } from "./hook-budgets.js";
 import {
@@ -298,7 +299,7 @@ async function sendToHeldPrimaries(
 export function resyncHeadMove(args: HeadLook): Promise<void> {
 	return serializeHeadLook(args.key, async () => {
 		try {
-			await lookForOutOfBandChanges(args.root, args.trigger);
+			await lookForOutOfBandChanges(args.root, args.trigger, args.runtime);
 		} finally {
 			await lookAtHead(args);
 		}
@@ -310,6 +311,12 @@ interface HeadLook {
 	key: string;
 	trigger: "tool_call" | "tool_result";
 	label: string;
+	/**
+	 * The bulk mutation seam the out-of-band look's publish allocates the
+	 * existing project sequence through (#4535). Optional: a look driven
+	 * without a runtime still publishes, it just allocates no sequence.
+	 */
+	runtime?: DiskChangeRuntime;
 }
 
 /**
@@ -495,6 +502,17 @@ interface ToolResultDeps {
 	_sessionGeneration?: LineageHandle;
 	/** Internal (#3525): the debounce re-entry keeps its call's stamp decision. */
 	_ownWriteStamp?: OwnWriteStamp;
+	/**
+	 * Internal (#4577): this event's path is ALREADY the file's identity — a
+	 * bash-derived or opaque-recovered absolute path read back from disk — so
+	 * it must not go through the host-tool resolver again. The resolver applies
+	 * host-argument rules (unicode-space fold, `@` strip, the variant ladder) to
+	 * a spelling the model typed; re-running a name that came FROM the
+	 * filesystem rewrites its bytes (`a\u202Fb.ts` folded to `a b.ts`) and
+	 * dispatches a path that does not exist. The recovery caller knows the
+	 * provenance, so it states it here instead of the handler re-detecting it.
+	 */
+	_pathAlreadyResolved?: boolean;
 }
 
 /** How the agent's own write/edit moves the read guard (#3524, #3525). */
@@ -1802,11 +1820,19 @@ export async function handleToolResult(deps: ToolResultDeps): Promise<{
 		// not a regression introduced by it.
 		resolutionBasis = workspaceRoot;
 	}
-	const filePath = rawFilePath
-		? path.isAbsolute(rawFilePath)
+	// #4576: one host-path resolver for both sides of a call. The `tool_call`
+	// seam already expanded `~`, `file://`, an `@` prefix and the variant
+	// ladder through this exact function; resolving the result's authoritative
+	// path with a bare `path.resolve` turned `~/x` into `<root>/~/x`, a path
+	// that cannot exist, and dispatched runners and analyzers against it.
+	// #4577: a path recovered from disk is already an identity, not a spelling
+	// the model typed — `_pathAlreadyResolved` carries that provenance from the
+	// recovery caller instead of this handler guessing it from the string.
+	const filePath =
+		rawFilePath && deps._pathAlreadyResolved
 			? rawFilePath
-			: path.resolve(resolutionBasis, rawFilePath)
-		: rawFilePath;
+			: resolveToolCallFilePath(rawFilePath, resolutionBasis, workspaceRoot)
+					?.path;
 	const analysisRootMode = resolveAnalysisRoot(filePath ?? "", workspaceRoot);
 	if (filePath) {
 		invalidateProjectIgnoreMatcherForPath(filePath);
@@ -2021,6 +2047,7 @@ export async function handleToolResult(deps: ToolResultDeps): Promise<{
 					),
 					trigger: "tool_result",
 					label: command,
+					runtime,
 				}),
 				{
 					ms: HOOK_WALL_BUDGET_MS.tool_result_edit,
@@ -2149,6 +2176,7 @@ export async function handleToolResult(deps: ToolResultDeps): Promise<{
 				_attachmentBudget: syntheticAttachmentBudget,
 				_mutationSourceOverride: isOpaque ? "opaque-script" : undefined,
 				_readGuardAuthorship: recognizedAuthoredSet.has(wp),
+				_pathAlreadyResolved: true,
 				_ownWriteStamp: {
 					stampFileTime: false,
 					...(toolCallId !== undefined && { toolCallId }),

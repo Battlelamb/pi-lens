@@ -1645,9 +1645,8 @@ describe("computeCascadeForFile", () => {
 	it("suppresses an ignored neighbour from cascade snapshot output (#297)", async () => {
 		const env = setupTestEnvironment("cascade-ignore-snapshot-");
 		try {
-			// Anchor the ignore matcher at tmpDir (a .git marker stops
+			// Anchor the ignore matcher at tmpDir (the shared fixture `.git` stops
 			// resolveGitIgnoreRoot's upward walk) and ignore test files there.
-			fs.mkdirSync(path.join(env.tmpDir, ".git"), { recursive: true });
 			fs.writeFileSync(
 				path.join(env.tmpDir, ".pi-lens.json"),
 				JSON.stringify({ ignore: ["**/*.test.ts"] }),
@@ -1699,7 +1698,6 @@ describe("computeCascadeForFile", () => {
 	it("suppresses an ignored neighbour from cascade fallback output (#297)", async () => {
 		const env = setupTestEnvironment("cascade-ignore-fallback-");
 		try {
-			fs.mkdirSync(path.join(env.tmpDir, ".git"), { recursive: true });
 			fs.writeFileSync(
 				path.join(env.tmpDir, ".pi-lens.json"),
 				JSON.stringify({ ignore: ["**/*.test.ts"] }),
@@ -1917,7 +1915,6 @@ describe("computeCascadeForFile", () => {
 	it("drops an unignored test file from fallback, keeps source, still drops ignored (#1080/#297)", async () => {
 		const env = setupTestEnvironment("cascade-test-role-fallback-");
 		try {
-			fs.mkdirSync(path.join(env.tmpDir, ".git"), { recursive: true });
 			fs.writeFileSync(
 				path.join(env.tmpDir, ".pi-lens.json"),
 				JSON.stringify({ ignore: ["**/vendored.test.ts"] }),

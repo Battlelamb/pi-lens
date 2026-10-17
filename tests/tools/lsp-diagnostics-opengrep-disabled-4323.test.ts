@@ -152,8 +152,8 @@ describe("an explicit LSP check with Opengrep switched off (#4323)", () => {
 			'{"name":"synthetic-4323-fixture","private":true}\n',
 		);
 		// Opengrep roots at the nearest `.git` (clients/lsp/server.ts
-		// `OpengrepServer`); without one it falls back to this process's cwd.
-		fs.mkdirSync(path.join(workspace, ".git"));
+		// `OpengrepServer`); without one it falls back to this process's cwd. The
+		// shared fixture marker IS that `.git` (#4560).
 		fs.mkdirSync(path.join(workspace, ".pi-lens"), { recursive: true });
 		fs.writeFileSync(
 			path.join(workspace, ".pi-lens", "lsp.json"),

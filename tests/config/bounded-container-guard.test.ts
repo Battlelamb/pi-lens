@@ -549,7 +549,9 @@ describe("#2981 long-lived containers are bounded or admitted", () => {
 		"clients/smells-rollup.ts#shouldCheckSmellsThisTurn:a818f473",
 		"clients/word-index.ts#updateWordIndexDocument:8b5e4c9e",
 		"clients/word-index.ts#isCanonicalWordIndexToken:99249de8",
-		"clients/word-index.ts#deserializeWordIndex:d6d64306",
+		// #4583: `buildStatuses`, the one-entry-per-resolved-cwd build guard; the
+		// content key moved with the publish seam that now sits above it.
+		"clients/word-index.ts#notifyWordIndexPublished:d6d64306",
 		// WeakMap entries are content-keyed by live WordIndex objects and are
 		// reclaimed with those objects; this is not an unbounded path-key cache.
 		"clients/word-index.ts#serializedWordIndexCaches:baa74c91",

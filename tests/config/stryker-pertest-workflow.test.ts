@@ -14,7 +14,12 @@ const { default: config } = (await import(
 	pathToFileURL(resolve(ROOT, "stryker.pertest.config.mjs")).href
 )) as { default: Record<string, unknown> };
 
-type Step = { name?: string; run?: string; env?: Record<string, string> };
+type Step = {
+	name?: string;
+	run?: string;
+	if?: string;
+	env?: Record<string, string>;
+};
 type Workflow = {
 	on: Record<string, unknown>;
 	permissions: Record<string, string>;
@@ -143,5 +148,22 @@ describe("stryker-pertest workflow facade inputs (#4449)", () => {
 		expect(mutate?.run).toContain('--mutate "${TARGET}${LINES:+:$LINES}"');
 		expect(plan?.run).not.toContain("${{");
 		expect(mutate?.run).not.toContain("${{");
+	});
+});
+
+describe("stryker-pertest workflow step conditions (#4518)", () => {
+	// Recurrence (#4518 review r1 F4): a step `if:` that names no status-check
+	// function gets GitHub's default `success()`. The candidates step above can
+	// fail on a missing report, and before `!cancelled()` that skipped this step,
+	// so the run lost the one line naming the Stryker failure. The condition is
+	// GitHub's expression language, not shell, so it is pinned here; the exit
+	// codes the candidates step returns are executed in
+	// tests/scripts/floor-steps-executed.test.ts.
+	it("keeps the Stryker-failure line when an earlier step also failed", () => {
+		const fail = job.steps.find(
+			(step) => step.name === "Fail the job when Stryker failed",
+		);
+		expect(fail?.if).toContain("!cancelled()");
+		expect(fail?.if).toContain("steps.stryker.outcome == 'failure'");
 	});
 });

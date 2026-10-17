@@ -353,6 +353,15 @@ const ADMITTED_AFTER_BASELINE: Readonly<
 			reason:
 				"the language-server process is the boundary; the capability adapter is where every host witness stands in for it",
 		},
+	// 2026-10-17 (#4554): the assertion is on the module-level
+	// `resetLSPService` CALL the shared teardown makes, and the shared service
+	// double does not expose that call as a spy; no server process is spawned.
+	"in-process-mock:index-4554-last-member-teardown.test.ts::clients/lsp/capabilities":
+		{
+			detector: "in-process-mock",
+			reason:
+				"the assertion is on the module-level resetLSPService call the shared teardown makes, which the shared service double does not expose as a spy; the stand-in spawns no language server",
+		},
 	"never-settling-wait:scripts/mutate-fixture.test.ts": {
 		detector: "never-settling-wait",
 		reason:
@@ -768,7 +777,7 @@ const ADMITTED_AFTER_BASELINE: Readonly<
 	"real-process-spawn:scripts/git-fixture-env.test.ts": {
 		detector: "real-process-spawn",
 		reason:
-			"real git children prove the script-side fixture env resolves repository metadata (HEAD, root) from a sanitized process.env",
+			"real git children prove both fixture envs resolve repository metadata (HEAD, root) from a sanitized process.env and, since #4552, fork no detached auto-maintenance child: the .mjs commit and the TypeScript-twin commit are the two witnesses, and a relocated copy of the .mjs helper must refuse to run without its policy file",
 	},
 	// 2026-09-07 (#2699): the PreToolUse guard's own stdin/exit-code/stderr
 	// contract is the subject under test; an in-process call to the exported
@@ -1069,6 +1078,19 @@ const ADMITTED_AFTER_BASELINE: Readonly<
 		detector: "ungoverned-wait-for",
 		reason:
 			"session_start's background tasks and the quick-mode warmup timer expose no awaitable, so a real-time vi.waitFor is the only join on their snapshot save",
+	},
+	// 2026-10-18 (#4583): a cold word-index build is fire-and-forget (its
+	// `triggerBackgroundWordIndexBuild` status is not joinable), so a witness
+	// that must observe the published snapshot has only vi.waitFor.
+	"ungoverned-wait-for:clients/word-index.test.ts": {
+		detector: "ungoverned-wait-for",
+		reason:
+			"the cold build's completion exposes no awaitable, so the adoption witness joins the snapshot it publishes with vi.waitFor",
+	},
+	"ungoverned-wait-for:tools/symbol-search.test.ts": {
+		detector: "ungoverned-wait-for",
+		reason:
+			"the cold build's completion exposes no awaitable, so the tool witness joins the snapshot it publishes with vi.waitFor",
 	},
 };
 

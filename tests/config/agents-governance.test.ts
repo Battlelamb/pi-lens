@@ -42,10 +42,10 @@ describe("AGENTS.md trigger-block governance (#3259)", () => {
 
 	it("keeps every numbered defect shape exactly once", () => {
 		const numbers = shapeNumbers(agentsText());
-		expect(numbers).toHaveLength(71);
-		expect(new Set(numbers).size).toBe(71);
+		expect(numbers).toHaveLength(74);
+		expect(new Set(numbers).size).toBe(74);
 		expect(numbers.sort((a, b) => a - b)).toEqual(
-			Array.from({ length: 71 }, (_, index) => index + 1),
+			Array.from({ length: 74 }, (_, index) => index + 1),
 		);
 	});
 
@@ -54,7 +54,7 @@ describe("AGENTS.md trigger-block governance (#3259)", () => {
 		const counterfeit = agentsText()
 			.replace(/^1\. \*\*.*$/m, "")
 			.concat("\n<!--\n1. **Counterfeit shape:** hidden comment\n-->\n");
-		expect(shapeNumbers(counterfeit)).toHaveLength(70);
+		expect(shapeNumbers(counterfeit)).toHaveLength(73);
 		expect(shapeNumbers(counterfeit)).not.toContain(1);
 	});
 
@@ -62,13 +62,30 @@ describe("AGENTS.md trigger-block governance (#3259)", () => {
 		// Recurrence: PR #4270's first draft put three incident numbers into an
 		// AGENTS.md rule. Maintainer, 2026-10-10: AGENTS.md stays lean and
 		// HISTORY.md carries issues, PRs and examples. Lower the baseline when a
-		// reference moves to HISTORY.md; never raise it.
-		expect(issueRefs(agentsText())).toBeLessThanOrEqual(113);
+		// reference moves to HISTORY.md. The one raise (113 -> 119) is the two
+		// catalog shapes the maintainer approved on 2026-10-17 (#4565); each
+		// instance number is what makes a shape recognisable.
+		expect(issueRefs(agentsText())).toBeLessThanOrEqual(119);
+	});
+
+	it("counts a reference and not a heading anchor", () => {
+		// Recurrence: the #4565 digest links heading anchors such as
+		// `docs/engineering-principles.md#1-building`, which `#\d+\b` read as
+		// twelve issue references and inflated the ratchet above its pin.
+		expect(issueRefs("fixed in #4554 and #4563.")).toBe(2);
+		expect(issueRefs("([§1](docs/engineering-principles.md#1-building))")).toBe(
+			0,
+		);
+		expect(issueRefs("https://github.com/o/r/pull/4565")).toBe(1);
 	});
 });
 
 function issueRefs(text: string): number {
 	// `#N` of any length, and issue/PR URLs, which carry no `#` (review F-4272-1).
-	return [...blankMarkdown(text).matchAll(/#\d+\b|\/(?:issues|pull)\/\d+\b/g)]
-		.length;
+	// A markdown heading anchor (`#1-building`) is a fragment, not a reference.
+	return [
+		...blankMarkdown(text).matchAll(
+			/#\d+\b(?!-[A-Za-z_])|\/(?:issues|pull)\/\d+\b/g,
+		),
+	].length;
 }

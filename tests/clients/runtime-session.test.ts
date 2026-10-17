@@ -864,15 +864,6 @@ describe(
 			const restoreStartupMode = setStartupMode("quick");
 			const previousDataDir = process.env.PILENS_DATA_DIR;
 			process.env.PILENS_DATA_DIR = path.join(env.tmpDir, "data");
-			// Own root marker, as the nested-cwd cell below plants: without it an
-			// ancestor `.git` (a stray empty /tmp/.git on the dev host) became the
-			// project root, the snapshot under env.tmpDir was never read, and the
-			// cell redded #4546's pre-push three times with `expected undefined`.
-			createTempFile(
-				env.tmpDir,
-				"package.json",
-				JSON.stringify({ type: "module" }),
-			);
 			const runtime = new RuntimeCoordinator();
 			try {
 				saveProjectSnapshot(env.tmpDir, {

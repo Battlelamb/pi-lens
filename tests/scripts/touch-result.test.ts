@@ -67,7 +67,8 @@ async function workspace(options: {
 	disabled: string[];
 }) {
 	const root = fs.realpathSync(setupTestEnvironment(PREFIX).tmpDir);
-	fs.mkdirSync(path.join(root, ".git"));
+	// The shared fixture marker supplies the `.git` root `NearestRoot` walks to
+	// (#4560); planting a second one threw EEXIST and skipped this suite.
 	fs.mkdirSync(path.join(root, ".pi-lens"));
 	const serverOverrides = Object.fromEntries([
 		...options.fake.map((id) => [

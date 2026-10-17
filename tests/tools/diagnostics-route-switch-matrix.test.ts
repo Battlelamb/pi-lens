@@ -596,8 +596,8 @@ function makeFixture(column: Column): Fixture {
 		path.join(workspace, "package.json"),
 		'{"name":"synthetic-4403-fixture","private":true}\n',
 	);
-	// typos and Opengrep root at the nearest `.git` (clients/lsp/server.ts).
-	fs.mkdirSync(path.join(workspace, ".git"));
+	// typos and Opengrep root at the nearest `.git` (clients/lsp/server.ts);
+	// #4560: the fixture root already carries the shared marker.
 	fs.mkdirSync(path.join(workspace, ".pi-lens"), { recursive: true });
 	const language = languageOf(column);
 	fs.writeFileSync(
@@ -1550,7 +1550,6 @@ describe("the primary-unavailable note's cause (#4403)", () => {
 			const env = setupTestEnvironment(PREFIX);
 			const workspace = fs.realpathSync(env.tmpDir);
 			fs.writeFileSync(path.join(workspace, "package.json"), "{}\n");
-			fs.mkdirSync(path.join(workspace, ".git"));
 			fs.mkdirSync(path.join(workspace, ".pi-lens"));
 			fs.writeFileSync(
 				path.join(workspace, ".pi-lens", "lsp.json"),

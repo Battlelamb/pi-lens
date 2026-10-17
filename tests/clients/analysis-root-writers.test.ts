@@ -287,7 +287,18 @@ describe("analysis-root seam", () => {
 		// from persisting a receipt for an adopted root.
 		const env = setupTestEnvironment("pi-lens-analysis-root-project-change-");
 		environments.push(env);
-		const filePath = path.join(env.tmpDir, "..", "adopted-project", "file.ts");
+		// #4560: the adopted root is a sibling at the tmp root (its first segment
+		// must not start with `pi-`, or it would classify as pi-owned scratch).
+		// The cell removes it, so the widened tmp-root census sees no leftover.
+		const adoptedRoot = path.join(
+			env.tmpDir,
+			"..",
+			`adopted-project-change-${process.pid}`,
+		);
+		environments.push({
+			cleanup: () => fs.rmSync(adoptedRoot, { recursive: true, force: true }),
+		});
+		const filePath = path.join(adoptedRoot, "file.ts");
 		fs.mkdirSync(path.dirname(filePath), { recursive: true });
 		fs.writeFileSync(filePath, "export const value = 1;\n");
 		const runtime = new RuntimeCoordinator();
@@ -324,7 +335,15 @@ describe("analysis-root seam", () => {
 		// no-op until adopted-root analysis is explicitly admitted.
 		const env = setupTestEnvironment("pi-lens-analysis-root-turn-summary-");
 		environments.push(env);
-		const filePath = path.join(env.tmpDir, "..", "adopted-project", "file.ts");
+		const adoptedRoot = path.join(
+			env.tmpDir,
+			"..",
+			`adopted-project-turn-${process.pid}`,
+		);
+		environments.push({
+			cleanup: () => fs.rmSync(adoptedRoot, { recursive: true, force: true }),
+		});
+		const filePath = path.join(adoptedRoot, "file.ts");
 		fs.mkdirSync(path.dirname(filePath), { recursive: true });
 		fs.writeFileSync(filePath, "export const value = 1;\n");
 		const runtime = new RuntimeCoordinator();

@@ -8,6 +8,7 @@ import type { CascadeRun } from "./cascade-types.js";
 import { logCascade } from "./cascade-logger.js";
 import {
 	appendProjectChangeAllocated,
+	appendProjectChangesAllocated,
 	type ProjectChangeRange,
 	type ProjectChangeSource,
 } from "./project-changes.js";
@@ -1029,20 +1030,97 @@ export class RuntimeCoordinator {
 		}
 		const { projectSeq, fileSeq, key } =
 			logged ?? this.bumpFileSeq(args.filePath);
+		this.recordMutationReceipt({ projectSeq, fileSeq, key }, args.source);
+		return { projectSeq, fileSeq };
+	}
+
+	/**
+	 * #4535: the bulk form of {@link recordProjectMutation}, for a disk change
+	 * pi-lens did not author that spans many paths (a publisher's recorded
+	 * population). It allocates from the SAME sequence, in ONE locked append:
+	 * `appendProjectChangesAllocated` takes the change-log lock once and writes
+	 * every line under it, so a 400-path HEAD move costs one lock round-trip
+	 * inside a hook budget instead of 400. The lock-failure semantics are the
+	 * single writer's: when the lock is unavailable every appended line is
+	 * tagged `unlocked` and one `change-log-lock-unavailable` degradation is
+	 * recorded for the batch. Receipts are appended per path with the same ring
+	 * cap and drop counter as a single mutation.
+	 *
+	 * Returns the batch's last allocated `projectSeq` (the record's seq after
+	 * the batch) and each path's `fileSeq` keyed by the bump's normalized key.
+	 * Duplicate paths are the caller's to collapse: each entry bumps.
+	 */
+	recordProjectMutations(args: {
+		paths: readonly string[];
+		source: ProjectChangeSource;
+		cwd?: string;
+		onAppendError?: (err: unknown) => void;
+	}): { projectSeq: number; fileSeqs: ReadonlyMap<string, number> } {
+		let logged:
+			| Array<ReturnType<RuntimeCoordinator["bumpFileSeq"]>>
+			| undefined;
+		if (args.cwd !== undefined && args.paths.length > 0) {
+			try {
+				const cwd = args.cwd;
+				const paths = args.paths;
+				appendProjectChangesAllocated(cwd, (logMaxSeq) => {
+					const ownSeq = this._projectSeq;
+					const bumps = paths.map((filePath) =>
+						this.bumpFileSeq(filePath, logMaxSeq),
+					);
+					logged = bumps;
+					if (this._viewMissingThrough > 0) {
+						recordViewIncomplete(cwd, { ownSeq, logMaxSeq });
+					}
+					return bumps.map((bump, index) => ({
+						seq: bump.projectSeq,
+						timestamp: new Date().toISOString(),
+						sessionId: this.telemetrySessionId,
+						turnIndex: this.turnIndex,
+						source: args.source,
+						filePath: path.resolve(paths[index] as string),
+						fileSeq: bump.fileSeq,
+					}));
+				});
+			} catch (err) {
+				args.onAppendError?.(err);
+			}
+		}
+		const bumps =
+			logged ?? args.paths.map((filePath) => this.bumpFileSeq(filePath));
+		const fileSeqs = new Map<string, number>();
+		for (const bump of bumps) {
+			this.recordMutationReceipt(
+				{ projectSeq: bump.projectSeq, fileSeq: bump.fileSeq, key: bump.key },
+				args.source,
+			);
+			fileSeqs.set(bump.key, bump.fileSeq);
+		}
+		return { projectSeq: this._projectSeq, fileSeqs };
+	}
+
+	/**
+	 * The receipt ring (§ {@link MutationReceipt}): one entry per bump, oldest
+	 * evicted at the cap and counted, never silently incomplete. One writer, so
+	 * the single and bulk mutation paths cannot drift apart on attribution.
+	 */
+	private recordMutationReceipt(
+		bump: { projectSeq: number; fileSeq: number; key: string },
+		source: ProjectChangeSource,
+	): void {
 		if (this._mutationReceipts.length >= MAX_MUTATION_RECEIPTS) {
 			this._mutationReceipts.shift();
 			this._droppedMutationReceipts += 1;
 		}
 		this._mutationReceipts.push({
-			seq: projectSeq,
+			seq: bump.projectSeq,
 			// Reuse the bump's normalized key (a realpath syscall: ~200us on
 			// Windows, ~1.8us on POSIX since #3098) — never re-derive it here.
-			filePath: key,
-			source: args.source,
+			filePath: bump.key,
+			source,
 			turnIndex: this._turnIndex,
 			ts: Date.now(),
 		});
-		return { projectSeq, fileSeq };
 	}
 
 	/**

@@ -161,7 +161,7 @@ function makeWorkspace(testCase: Setup): string {
 		path.join(workspace, "package.json"),
 		'{"name":"synthetic-4403-cascade","private":true}\n',
 	);
-	fs.mkdirSync(path.join(workspace, ".git"));
+	// #4560: the fixture root already carries the shared `.git` marker.
 	fs.mkdirSync(path.join(workspace, ".pi-lens"));
 	for (const [name, content] of Object.entries(FILES))
 		fs.writeFileSync(path.join(workspace, `${name}.ts`), content(1));
