@@ -1165,38 +1165,174 @@ it("refuses a global shim whose only target spelling cannot be resolved (#4566 r
 	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
 });
 
-it.each(["cmd", "ps1"])(
-	"judges the script target of an npm %s shim (#4566 F3)",
-	(extension) => {
+it("judges the script target of an npm cmd shim (#4566 F3)", () => {
+	const project = makeProject();
+	const outside = tempDir("pi-lens-shim-");
+	const script = path.join(project.root, "server.js");
+	fs.writeFileSync(script, "");
+	const relative = path.relative(outside, script).replaceAll(path.sep, "\\");
+	const shim = path.join(outside, "server.cmd");
+	fs.writeFileSync(
+		shim,
+		`@echo off\n@"%~dp0\\node.exe" "%~dp0\\${relative}" %*\n`,
+	);
+	// cmd-shim v6.0.0, npm/cmd-shim@25724bfea794ebec14432278b1a4d223cc158f83:
+	// lib/index.js emits %dp0% and $basedir with these path spellings.
+	setProjectTrustState("unknown");
+	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+	fs.writeFileSync(
+		shim,
+		fs.readFileSync(shim, "utf8").replaceAll("%~dp0", "%dp0%"),
+	);
+	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+	expect(commandResolvesIntoProject(shim, makeProject().root)).toBe(false);
+	setProjectTrustState("untrusted");
+	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+	fs.writeFileSync(shim, "unrecognised shim");
+	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+	fs.unlinkSync(shim);
+	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+	setProjectTrustState("trusted");
+	expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
+});
+
+/** An outside shim whose lines are built once its own path is known. */
+function writeShim(
+	extension: "cmd" | "ps1",
+	lines: (shim: string) => string[],
+): string {
+	const outside = tempDir("pi-lens-shim-");
+	const shim = path.join(outside, `server.${extension}`);
+	fs.writeFileSync(shim, lines(shim).join("\r\n"));
+	return shim;
+}
+
+/** `file` spelled from the shim's own directory, the way a shim names it. */
+function fromShim(
+	shim: string,
+	file: string,
+	extension: "cmd" | "ps1",
+): string {
+	return path
+		.relative(path.dirname(shim), file)
+		.split(path.sep)
+		.join(extension === "cmd" ? "\\" : "/");
+}
+
+describe("shim target resolution fails closed (#4566 r16)", () => {
+	it("refuses a cmd shim whose project target carries a literal $ (#4566 r16 P1)", () => {
+		// The r15 /[%$]/ skip dropped this spelling, so an outside shim that named
+		// an outside node.exe plus this project script was admitted. `$` is an
+		// ordinary filename character in cmd.exe; it is not an expansion.
 		const project = makeProject();
-		const outside = tempDir("pi-lens-shim-");
-		const script = path.join(project.root, "server.js");
-		fs.writeFileSync(script, "");
-		const relative = path.relative(outside, script).replaceAll(path.sep, "\\");
-		const shim = path.join(outside, `server.${extension}`);
-		fs.writeFileSync(
-			shim,
-			extension === "cmd"
-				? `@echo off\n@"%~dp0\\node.exe" "%~dp0\\${relative}" %*\n`
-				: `& "$basedir/node$exe" "$basedir/${relative.replaceAll("\\", "/")}" $args`,
-		);
-		// cmd-shim v6.0.0, npm/cmd-shim@25724bfea794ebec14432278b1a4d223cc158f83:
-		// lib/index.js emits %dp0% and $basedir with these path spellings.
+		const shim = writeShim("cmd", (shimPath) => [
+			"@echo off",
+			`@"%dp0%\\node.exe" "%dp0%\\${fromShim(shimPath, path.join(project.root, "bin", "server$dev.js"), "cmd")}" %*`,
+		]);
 		setProjectTrustState("unknown");
 		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-		fs.writeFileSync(
-			shim,
-			fs.readFileSync(shim, "utf8").replaceAll("%~dp0", "%dp0%"),
-		);
+		// Resolved, not refused-for-looking-odd: the same bytes against another
+		// project name no project target and are admitted.
+		expect(commandResolvesIntoProject(shim, makeProject().root)).toBe(false);
+	});
+
+	it("refuses a cmd shim whose project target carries a literal % (#4566 r16)", () => {
+		const project = makeProject();
+		const shim = writeShim("cmd", (shimPath) => [
+			"@echo off",
+			`@"%dp0%\\node.exe" "%dp0%\\${fromShim(shimPath, path.join(project.root, "bin", "server%dev.js"), "cmd")}" %*`,
+		]);
+		setProjectTrustState("unknown");
 		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
 		expect(commandResolvesIntoProject(shim, makeProject().root)).toBe(false);
+	});
+
+	const expansionRows: Array<[string, "cmd" | "ps1", string]> = [
+		["an unexpanded %VAR% in a .cmd target", "cmd", "%DEV%"],
+		["an unexpanded $env: in a .ps1 target", "ps1", "$env:DEV"],
+		["an unexpanded ${} in a .ps1 target", "ps1", "${DEV}"],
+	];
+	it.each(expansionRows)(
+		"refuses a shim whose own-directory target carries %s (#4566 r16)",
+		(_label, extension: "cmd" | "ps1", expansion: string) => {
+			// The spelling is deliberately placed OUTSIDE the project when taken
+			// literally: an expansion the parser cannot evaluate must refuse the
+			// shim, never contribute no path and let its outside neighbour admit it.
+			const project = makeProject();
+			const shim = writeShim(extension, () => [
+				"@echo off",
+				extension === "cmd"
+					? `@"%dp0%\\node.exe" "%dp0%\\pkg\\${expansion}\\cli.js" %*`
+					: `& "$basedir/node.exe" "$basedir/pkg/${expansion}/cli.js" $args`,
+			]);
+			setProjectTrustState("unknown");
+			expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+		},
+	);
+
+	it("refuses a shim whose own-directory targets use unknown wrapper syntax (#4566 r16)", () => {
+		// Nothing this parser can positively resolve: no quoted own-directory
+		// target at all. "Contributes no path" is a refusal, not an admission.
+		const project = makeProject();
+		const shim = writeShim("cmd", () => [
+			"@echo off",
+			'start "" /b cmd /c ..\\project\\bin\\server.js',
+		]);
+		setProjectTrustState("unknown");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+	});
+
+	it("admits a cmd shim whose own-directory targets all resolve outside (#4566 r16)", () => {
+		const project = makeProject();
+		const shim = writeShim("cmd", () => [
+			"@echo off",
+			// The literal `$` and `%` spellings are outside the project: resolving
+			// them must admit the shim, so the rule cannot pass by treating every
+			// unusual character as unresolvable.
+			`@"%dp0%\\node.exe" "%dp0%\\pkg\\cli$dev%tool.js" %*`,
+		]);
+		setProjectTrustState("unknown");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
+	});
+
+	it("admits a ps1 shim whose own-directory targets all resolve outside (#4566 r16)", () => {
+		const project = makeProject();
+		const shim = writeShim("ps1", () => [
+			'& "$basedir/node.exe" "$basedir/../pkg/bin/cli.js" $args',
+		]);
+		setProjectTrustState("unknown");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
+	});
+
+	it("refuses an npm ps1 shim whose target carries an unexpanded $exe (#4566 r16)", () => {
+		// npm's own ps1 wrapper spells the runtime `$basedir/node$exe`. `$exe` is
+		// a PowerShell variable this parser cannot positively resolve, so the
+		// wrapper is refused while the project is untrusted: the accepted cost of
+		// the maintainer's fail-closed rule (see the PR body's
+		// Behavior-equivalence note). The cmd sibling of the same package is
+		// spelled with a concrete node.exe and stays admitted.
+		const project = makeProject();
+		const script = path.join(project.root, "server.js");
+		fs.writeFileSync(script, "");
+		const shim = writeShim("ps1", (shimPath) => [
+			`& "$basedir/node$exe" "$basedir/${fromShim(shimPath, script, "ps1").replaceAll("\\", "/")}" $args`,
+		]);
+		setProjectTrustState("unknown");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+		expect(commandResolvesIntoProject(shim, makeProject().root)).toBe(true);
 		setProjectTrustState("untrusted");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-		fs.writeFileSync(shim, "unrecognised shim");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-		fs.unlinkSync(shim);
 		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
 		setProjectTrustState("trusted");
 		expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
-	},
-);
+	});
+
+	it("keeps a trusted project's shims unchanged (#4566 r16)", () => {
+		const project = makeProject();
+		const shim = writeShim("cmd", (shimPath) => [
+			"@echo off",
+			`@"%dp0%\\node.exe" "%dp0%\\${fromShim(shimPath, path.join(project.root, "bin", "server.js"), "cmd")}" %*`,
+		]);
+		setProjectTrustState("trusted");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
+	});
+});

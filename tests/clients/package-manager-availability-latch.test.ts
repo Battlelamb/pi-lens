@@ -382,3 +382,59 @@ it("keeps transient details for a flight joiner after latch eviction (#4566 r13)
 		else process.env.PI_LENS_TEST_MODE = savedMode;
 	}
 });
+
+it("keys the availability latch by the caller root's canonical spelling (#4566 r16)", async () => {
+	safeSpawnAsync.mockImplementation(async (cmd: string, args: string[]) =>
+		cmd === finder() && args[0] === "pnpm" ? okResult("pnpm") : notFoundResult,
+	);
+	const { resolveNodePackageManager, _resetPackageManagerCache } =
+		await import("../../clients/package-manager.js");
+	_resetPackageManagerCache();
+	const fs = await import("node:fs");
+	const path = await import("node:path");
+	const dir = await emptyProjectDir();
+	fs.writeFileSync(path.join(dir, "pnpm-lock.yaml"), "");
+	const probes = () =>
+		safeSpawnAsync.mock.calls.filter(
+			([cmd, args]) => cmd === finder() && args[0] === "pnpm",
+		).length;
+
+	expect(await resolveNodePackageManager(dir)).toBe("pnpm");
+	const after = probes();
+	expect(after).toBeGreaterThan(0);
+	// A separator variant and a dot segment name the same caller root, so they
+	// read the verdict the first probe stored instead of spawning a second one.
+	expect(await resolveNodePackageManager(`${dir}${path.sep}`)).toBe("pnpm");
+	expect(await resolveNodePackageManager(`${dir}${path.sep}.`)).toBe("pnpm");
+	expect(probes()).toBe(after);
+});
+
+// lane: windows-vitest
+it.runIf(process.platform === "win32")(
+	"keys the availability latch by canonical casing on Windows (#4566 r16)",
+	async () => {
+		safeSpawnAsync.mockImplementation(async (cmd: string, args: string[]) =>
+			cmd === finder() && args[0] === "pnpm"
+				? okResult("pnpm")
+				: notFoundResult,
+		);
+		const { resolveNodePackageManager, _resetPackageManagerCache } =
+			await import("../../clients/package-manager.js");
+		_resetPackageManagerCache();
+		const fs = await import("node:fs");
+		const path = await import("node:path");
+		const dir = await emptyProjectDir();
+		fs.writeFileSync(path.join(dir, "pnpm-lock.yaml"), "");
+		const probes = () =>
+			safeSpawnAsync.mock.calls.filter(
+				([cmd, args]) => cmd === finder() && args[0] === "pnpm",
+			).length;
+
+		expect(await resolveNodePackageManager(dir)).toBe("pnpm");
+		const after = probes();
+		expect(after).toBeGreaterThan(0);
+		// NTFS is case-insensitive: the uppercase spelling is the same root.
+		expect(await resolveNodePackageManager(dir.toUpperCase())).toBe("pnpm");
+		expect(probes()).toBe(after);
+	},
+);

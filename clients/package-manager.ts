@@ -166,7 +166,11 @@ function trustScope(): "trusted" | "scoped" {
 }
 
 function availabilityKey(pm: NodePackageManager, cwd: string): string {
-	return `${trustScope()}:${normalizeFilePath(cwd)}:${pm}`;
+	// #4566 r16: a trailing separator is not folded by `normalizeFilePath`
+	// (it keeps the caller's spelling for a path that may not exist), and the
+	// key must read one caller root as one root. `realpathOrResolve` folds the
+	// dot segments and the separator before the canonical-casing pass.
+	return `${trustScope()}:${normalizeFilePath(realpathOrResolve(cwd))}:${pm}`;
 }
 
 const availabilityLatches = new BoundedFifoMap<string, AvailabilityLatch>(8);
@@ -721,14 +725,15 @@ export function commandResolvesIntoProject(
 
 	// #4566 F3: npm Windows shims are regular files, not symlinks. Their
 	// script is the executable target; unknown script text cannot vouch for it.
-	// #4566 r15: judge EVERY own-directory target the shim names, whatever its
-	// suffix. The r14 suffix allowlist (`.js`/`.mjs`/`.cjs`, or extensionless)
-	// DROPPED the target it could not match, so a concrete project target spelled
-	// `.exe`, `tool.` or `TOOL~1.EXE` vouched for nothing beside an outside
-	// neighbour (R14-V2). A spelling this parser cannot expand (an unexpanded
-	// shim variable, `$exe`) names no path it can judge; skipping it leaves
-	// `targets` empty for a shim that names nothing else, which is refused.
+	// #4566 r16 (shape 69): the shim is admitted only when EVERY own-directory
+	// target it names resolves, without guessing, to a concrete path outside
+	// the project. An enumerated skip list (r15's `/[%$]/`) failed open on the
+	// next spelling: it dropped a literal `$` in a `.cmd` filename, so a project
+	// target beside an outside `node.exe` was never judged. The rule lives in
+	// `resolveShimTarget`; a target it cannot fully resolve refuses the shim.
 	if (!/\.(?:cmd|ps1)$/i.test(commandPath)) return false;
+	const shimKind = /\.ps1$/i.test(commandPath) ? "ps1" : "cmd";
+	const shimDir = path.dirname(commandPath);
 	try {
 		const content = fs.readFileSync(commandPath, "utf8");
 		const targets: string[] = [];
@@ -737,25 +742,43 @@ export function commandResolvesIntoProject(
 		)) {
 			const spelling = match[1];
 			if (typeof spelling !== "string") continue;
-			if (/[%$]/.test(spelling)) continue;
-			targets.push(spelling);
+			const resolved = resolveShimTarget(spelling, shimKind, shimDir);
+			if (resolved === undefined) return true;
+			targets.push(resolved);
 		}
+		// No positively resolved target: nothing can vouch for the shim.
 		if (targets.length === 0) return true;
-		return targets.some((spelling) =>
-			reaches(
-				normalizeFilePath(
-					realpathOrResolve(
-						path.resolve(
-							path.dirname(commandPath),
-							spelling.replace(/[/\\]/g, path.sep),
-						),
-					),
-				),
-			),
-		);
+		return targets.some(reaches);
 	} catch {
 		return true;
 	}
+}
+
+/**
+ * One shim's own-directory target, resolved, or `undefined` when the shim's
+ * own language expands something this parser cannot evaluate (#4566 r16).
+ *
+ * The distinction is the language, not a list of filename spellings: cmd.exe
+ * expands `%VAR%` and, under delayed expansion, `!VAR!`, so a literal `$` in
+ * a `.cmd` is an ordinary filename character; PowerShell expands `$name`,
+ * `${name}` and `$(...)`, so a literal `%` in a `.ps1` is ordinary. A target
+ * carrying an expansion the parser cannot resolve returns `undefined`, and
+ * the caller refuses the shim: "names no path I can judge" is never
+ * "allowed".
+ */
+function resolveShimTarget(
+	spelling: string,
+	shimKind: "cmd" | "ps1",
+	shimDir: string,
+): string | undefined {
+	const expansion =
+		shimKind === "cmd" ? /%[^%\s]+%|![^!\s]+!/ : /\$(?:[{(_\w?:])/;
+	if (expansion.test(spelling)) return undefined;
+	return normalizeFilePath(
+		realpathOrResolve(
+			path.resolve(shimDir, spelling.replace(/[/\\]/g, path.sep)),
+		),
+	);
 }
 
 /**

@@ -824,6 +824,9 @@ file-scoped worklist and receives no project-wide scanner output.
   project is skipped.
   Discovered commands are judged by their executable target anywhere in the
   caller's explicit project tree, including npm Windows shim script targets;
+  a shim is admitted only when every own-directory target it names resolves to
+  a concrete path outside the project, and a target the parser cannot fully
+  resolve (an unexpanded variable, an unknown wrapper) refuses the shim;
   availability probes, global-dir queries, and their bounded cache keys carry
   that same root. POSIX reads and writes only `PATH`; Windows alone folds key
   casing. `tests/clients/global-binary-trust-4530.test.ts` and
