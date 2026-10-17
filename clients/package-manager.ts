@@ -718,28 +718,30 @@ export function commandResolvesIntoProject(
 	const target = normalizeFilePath(realpathOrResolve(commandPath));
 	const reaches = projectReach(cwd);
 	if (reaches(target)) return true;
+
 	// #4566 F3: npm Windows shims are regular files, not symlinks. Their
 	// script is the executable target; unknown script text cannot vouch for it.
-	// #4566 r14: npm emits an extensionless launcher for a bin with no suffix
-	// (yaml-language-server's documented wrapper), so an extensionless basename is
-	// a supported target too. Every other spelling — the shim's own `node.exe`
-	// copy, a `.dll`, a stray `$exe` variable — is not a target this parser can
-	// vouch for, and a shim with no supported target stays refused.
+	// #4566 r15: judge EVERY own-directory target the shim names, whatever its
+	// suffix. The r14 suffix allowlist (`.js`/`.mjs`/`.cjs`, or extensionless)
+	// DROPPED the target it could not match, so a concrete project target spelled
+	// `.exe`, `tool.` or `TOOL~1.EXE` vouched for nothing beside an outside
+	// neighbour (R14-V2). A spelling this parser cannot expand (an unexpanded
+	// shim variable, `$exe`) names no path it can judge; skipping it leaves
+	// `targets` empty for a shim that names nothing else, which is refused.
 	if (!/\.(?:cmd|ps1)$/i.test(commandPath)) return false;
 	try {
 		const content = fs.readFileSync(commandPath, "utf8");
-		const scripts: string[] = [];
+		const targets: string[] = [];
 		for (const match of content.matchAll(
 			/["'](?:%~dp0|%dp0%|\$basedir)[/\\]([^"'\r\n]+)["']/gi,
 		)) {
 			const spelling = match[1];
 			if (typeof spelling !== "string") continue;
-			const base = spelling.split(/[/\\]/).pop() ?? "";
-			if (/\.(?:mjs|cjs|js)$/i.test(base) || !base.includes("."))
-				scripts.push(spelling);
+			if (/[%$]/.test(spelling)) continue;
+			targets.push(spelling);
 		}
-		if (scripts.length === 0) return true;
-		return scripts.some((spelling) =>
+		if (targets.length === 0) return true;
+		return targets.some((spelling) =>
 			reaches(
 				normalizeFilePath(
 					realpathOrResolve(

@@ -1120,6 +1120,51 @@ it("isolates availability by the caller root (#4566 F2)", async () => {
 	expect(await resolveNodePackageManager(project.root)).toBe("npm");
 });
 
+it.each([
+	["a project .exe target beside an outside script", "tool.exe"],
+	["a project trailing-dot target beside an outside script", "tool."],
+	["a project 8.3 spelling beside an outside script", "TOOL~1.EXE"],
+])(
+	"judges every shim target it can resolve, whatever its suffix: %s (#4566 r15)",
+	(_label, fileName) => {
+		// R14-V2: the r14 suffix allowlist dropped a target it could not match,
+		// so a concrete project target vouched for nothing next to a supported
+		// outside one. Nothing resolvable may be dropped.
+		const project = makeProject();
+		const outside = tempDir("pi-lens-shim-");
+		writeScript(path.join(outside, "pkg", "bin", "srv.js"), "");
+		const projectTarget = path
+			.relative(outside, path.join(project.root, "bin", fileName))
+			.replaceAll(path.sep, "\\");
+		const shim = path.join(outside, "server.cmd");
+		fs.writeFileSync(
+			shim,
+			[
+				"@echo off",
+				`@"%dp0%\\node.exe" "%dp0%\\${projectTarget}" "%dp0%\\pkg\\bin\\srv.js" %*`,
+			].join("\r\n"),
+		);
+		setProjectTrustState("unknown");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+		// The same shim against a project it does not name is admitted: the
+		// resolvable targets are the criterion, not the suffix.
+		expect(commandResolvesIntoProject(shim, makeProject().root)).toBe(false);
+	},
+);
+
+it("refuses a global shim whose only target spelling cannot be resolved (#4566 r15)", () => {
+	// R14-V2: `%exe%` was pushed as "extensionless" and resolved to a literal
+	// path outside the project, so the shim read as an outside target.
+	const project = makeProject();
+	const outside = tempDir("pi-lens-shim-");
+	const shim = path.join(outside, "server.cmd");
+	fs.writeFileSync(shim, '@echo off\n@"%dp0%\\%exe%" %*\n');
+	setProjectTrustState("unknown");
+	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+	setProjectTrustState("untrusted");
+	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+});
+
 it.each(["cmd", "ps1"])(
 	"judges the script target of an npm %s shim (#4566 F3)",
 	(extension) => {

@@ -35,6 +35,30 @@ class MockChildProcess extends EventEmitter {
 	}
 }
 
+/**
+ * Build the mocked `spawn`. A fire-and-forget PROBE (`stdio[0]` is "ignore":
+ * `clients/process-snapshot.ts`'s process-table query) must settle itself.
+ * Its real seam arms a 2 s timeout and then TREE-KILLS a child that never
+ * closes, so a fabricated pid left open here was signalled by the resource
+ * sampler at file teardown and the #2042 kill guard failed the file at shuffle
+ * seed 202 (`kill of unowned pid -9876`, R14-V3). The launch child keeps the
+ * old never-closing shape, which is what the launch assertions expect.
+ */
+function mockSpawn(
+	create: (
+		command: string,
+		args: string[],
+		options?: { stdio?: unknown },
+	) => MockChildProcess,
+) {
+	return (command: string, args: string[], options?: { stdio?: unknown }) => {
+		const proc = create(command, args, options);
+		if (Array.isArray(options?.stdio) && options.stdio[0] === "ignore")
+			queueMicrotask(() => proc.emit("close", 0, null));
+		return proc;
+	};
+}
+
 describe("lsp launch", () => {
 	afterEach(() => {
 		vi.useRealTimers();
@@ -49,7 +73,7 @@ describe("lsp launch", () => {
 	it.runIf(process.platform !== "win32")(
 		"spawns LSP servers in their own process group on POSIX",
 		async () => {
-			const spawnMock = vi.fn(() => new MockChildProcess(2468));
+			const spawnMock = vi.fn(mockSpawn(() => new MockChildProcess(2468)));
 
 			vi.doMock("node:child_process", () => ({
 				execFileSync: vi.fn(() => ""),
@@ -76,7 +100,7 @@ describe("lsp launch", () => {
 		const command = path.join(root, "node_modules", ".bin", "language-server");
 		fs.mkdirSync(path.dirname(command), { recursive: true });
 		fs.writeFileSync(command, "");
-		const spawnMock = vi.fn(() => new MockChildProcess(2468));
+		const spawnMock = vi.fn(mockSpawn(() => new MockChildProcess(2468)));
 		vi.doMock("node:child_process", () => ({
 			execFileSync: vi.fn(() => ""),
 			spawn: spawnMock,
@@ -126,7 +150,7 @@ describe("lsp launch", () => {
 
 		vi.doMock("node:child_process", () => ({
 			execFileSync: vi.fn(() => ""),
-			spawn: vi.fn(() => new MockChildProcess(8642)),
+			spawn: vi.fn(mockSpawn(() => new MockChildProcess(8642))),
 		}));
 		vi.doMock("../../../clients/env-utils.js", () => ({
 			isTestMode: () => false,
@@ -237,7 +261,7 @@ describe("lsp launch", () => {
 						}
 						return "";
 					}),
-					spawn: vi.fn(() => new MockChildProcess(9876)),
+					spawn: vi.fn(mockSpawn(() => new MockChildProcess(9876))),
 				};
 			});
 
@@ -281,7 +305,9 @@ describe("lsp launch", () => {
 			fs.writeFileSync(global, "", { mode: 0o755 });
 			let selected = direct;
 			const spawn = vi.fn(
-				(_command: string, _args: string[]) => new MockChildProcess(9876),
+				mockSpawn(
+					(_command: string, _args: string[]) => new MockChildProcess(9876),
+				),
 			);
 			vi.doMock("node:child_process", () => ({
 				execFileSync: vi.fn(() => selected),
@@ -357,7 +383,9 @@ describe("lsp launch", () => {
 				{ mode: 0o755 },
 			);
 			const spawn = vi.fn(
-				(_command: string, _args: string[]) => new MockChildProcess(9876),
+				mockSpawn(
+					(_command: string, _args: string[]) => new MockChildProcess(9876),
+				),
 			);
 			vi.doMock("node:child_process", () => ({
 				execFileSync: vi.fn(() => shim),
@@ -373,7 +401,17 @@ describe("lsp launch", () => {
 					launchLSP("yaml-language-server", [], { cwd: root }),
 				);
 				expect(launched.pid).toBe(9876);
-				expect(spawn.mock.calls.map(([command]) => command)).toContain(shim);
+				// R14-V1: on win32 a `.cmd` goes through `computeNeedsShell`, so
+				// `spawn` receives the QUOTED command string `"<shim>" ` with
+				// `shell: true` — the command itself still names the shim.
+				expect(
+					spawn.mock.calls.map(([command]) =>
+						command.replace(/^"|"$/g, "").trim(),
+					),
+				).toContain(shim);
+				expect(spawn.mock.calls[0]?.[2]).toMatchObject(
+					process.platform === "win32" ? { shell: true } : {},
+				);
 			} finally {
 				resetProjectTrust();
 			}
@@ -395,7 +433,9 @@ describe("lsp launch", () => {
 			{ mode: 0o755 },
 		);
 		const spawn = vi.fn(
-			(_command: string, _args: string[]) => new MockChildProcess(9876),
+			mockSpawn(
+				(_command: string, _args: string[]) => new MockChildProcess(9876),
+			),
 		);
 		vi.doMock("node:child_process", () => ({
 			execFileSync: vi.fn(() => shim),
@@ -430,6 +470,40 @@ describe("lsp launch", () => {
 		}
 	});
 
+	// #4566 r14 R14-V3: a probe-shaped fake child (stdin "ignore") used to stay
+	// open, so the seam's own 2 s timeout tree-killed a pid this process does
+	// not own and the #2042 kill guard failed the file at shuffle seed 202
+	// (`kill of unowned pid -9876`). `mockSpawn` settles such a fake; this cell
+	// pins the settle through the production seam that tree-kills it.
+	it("settles a probe-shaped child so its timeout never signals a fake pid (#4566 r14)", async () => {
+		const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+		vi.doMock("node:child_process", () => ({
+			execFileSync: vi.fn(() => ""),
+			spawn: vi.fn(mockSpawn(() => new MockChildProcess(9876))),
+		}));
+		try {
+			const { queryProcessTable } =
+				await import("../../../clients/process-snapshot.js");
+			const { terminateScannerChild } =
+				await import("../../../clients/instance-reaper.js");
+			const result = await queryProcessTable(
+				{ fields: ["pid"] },
+				{
+					timeoutMs: 20,
+					onTimeout: (child) =>
+						terminateScannerChild(child, {
+							kind: "resource-sampler-scanner-escalated",
+							timeoutMs: 20,
+						}),
+				},
+			);
+			expect(kill.mock.calls).toEqual([]);
+			expect(result.status).toBe("ok");
+		} finally {
+			kill.mockRestore();
+		}
+	});
+
 	// #4530 r7: finder output is evidence, not command-file acceptance.
 	it("skips a directory returned by the command finder", async () => {
 		const dir = setupTestEnvironment("pi-lens-launch-").tmpDir;
@@ -446,7 +520,9 @@ describe("lsp launch", () => {
 		fs.mkdirSync(invalid);
 		fs.writeFileSync(valid, "#!/bin/sh\n", { mode: 0o755 });
 		const spawnMock = vi.fn(
-			(_command: string, _args: string[]) => new MockChildProcess(9876),
+			mockSpawn(
+				(_command: string, _args: string[]) => new MockChildProcess(9876),
+			),
 		);
 		vi.doMock("node:child_process", () => ({
 			execFileSync: vi.fn(() => `${invalid}\n${valid}\n`),
@@ -482,8 +558,10 @@ describe("lsp launch", () => {
 				else fs.writeFileSync(script, "fixture", { mode: 0o644 });
 				if (kind === "cmd-directory") fs.mkdirSync(cmd);
 				const spawnMock = vi.fn(
-					(_command: string, _args: string[], _options: unknown) =>
-						new MockChildProcess(5678),
+					mockSpawn(
+						(_command: string, _args: string[], _options: unknown) =>
+							new MockChildProcess(5678),
+					),
 				);
 				vi.doMock("node:child_process", () => ({
 					execFileSync: vi.fn(() => ""),
