@@ -402,15 +402,16 @@ describe("lsp launch", () => {
 				);
 				expect(launched.pid).toBe(9876);
 				// R14-V1: on win32 a `.cmd` goes through `computeNeedsShell`, so
-				// `spawn` receives the QUOTED command string `"<shim>" ` — quoted
-				// with a TRAILING SPACE, so trim before unwrapping the quotes —
-				// with `shell: true`. The command itself still names the shim.
-				expect(
-					spawn.mock.calls.map(([command]) =>
-						command.trim().replace(/^"(.*)"$/, "$1"),
-					),
-				).toContain(shim);
-				expect(spawn.mock.calls[0]?.[2]).toMatchObject(
+				// the launcher's own `spawn` receives the QUOTED command string
+				// `"<shim>" ` — quoted with a TRAILING SPACE, so trim before
+				// unwrapping the quotes — with `shell: true`. Other probe spawns
+				// share this mock, so the launcher call is the one naming the shim,
+				// not call[0] (GH 117502987225 measured that).
+				const launchCall = spawn.mock.calls.find(
+					([command]) => command.trim().replace(/^"(.*)"$/, "$1") === shim,
+				);
+				expect(launchCall, "the shim is what was spawned").toBeDefined();
+				expect(launchCall?.[2]).toMatchObject(
 					process.platform === "win32" ? { shell: true } : {},
 				);
 			} finally {
