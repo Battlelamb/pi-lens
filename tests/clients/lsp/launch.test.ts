@@ -242,6 +242,69 @@ describe("lsp launch", () => {
 		},
 	);
 
+	it.each(["unknown", "untrusted", "trusted"] as const)(
+		"classifies targets independently of %s trust (#4566 r13)",
+		async (trust) => {
+			// #4566: outside spellings and npm shims must obey root ownership too.
+			const dir = setupTestEnvironment("pi-lens-launch-").tmpDir;
+			const root = path.join(dir, "project");
+			fs.mkdirSync(root);
+			const script = path.join(root, "cli.js");
+			fs.writeFileSync(script, "");
+			const direct = path.join(root, "node_modules", ".bin", "direct.exe");
+			fs.mkdirSync(path.dirname(direct), { recursive: true });
+			fs.writeFileSync(direct, "", { mode: 0o755 });
+			const link = path.join(dir, "link.exe");
+			fs.symlinkSync(direct, link);
+			const venv = path.join(root, ".venv", "bin", "server.exe");
+			fs.mkdirSync(path.dirname(venv), { recursive: true });
+			fs.writeFileSync(venv, "", { mode: 0o755 });
+			const venvLink = path.join(dir, "venv.exe");
+			fs.symlinkSync(venv, venvLink);
+			const cmd = path.join(dir, "shim.cmd");
+			const ps1 = path.join(dir, "shim.ps1");
+			fs.writeFileSync(cmd, '@"%dp0%/project/cli.js"', { mode: 0o755 });
+			fs.writeFileSync(ps1, '"$basedir/project/cli.js"', { mode: 0o755 });
+			const global = path.join(dir, "global.exe");
+			fs.writeFileSync(global, "", { mode: 0o755 });
+			let selected = direct;
+			const spawn = vi.fn(() => new MockChildProcess(9876));
+			vi.doMock("node:child_process", () => ({
+				execFileSync: vi.fn(() => selected),
+				spawn,
+			}));
+			const { launchLSP, withLspProjectCodePermission } =
+				await import("../../../clients/lsp/launch.js");
+			const { setProjectTrustState, resetProjectTrust } =
+				await import("../../../clients/project-trust.js");
+			setProjectTrustState(trust);
+			try {
+				for (const allowed of [false, true]) {
+					for (const target of [direct, link, venvLink, cmd, ps1, global]) {
+						selected = target;
+						spawn.mockClear();
+						const call = withLspProjectCodePermission(allowed, () =>
+							launchLSP("r13-server", [], { cwd: root }),
+						);
+						if (target === global || (trust === "trusted" && allowed)) {
+							await expect(
+								call,
+								`${trust}/${allowed}/${target}`,
+							).resolves.toHaveProperty("pid", 9876);
+						} else {
+							await expect(
+								call,
+								`${trust}/${allowed}/${target}`,
+							).rejects.toMatchObject({ kind: "trust-refused" });
+						}
+					}
+				}
+			} finally {
+				resetProjectTrust();
+			}
+		},
+	);
+
 	// #4530 r7: finder output is evidence, not command-file acceptance.
 	it("skips a directory returned by the command finder", async () => {
 		const dir = setupTestEnvironment("pi-lens-launch-").tmpDir;

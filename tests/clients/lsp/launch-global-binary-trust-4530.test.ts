@@ -21,6 +21,7 @@ import {
 import {
 	type LSPProcess,
 	launchLSP,
+	withLspProjectCodePermission,
 	stopLSP,
 } from "../../../clients/lsp/launch.js";
 import { resolveAndLaunch } from "../../../clients/lsp/server.js";
@@ -83,6 +84,9 @@ async function launch(
 }
 
 beforeEach(() => {
+	// #4566 r13: TMPDIR may live inside the checkout; sibling global fixtures
+	// must be outside the session root as well as the served project root.
+	process.chdir(tempDir("pi-lens-4530-session-"));
 	delete process.env.npm_config_prefix;
 	resetProjectTrust();
 	resetDegradationLedger();
@@ -158,6 +162,47 @@ describe.skipIf(process.platform === "win32")(
 			expect(project.ran()).toBe(false);
 		});
 
+		it.each(["node_modules/.bin", ".venv/bin"])(
+			"refuses a trusted adopted root through an outside link into %s (#4566 r13)",
+			async (targetDir) => {
+				// #4566: session trust must not bypass adopted-root ownership.
+				const project = makeProject();
+				const outside = tempDir("pi-lens-r13-link-");
+				fs.symlinkSync(
+					plant(path.join(project.root, targetDir, SERVER), project.marker),
+					path.join(outside, SERVER),
+				);
+				process.env.PATH = [outside, originalPath].join(path.delimiter);
+				setProjectTrustState("trusted");
+				const result = await withLspProjectCodePermission(false, () =>
+					launch(SERVER, project.root),
+				);
+				expect(result).toBeInstanceOf(SpawnFailureError);
+				expect((result as SpawnFailureError).kind).toBe("trust-refused");
+				expect(project.ran()).toBe(false);
+				expect(
+					getDegradationSummary()
+						.filter((row) => row.kind === "lsp-registry-decision")
+						.flatMap((row) => row.latestReasons),
+				).toEqual([
+					expect.objectContaining({
+						subject: expect.stringContaining("project-local-binary:"),
+						reason: expect.stringContaining(
+							"requires trusted session ownership",
+						),
+					}),
+				]);
+				await expect(
+					withLspProjectCodePermission(false, () =>
+						resolveAndLaunch(
+							{ candidates: [SERVER], args: ["--stdio"], cwd: project.root },
+							false,
+						),
+					),
+				).rejects.toMatchObject({ kind: "trust-refused" });
+			},
+		);
+
 		it.each(["node_modules/.bin", "bin", "node_modules/pkg/bin", "."])(
 			"never launches a server whose real target is inside project %s",
 			async (targetDir) => {
@@ -221,7 +266,10 @@ describe.skipIf(process.platform === "win32")(
 			process.env.PATH = [direnvBin, originalPath].join(path.delimiter);
 			setProjectTrustState("trusted");
 
-			const result = await launch(SERVER, project.root);
+			// #4566 r13: a trusted project also needs session ownership.
+			const result = await withLspProjectCodePermission(true, () =>
+				launch(SERVER, project.root),
+			);
 
 			expect(result).not.toBeInstanceOf(Error);
 			expect(project.ran()).toBe(true);
@@ -231,33 +279,42 @@ describe.skipIf(process.platform === "win32")(
 		// project-reaching. Resolving the unresolved name against the project made
 		// every uninstalled server a trust refusal, which also skipped pi-lens's own
 		// managed install. Recurrence guarded: an absence reported as a refusal.
-		it("reports an uninstalled bare server name as tool-not-found, not a trust refusal", async () => {
-			const project = makeProject();
-			// The served root is the session's own root, so resolving the bare name
-			// against `process.cwd()` lands inside the project.
-			process.chdir(project.root);
-			setProjectTrustState("unknown");
+		it.each(["unknown", "untrusted", "trusted"] as const)(
+			"reports an uninstalled bare server name as tool-not-found under %s",
+			async (trust) => {
+				const project = makeProject();
+				// The served root is the session's own root, so resolving the bare name
+				// against `process.cwd()` lands inside the project.
+				process.chdir(project.root);
+				setProjectTrustState(trust);
 
-			const result = await launch(MISSING_SERVER, project.root);
+				const result = await withLspProjectCodePermission(false, () =>
+					launch(MISSING_SERVER, project.root),
+				);
+				const ownedResult = await withLspProjectCodePermission(true, () =>
+					launch(MISSING_SERVER, project.root),
+				);
+				expect(ownedResult).toMatchObject({ kind: "tool-not-found" });
 
-			expect(result).toBeInstanceOf(SpawnFailureError);
-			expect((result as SpawnFailureError).kind).toBe("tool-not-found");
-			// The resolver's turn at a missing server, not the launcher's refusal:
-			// no trust row, and no throw out of the production launch route.
-			expect(
-				getDegradationSummary().filter(
-					(group) => group.kind === "lsp-registry-decision",
-				),
-			).toEqual([]);
-			const resolved = await resolveAndLaunch(
-				{
-					candidates: [MISSING_SERVER],
-					args: ["--stdio"],
-					cwd: project.root,
-				},
-				false,
-			);
-			expect(resolved).toBeUndefined();
-		});
+				expect(result).toBeInstanceOf(SpawnFailureError);
+				expect((result as SpawnFailureError).kind).toBe("tool-not-found");
+				// The resolver's turn at a missing server, not the launcher's refusal:
+				// no trust row, and no throw out of the production launch route.
+				expect(
+					getDegradationSummary().filter(
+						(group) => group.kind === "lsp-registry-decision",
+					),
+				).toEqual([]);
+				const resolved = await resolveAndLaunch(
+					{
+						candidates: [MISSING_SERVER],
+						args: ["--stdio"],
+						cwd: project.root,
+					},
+					false,
+				);
+				expect(resolved).toBeUndefined();
+			},
+		);
 	},
 );

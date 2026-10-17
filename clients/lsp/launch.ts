@@ -874,7 +874,7 @@ export async function launchLSP(
 			!command.includes(path.sep) &&
 			!command.includes("/") &&
 			spawnCommand !== command &&
-			commandResolvesIntoProject(spawnCommand, cwd))
+			commandResolvesIntoProject(spawnCommand, cwd, true))
 	) {
 		refuseUntrustedLspExecution({
 			kind: "project-local-binary",

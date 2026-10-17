@@ -2326,6 +2326,16 @@
 					"value": "TRUE",
 					"test": "tests/clients/global-binary-trust-4530.test.ts",
 					"title": "isolates availability by the caller root (#4566 F2)"
+				},
+				"SharedVerdict": {
+					"value": "TRUE",
+					"test": "tests/clients/package-manager-availability-latch.test.ts",
+					"title": "keeps transient details for a flight joiner after latch eviction (#4566 r13)"
+				},
+				"IndependentClassification": {
+					"value": "TRUE",
+					"test": "tests/clients/lsp/launch.test.ts",
+					"title": "classifies targets independently of %s trust (#4566 r13)"
 				}
 			}
 		}

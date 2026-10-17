@@ -21,6 +21,8 @@ import * as path from "node:path";
 import { resolve as resolvePath } from "node:path";
 import {
 	type AvailabilityLatch,
+	type AvailabilityOutcome,
+	type AvailabilityCause,
 	classifyProbeFailure,
 	createAvailabilityLatch,
 	isTransientDecision,
@@ -187,7 +189,11 @@ async function probeAvailability(
 	pm: NodePackageManager,
 	key: string,
 	cwd: string,
-): Promise<boolean> {
+): Promise<{
+	available: boolean;
+	outcome: AvailabilityOutcome;
+	cause: AvailabilityCause;
+}> {
 	const latch = getLatch(key);
 	const startedAt = Date.now();
 	const finder = onWindows() ? "where" : "which";
@@ -219,7 +225,7 @@ async function probeAvailability(
 			budgetMs: PROBE_TIMEOUT_MS,
 			classifiedBy: "probe",
 		});
-		return true;
+		return { available: true, outcome: "success", cause: "ok" };
 	}
 
 	const { outcome, cause, evidence } = classifyProbeFailure(result, {
@@ -242,7 +248,7 @@ async function probeAvailability(
 		classifiedBy: "probe",
 		evidence,
 	});
-	return false;
+	return { available: false, outcome, cause };
 }
 
 /**
@@ -283,7 +289,11 @@ function isAvailable(
 	const shared = packageManagerProbeFlights.run(key, () =>
 		probeAvailability(pm, key, cwd),
 	);
-	return shared.promise.then(reportIfTransient);
+	return shared.promise.then(({ available, outcome }) => {
+		// #4566: a joiner's latch may have been evicted while this flight ran.
+		if (isTransientDecision({ outcome })) onTransient?.();
+		return available;
+	});
 }
 
 /**
@@ -687,13 +697,16 @@ export function commandSearchReachesProject(cwd: string): boolean {
  * outside PATH entry) can hold a link into it — an npm-linked language server
  * is the ordinary case — and the resolver follows that link when it spawns.
  * The target is what runs, so the target is what the trust gate judges
- * (#4566 round 9).
+ * (#4566 round 9). Launch admission opts into trust-independent classification
+ * because session trust does not grant ownership of an adopted root (#4566 r13).
  */
 export function commandResolvesIntoProject(
 	resolvedCommand: string,
 	cwd: string = process.cwd(),
+	classifyRegardlessOfTrust = false,
 ): boolean {
-	if (getProjectTrustState() === "trusted") return false;
+	if (!classifyRegardlessOfTrust && getProjectTrustState() === "trusted")
+		return false;
 	const target = normalizeFilePath(realpathOrResolve(resolvedCommand));
 	const reaches = projectReach(cwd);
 	if (reaches(target)) return true;
