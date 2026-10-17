@@ -246,7 +246,15 @@ describe("lsp launch", () => {
 	it("skips a directory returned by the command finder", async () => {
 		const dir = setupTestEnvironment("pi-lens-launch-").tmpDir;
 		const invalid = path.join(dir, "directory");
-		const valid = path.join(dir, "valid");
+		// Windows shell-wraps an extensionless command (`computeNeedsShell`), so a
+		// spawn there receives a quoted command string instead of the path. The
+		// fixture carries a PATHEXT executable suffix so the assertion below
+		// observes the selected path itself. `.cmd` would enter the script-target
+		// check instead, and its target cannot be parsed under unknown trust.
+		const valid = path.join(
+			dir,
+			process.platform === "win32" ? "valid.exe" : "valid",
+		);
 		fs.mkdirSync(invalid);
 		fs.writeFileSync(valid, "#!/bin/sh\n", { mode: 0o755 });
 		const spawnMock = vi.fn(
