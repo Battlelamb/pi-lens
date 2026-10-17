@@ -254,6 +254,10 @@ describe("lsp launch", () => {
 		"classifies targets independently of %s trust (#4566 r13)",
 		async (trust) => {
 			// #4566: outside spellings and npm shims must obey root ownership too.
+			// #4566 r14: the project-path input is defence in depth. Under unknown
+			// or untrusted trust the scoped PATH drops that entry before the finder
+			// runs, so the launch route reports tool-not-found and the classifier
+			// never sees a project path; this cell pins the classifier itself.
 			const dir = setupTestEnvironment("pi-lens-launch-").tmpDir;
 			const root = path.join(dir, "project");
 			fs.mkdirSync(root);
