@@ -20,9 +20,10 @@ import path from "node:path";
 import { isTestMode } from "../env-utils.js";
 import { getGlobalPiLensDir } from "../file-utils.js";
 import { getGlobalPiLensLogDir } from "../probe-home-state.js";
-import { isFullyQualified, realpathOrResolve } from "../path-utils.js";
+import { isFullyQualified } from "../path-utils.js";
 import {
 	findGlobalBinary,
+	commandResolvesIntoProject,
 	isProjectLocalBinPath,
 	setTrustScopedPath,
 	trustScopedPath,
@@ -845,7 +846,7 @@ export async function launchLSP(
 		!command.includes(path.sep) &&
 		!command.includes("/")
 	) {
-		const globalBinPath = await findGlobalBinary(command);
+		const globalBinPath = await findGlobalBinary(command, ".cmd", cwd);
 		if (globalBinPath) {
 			spawnCommand = globalBinPath;
 			// Recompute needsShell for the resolved global path
@@ -865,7 +866,10 @@ export async function launchLSP(
 	// registry's project-executable gate judges that one.
 	if (
 		isProjectLocalLspBinary(spawnCommand, cwd) ||
-		isProjectLocalLspBinary(realpathOrResolve(spawnCommand), cwd)
+		(!isFullyQualified(command) &&
+			!command.includes(path.sep) &&
+			!command.includes("/") &&
+			commandResolvesIntoProject(spawnCommand, cwd))
 	) {
 		refuseUntrustedLspExecution({
 			kind: "project-local-binary",
@@ -923,7 +927,7 @@ export async function launchLSP(
 			!command.includes(path.sep) &&
 			!command.includes("/")
 		) {
-			const globalBinPath = await findGlobalBinary(command);
+			const globalBinPath = await findGlobalBinary(command, ".cmd", cwd);
 			if (globalBinPath && globalBinPath !== spawnCommand) {
 				// Recompute needsShell for the resolved global path
 				const needsShellGlobal = computeNeedsShell(globalBinPath);

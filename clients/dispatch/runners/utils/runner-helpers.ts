@@ -2394,7 +2394,7 @@ export async function resolveLocalFirstAsync(
 	//    file lookup, so it finds tools installed via `pnpm add -g` / `bun add -g`
 	//    (whose bin dirs are often off PATH) and survives PATH staleness after an
 	//    `install -g`. No spawn.
-	const globalBin = await findGlobalBinary(toolName, windowsExt);
+	const globalBin = await findGlobalBinary(toolName, windowsExt, cwd);
 	if (globalBin) return { cmd: globalBin, args: [] };
 
 	// 3. Global PATH (already installed system-wide, on PATH)

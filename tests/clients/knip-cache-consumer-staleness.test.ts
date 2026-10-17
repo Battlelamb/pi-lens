@@ -6,10 +6,7 @@ import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { getProjectDataDir } from "../../clients/file-utils.js";
 import { KnipClient } from "../../clients/knip-client.js";
-import {
-	resetProjectTrust,
-	setProjectTrustState,
-} from "../../clients/project-trust.js";
+import { resetProjectTrust } from "../../clients/project-trust.js";
 import { setupTestEnvironment } from "./test-utils.js";
 
 // End-to-end proof for #1630 against the real knip binary. knip's glob cache
@@ -82,13 +79,10 @@ describe("knip cache consumer-import staleness (#1630)", () => {
 		async () => {
 			const { tmpDir, cleanup } = setupTestEnvironment("pi-lens-knip-1630-");
 			const originalPath = process.env.PATH;
-			// knip is a project-local binary, so pi-lens runs it only for a trusted
-			// project (#4530), and a Vitest process never adopts a host answer, so
-			// trust is `unknown` here. Without this plant the checkout's own knip is
-			// refused and the run reads "Knip not available" — which is what CI
-			// reported while a dev box passed through the managed install above
-			// (#4566 CI red). Plant the trust the checkout has on a dev box.
-			setProjectTrustState("trusted");
+			// #4566 F6: the analyzed fixture is untrusted; the checkout's
+			// devDependency is outside that fixture and remains usable.
+			const originalCwd = process.cwd();
+			process.chdir(tmpDir);
 			try {
 				if (knipBinDir) {
 					process.env.PATH = `${knipBinDir}${path.delimiter}${originalPath ?? ""}`;
@@ -154,6 +148,7 @@ describe("knip cache consumer-import staleness (#1630)", () => {
 				);
 			} finally {
 				process.env.PATH = originalPath;
+				process.chdir(originalCwd);
 				resetProjectTrust();
 				cleanup();
 			}

@@ -524,11 +524,6 @@ describe("#2981 long-lived containers are bounded or admitted", () => {
 		"clients/lsp/server.ts#directLspCommandUnavailableUntil:831316db",
 		"clients/opaque-mutation-scan.ts#getOpaqueBaselineStore:feff1538",
 		"clients/opaque-mutation-scan.ts#isGitWorktree:97337298",
-		// #4566 round 9: the availability latch is keyed by the trust scope (two
-		// values) and the package manager (four), so the whole population is
-		// eight entries and no file, path or user value can reach a key.
-		"clients/package-manager.ts#availabilityKey:4274c0fe",
-		"clients/package-manager.ts#updateArgs:e94f9156",
 		"clients/package-root.ts#1f3e8efd",
 		"clients/project-lens-config.ts#configCache:77a8d572",
 		"clients/project-report.ts#computeDeadWeight:7e342b62",

@@ -1033,7 +1033,7 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/lsp/language.ts": 3,
 		// 30 -> 31 (#4248): the project-local binary refusal records the
 		// resolved command basename through the existing path vocabulary.
-		"clients/lsp/launch.ts": 32,
+		"clients/lsp/launch.ts": 33,
 		"clients/lsp/lombok.ts": 14,
 		// #4299: 121 -> 124; OS path namespace calls for canonical compiler
 		// validation replace the wrapper-relative guess. No path-key owner changes.
@@ -1075,7 +1075,7 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		// `path.delimiter`.
 		// 25 -> 26 (#4566 r9): the shared search-path join defaults its
 		// separator to `path.delimiter`.
-		"clients/package-manager.ts": 26,
+		"clients/package-manager.ts": 29,
 		"clients/package-root.ts": 5,
 		"clients/path-keyed-map.ts": 11,
 		// 30 -> 34: findNearestMarkerRootDetailed (#3691) adds its own marker/root
@@ -1105,7 +1105,7 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		// 18 -> 22 (#3871 r2, r3): ambient-environment containment uses four
 		// path operations at the shared Python resolver seam; r3 restored the
 		// `path.isAbsolute` leg that rejects another Windows drive (V1).
-		"clients/python-environment.ts": 22,
+		"clients/python-environment.ts": 21,
 		"clients/read-guard-logger.ts": 3,
 		"clients/recent-touches.ts": 5,
 		"clients/reverse-deps.ts": 8,

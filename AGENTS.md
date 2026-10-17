@@ -822,6 +822,13 @@ file-scoped worklist and receives no project-wide scanner output.
   PATH entries that reach the project are dropped and recorded once each, the
   refusal notice is emitted once per session, and a global dir inside the
   project is skipped.
+  Discovered commands are judged by their executable target anywhere in the
+  caller's explicit project tree, including npm Windows shim script targets;
+  availability probes, global-dir queries, and their bounded cache keys carry
+  that same root. POSIX reads and writes only `PATH`; Windows alone folds key
+  casing. `tests/clients/global-binary-trust-4530.test.ts` and
+  `tests/clients/lsp/launch-global-binary-trust-4530.test.ts` pin these rules
+  (round 10).
 - Under pi, project trust is consumed through `isProjectTrusted`; pi-lens never
   registers the host's trust-answer handler. `compileLspRegistry` is the one admission
   seam for LSP executable fields: global config and built-ins remain allowed,

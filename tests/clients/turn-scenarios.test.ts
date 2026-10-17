@@ -33,10 +33,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { KnipClient } from "../../clients/knip-client.js";
-import {
-	resetProjectTrust,
-	setProjectTrustState,
-} from "../../clients/project-trust.js";
+import { resetProjectTrust } from "../../clients/project-trust.js";
 import {
 	defineTurnScenario,
 	runTurnScenario,
@@ -171,13 +168,10 @@ const knipStaleCache = defineTurnScenario({
 		if (knipBinDir) {
 			process.env.PATH = `${knipBinDir}${path.delimiter}${originalPath ?? ""}`;
 		}
-		// knip is a project-local binary, so pi-lens runs it only for a trusted
-		// project (#4530). A dev box reaches this scenario through the real
-		// home's managed install above; CI has neither that install nor a pi
-		// trust record, and the checkout's own `node_modules/.bin` is the
-		// project, so the run reads "Knip not available" (#4566 CI red). Plant
-		// the trust the checkout has on a dev box.
-		setProjectTrustState("trusted");
+		// #4566 F6: keep unknown trust on the fixture; the test toolchain
+		// belongs to the checkout outside it.
+		const originalCwd = process.cwd();
+		process.chdir(h.cwd);
 		try {
 			h.write(
 				"package.json",
@@ -241,6 +235,7 @@ const knipStaleCache = defineTurnScenario({
 			expect(view.text).not.toContain("assertSafeForCmdShell");
 		} finally {
 			process.env.PATH = originalPath;
+			process.chdir(originalCwd);
 			resetProjectTrust();
 		}
 	},

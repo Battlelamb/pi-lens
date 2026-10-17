@@ -14,7 +14,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resetDegradationLedger } from "../../../clients/degradation-ledger.js";
+import {
+	getDegradationSummary,
+	resetDegradationLedger,
+} from "../../../clients/degradation-ledger.js";
 import {
 	type LSPProcess,
 	launchLSP,
@@ -139,36 +142,72 @@ describe.skipIf(process.platform === "win32")(
 			);
 			process.env.PATH = [
 				path.join(project.root, "node_modules", ".bin"),
+				outside,
 				path.dirname(process.execPath),
 				originalPath,
 			].join(path.delimiter);
 			setProjectTrustState("unknown");
 
-			const result = await launch(server, project.root);
+			const result = await launch(SERVER, project.root);
 
 			expect(result).not.toBeInstanceOf(Error);
 			expect(project.ran()).toBe(false);
 		});
 
-		it("never launches a server whose real target is inside the project", async () => {
+		it.each(["node_modules/.bin", "bin", "node_modules/pkg/bin", "."])(
+			"never launches a server whose real target is inside project %s",
+			async (targetDir) => {
+				const project = makeProject();
+				// The project's own dependency tree holds the binary...
+				const planted = plant(
+					path.join(project.root, targetDir, SERVER),
+					project.marker,
+				);
+				// ...and an outside PATH directory holds a link that names it.
+				const outside = tempDir("pi-lens-4530-launch-link-");
+				const link = path.join(outside, SERVER);
+				fs.symlinkSync(planted, link);
+				process.env.PATH = [outside, originalPath].join(path.delimiter);
+				setProjectTrustState("unknown");
+
+				// A bare name, so the launcher resolves it through PATH.
+				const result = await launch(SERVER, project.root);
+
+				expect(result).toBeInstanceOf(Error);
+				expect(project.ran()).toBe(false);
+				const rows = getDegradationSummary()
+					.filter((group) => group.kind === "lsp-registry-decision")
+					.flatMap((group) => group.latestReasons);
+				expect(rows).toEqual([
+					expect.objectContaining({
+						subject: expect.stringContaining("project-local-binary:"),
+						reason: expect.stringContaining(
+							"requires trusted session ownership",
+						),
+					}),
+				]);
+			},
+		);
+
+		it("omits an emptied launch PATH when node is project-local (#4566 F5)", async () => {
 			const project = makeProject();
-			// The project's own dependency tree holds the binary...
-			const planted = plant(
-				path.join(project.root, "node_modules", ".bin", SERVER),
-				project.marker,
-			);
-			// ...and an outside PATH directory holds a link that names it.
-			const outside = tempDir("pi-lens-4530-launch-link-");
-			const link = path.join(outside, SERVER);
-			fs.symlinkSync(planted, link);
-			process.env.PATH = [outside, originalPath].join(path.delimiter);
-			setProjectTrustState("unknown");
-
-			// A bare name, so the launcher resolves it through PATH.
-			const result = await launch(SERVER, project.root);
-
-			expect(result).toBeInstanceOf(Error);
-			expect(project.ran()).toBe(false);
+			const outside = tempDir("pi-lens-4530-empty-launch-");
+			const server = path.join(outside, SERVER);
+			fs.writeFileSync(server, "#!/usr/bin/env pi-lens-4530-runtime\n", {
+				mode: 0o755,
+			});
+			plant(path.join(project.root, "pi-lens-4530-runtime"), project.marker);
+			const savedExecPath = process.execPath;
+			try {
+				process.execPath = path.join(project.root, "bin", "node");
+				process.env.PATH = project.root;
+				setProjectTrustState("unknown");
+				const result = await launch(server, project.root);
+				expect(result).toBeInstanceOf(Error);
+				expect(project.ran()).toBe(false);
+			} finally {
+				process.execPath = savedExecPath;
+			}
 		});
 
 		it("still launches a server from a project PATH entry for a trusted project", async () => {

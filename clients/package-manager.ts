@@ -15,6 +15,7 @@
  */
 
 import * as fs from "node:fs";
+import { BoundedFifoMap } from "./bounded-cache.js";
 import * as os from "node:os";
 import * as path from "node:path";
 import { resolve as resolvePath } from "node:path";
@@ -162,11 +163,11 @@ function trustScope(): "trusted" | "scoped" {
 	return getProjectTrustState() === "trusted" ? "trusted" : "scoped";
 }
 
-function availabilityKey(pm: NodePackageManager): string {
-	return `${trustScope()}:${pm}`;
+function availabilityKey(pm: NodePackageManager, cwd: string): string {
+	return `${trustScope()}:${normalizeFilePath(cwd)}:${pm}`;
 }
 
-const availabilityLatches = new Map<string, AvailabilityLatch>();
+const availabilityLatches = new BoundedFifoMap<string, AvailabilityLatch>(8);
 
 function getLatch(key: string): AvailabilityLatch {
 	let latch = availabilityLatches.get(key);
@@ -185,6 +186,7 @@ function getLatch(key: string): AvailabilityLatch {
 async function probeAvailability(
 	pm: NodePackageManager,
 	key: string,
+	cwd: string,
 ): Promise<boolean> {
 	const latch = getLatch(key);
 	const startedAt = Date.now();
@@ -194,7 +196,7 @@ async function probeAvailability(
 	let hostStallMs: number;
 	try {
 		// #4530: the lookup resolves through the trust-scoped PATH.
-		const env = trustScopedSpawnEnv();
+		const env = trustScopedSpawnEnv(cwd);
 		result = await probeToolAsync(finder, [pm], {
 			timeout: PROBE_TIMEOUT_MS,
 			...(env && { env }),
@@ -260,9 +262,10 @@ async function probeAvailability(
  */
 function isAvailable(
 	pm: NodePackageManager,
+	cwd: string,
 	onTransient?: () => void,
 ): Promise<boolean> {
-	const key = availabilityKey(pm);
+	const key = availabilityKey(pm, cwd);
 	const latch = getLatch(key);
 
 	const reportIfTransient = (result: boolean): boolean => {
@@ -278,7 +281,7 @@ function isAvailable(
 	// A verdict can now expire, so concurrent callers arriving just after a
 	// cooldown must share ONE probe rather than each spawning their own.
 	const shared = packageManagerProbeFlights.run(key, () =>
-		probeAvailability(pm, key),
+		probeAvailability(pm, key, cwd),
 	);
 	return shared.promise.then(reportIfTransient);
 }
@@ -319,11 +322,11 @@ export async function resolveNodePackageManager(
 	cwd: string = process.cwd(),
 ): Promise<NodePackageManager> {
 	const declared = detectNodePackageManager(cwd);
-	if (declared && (await isAvailable(declared))) {
+	if (declared && (await isAvailable(declared, cwd))) {
 		return declared;
 	}
 	for (const pm of PREFERENCE) {
-		if (await isAvailable(pm)) return pm;
+		if (await isAvailable(pm, cwd)) return pm;
 	}
 	return "npm";
 }
@@ -403,15 +406,18 @@ export function updateArgs(
  * map separately, so later callers cannot share the pre-reset probe.
  */
 // Keyed by trust scope too (#4530): a scoped query answers differently.
-const globalBinDirCache = new Map<string, string[]>();
+const globalBinDirCache = new BoundedFifoMap<string, string[]>(8);
 const packageManagerCacheGeneration = createGenerationSource(
 	"package-manager-global-bin",
 );
 const globalBinDirProbeFlights = createAvailabilityProbeFlight<string[]>();
 
 /** Directories where a given manager installs global binaries. */
-async function globalBinDirsFor(pm: NodePackageManager): Promise<string[]> {
-	const key = availabilityKey(pm);
+async function globalBinDirsFor(
+	pm: NodePackageManager,
+	cwd: string,
+): Promise<string[]> {
+	const key = availabilityKey(pm, cwd);
 	const cached = globalBinDirCache.get(key);
 	if (cached) return cached;
 	const generation = packageManagerCacheGeneration.capture();
@@ -419,7 +425,7 @@ async function globalBinDirsFor(pm: NodePackageManager): Promise<string[]> {
 	// Concurrent callers (dispatch runs several tools per edit) must share ONE
 	// probe rather than each spawning their own `npm config get prefix` (#1602).
 	const shared = globalBinDirProbeFlights.run(key, () =>
-		probeGlobalBinDirs(pm, key, generation),
+		probeGlobalBinDirs(pm, key, generation, cwd),
 	);
 	return shared.promise;
 }
@@ -428,6 +434,7 @@ async function probeGlobalBinDirs(
 	pm: NodePackageManager,
 	key: string,
 	generation: GenerationHandle,
+	cwd: string,
 ): Promise<string[]> {
 	if (pm === "bun") {
 		// bun has no per-call query cost — the global bin dir is deterministic.
@@ -448,7 +455,7 @@ async function probeGlobalBinDirs(
 	// #4530: under an untrusted project the query resolves through the
 	// trust-scoped PATH and runs from HOME, so project configuration cannot
 	// redirect a global lookup.
-	const env = trustScopedSpawnEnv();
+	const env = trustScopedSpawnEnv(cwd);
 	const res = await safeSpawnAsync(pmBinary(pm), query, {
 		timeout: 5000,
 		...(env && { env, cwd: os.homedir() }),
@@ -480,18 +487,19 @@ async function probeGlobalBinDirs(
  */
 export async function allAvailableGlobalBinDirs(
 	onTransient?: () => void,
+	cwd: string = process.cwd(),
 ): Promise<string[]> {
 	const dirs: string[] = [];
 	const seen = new Set<string>();
 	for (const pm of PREFERENCE) {
-		if (!(await isAvailable(pm, onTransient))) continue;
-		for (const dir of await globalBinDirsFor(pm)) {
+		if (!(await isAvailable(pm, cwd, onTransient))) continue;
+		for (const dir of await globalBinDirsFor(pm, cwd)) {
 			const normalized = path.resolve(dir);
 			if (seen.has(normalized)) continue;
 			seen.add(normalized);
 			// #4530: a global bin dir that reaches an untrusted project is no
 			// global one.
-			if (trustScopedPath(normalized) !== normalized) continue;
+			if (trustScopedPath(normalized, cwd) !== normalized) continue;
 			dirs.push(normalized);
 		}
 	}
@@ -512,6 +520,7 @@ export async function allAvailableGlobalBinDirs(
 export async function findGlobalBinary(
 	command: string,
 	windowsExt = ".cmd",
+	cwd: string = process.cwd(),
 ): Promise<string | undefined> {
 	const candidates = onWindows()
 		? [...new Set([windowsExt, ".exe", ...getPathExts(process.env), ""])].map(
@@ -519,7 +528,7 @@ export async function findGlobalBinary(
 			)
 		: [command];
 	try {
-		for (const binDir of await allAvailableGlobalBinDirs()) {
+		for (const binDir of await allAvailableGlobalBinDirs(undefined, cwd)) {
 			for (const name of candidates) {
 				const full = path.join(binDir, name);
 				if (!isAcceptedCommandFile(full)) continue;
@@ -527,7 +536,7 @@ export async function findGlobalBinary(
 				// it holds can still be a link into it (an npm-linked language
 				// server, say), and `isAcceptedCommandFile` follows that link. The
 				// trust verdict therefore belongs to the target, not the directory.
-				if (commandResolvesIntoProject(full)) {
+				if (commandResolvesIntoProject(full, cwd)) {
 					refuseGlobalCommandTarget(full);
 					continue;
 				}
@@ -686,7 +695,26 @@ export function commandResolvesIntoProject(
 ): boolean {
 	if (getProjectTrustState() === "trusted") return false;
 	const target = normalizeFilePath(realpathOrResolve(resolvedCommand));
-	return projectReach(cwd)(target);
+	const reaches = projectReach(cwd);
+	if (reaches(target)) return true;
+	// #4566 F3: npm Windows shims are regular files, not symlinks. Their
+	// script is the executable target; unknown script text cannot vouch for it.
+	if (!/\.(?:cmd|ps1)$/i.test(resolvedCommand)) return false;
+	try {
+		const content = fs.readFileSync(resolvedCommand, "utf8");
+		const match =
+			/["'](?:%~dp0|%dp0%|\$basedir)[/\\]([^"'\r\n]+\.(?:mjs|cjs|js))["']/i.exec(
+				content,
+			)?.[1];
+		if (!match) return true;
+		const script = path.resolve(
+			path.dirname(resolvedCommand),
+			match.replace(/[/\\]/g, path.sep),
+		);
+		return reaches(normalizeFilePath(realpathOrResolve(script)));
+	} catch {
+		return true;
+	}
 }
 
 /**
@@ -701,14 +729,14 @@ function refuseGlobalCommandTarget(resolvedCommand: string): void {
 		recordDegradationOnce({
 			kind: "trust-refusal",
 			subject: `global-command-target:${target}`,
-			reason: `global command target inside the project ignored: pi project trust is ${trust}`,
+			reason: `global command target could not be admitted outside the project: pi project trust is ${trust}`,
 		})
 	) {
 		logExtension({
 			subsystem: "project-trust",
 			level: "warn",
 			message:
-				"global command points into the project: mark the project trusted in pi or upgrade pi",
+				"global command target could not be admitted outside the project: mark the project trusted in pi or upgrade pi",
 			metadata: { command: resolvedCommand, target, trust },
 		});
 	}
@@ -807,10 +835,11 @@ export function setTrustScopedPath(
 	cwd: string = process.cwd(),
 ): void {
 	const scoped = trustScopedPath(pathValue, cwd);
-	// Rewrite every spelling the caller already had, and always the one a POSIX
-	// child reads; every one of them is removed when nothing is left.
+	// POSIX has one lookup key. Windows spellings name the same variable.
 	const spellings = new Set(
-		Object.keys(env).filter((key) => key.toLowerCase() === "path"),
+		onWindows()
+			? Object.keys(env).filter((key) => key.toLowerCase() === "path")
+			: ["PATH"],
 	);
 	if (scoped !== "") spellings.add("PATH");
 	for (const key of spellings) {
@@ -830,9 +859,12 @@ export function trustScopedSpawnEnv(
 ): NodeJS.ProcessEnv | undefined {
 	if (getProjectTrustState() === "trusted") return undefined;
 	const env: NodeJS.ProcessEnv = { ...process.env };
-	const spelling = Object.keys(env).find((key) => key.toLowerCase() === "path");
-	// One call rewrites (or removes) every PATH spelling there is; an env with
-	// no PATH spelling at all already inherits the system default search path.
+	const spelling = onWindows()
+		? Object.keys(env).find((key) => key.toLowerCase() === "path")
+		: env.PATH === undefined
+			? undefined
+			: "PATH";
+	// An env without the platform PATH key inherits the system default search path.
 	if (spelling !== undefined) setTrustScopedPath(env, env[spelling] ?? "", cwd);
 	return env;
 }
@@ -1099,6 +1131,6 @@ export async function findNodeToolBinary(
 ): Promise<string | undefined> {
 	return (
 		localBinPath(findLocalBinUpwards(tool, cwd, { windowsExt })) ??
-		(await findGlobalBinary(tool, windowsExt))
+		(await findGlobalBinary(tool, windowsExt, cwd))
 	);
 }

@@ -1176,7 +1176,11 @@ describe("runner-helpers availability checker", () => {
 
 			const resolved = await resolveLocalFirstAsync("prisma", env.tmpDir);
 			expect(resolved).toEqual({ cmd: globalPath, args: [] });
-			expect(findGlobalBinary).toHaveBeenCalledWith("prisma", ".cmd");
+			expect(findGlobalBinary).toHaveBeenCalledWith(
+				"prisma",
+				".cmd",
+				env.tmpDir,
+			);
 			// Found via direct file lookup — the PATH `--version` spawn is skipped.
 			expect(safeSpawnMod.safeSpawnAsync).not.toHaveBeenCalled();
 		} finally {

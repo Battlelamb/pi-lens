@@ -257,7 +257,10 @@ describe("lsp launch", () => {
 			spawn: spawnMock,
 		}));
 		const { launchLSP } = await import("../../../clients/lsp/launch.js");
-		await launchLSP("fixture-server", [], { cwd: dir });
+		// #4566 F1: finder acceptance is exercised outside the untrusted project.
+		const project = path.join(dir, "project");
+		fs.mkdirSync(project);
+		await launchLSP("fixture-server", [], { cwd: project });
 		expect(spawnMock.mock.calls.map(([command]) => command)).toContain(valid);
 		expect(spawnMock.mock.calls.map(([command]) => command)).not.toContain(
 			invalid,

@@ -47,7 +47,10 @@ import {
 import {
 	_resetPackageManagerCache,
 	findGlobalBinary,
+	allAvailableGlobalBinDirs,
 	normalizeSearchPath,
+	commandResolvesIntoProject,
+	findNodeToolBinary,
 	resolveNodePackageManager,
 	trustScopedPath,
 } from "../../clients/package-manager.js";
@@ -773,7 +776,7 @@ describe.skipIf(process.platform === "win32")("round 2 child lookups", () => {
 				response.emit(
 					"data",
 					Buffer.from(
-						String(url).includes("api.github.com")
+						new URL(String(url)).hostname === "api.github.com"
 							? JSON.stringify({
 									tag_name: "v-fixture",
 									assets: [
@@ -930,14 +933,92 @@ describe.skipIf(process.platform === "win32")(
 			fs.mkdirSync(path.dirname(link), { recursive: true });
 			fs.symlinkSync(planted, link);
 			process.env.npm_config_prefix = prefix;
-			process.chdir(project.root);
-
+			// F2: an adopted root differs from the ambient session cwd.
 			setProjectTrustState("unknown");
-			expect(await findGlobalBinary(FIXTURE_TOOL)).toBeUndefined();
+			expect(
+				await findNodeToolBinary(FIXTURE_TOOL, project.root),
+			).toBeUndefined();
+			const { resolveLocalFirstAsync } =
+				await import("../../clients/dispatch/runners/utils/runner-helpers.js");
+			expect(
+				(await resolveLocalFirstAsync(FIXTURE_TOOL, project.root)).cmd,
+			).toBe("npx");
 			expect(trustRows("global-command-target:")).toHaveLength(1);
 
 			setProjectTrustState("trusted");
 			expect(await findGlobalBinary(FIXTURE_TOOL)).toBe(link);
+		});
+
+		it("keeps the POSIX PATH distinct from Path (#4566 G1)", () => {
+			const previous = process.env.Path;
+			const actualPath = process.env.PATH;
+			try {
+				delete process.env.PATH;
+				process.env.Path = "/old/bin";
+				process.env.PATH = "/usr/bin:/bin";
+				setProjectTrustState("unknown");
+				const env = trustScopedSpawnEnv();
+				expect(env?.PATH).toBe("/usr/bin:/bin");
+				expect(env?.Path).toBe("/old/bin");
+			} finally {
+				if (previous === undefined) delete process.env.Path;
+				else process.env.Path = previous;
+				process.env.PATH = actualPath;
+			}
+		});
+
+		it("bounds caller-root availability and global-directory evidence (#4566 F2)", async () => {
+			const { clearLatencyLog, flushLatencyLog, getLatencyLogPath } =
+				await import("../../clients/latency-logger.js");
+			process.env.PI_LENS_TEST_MODE = "0";
+			clearLatencyLog();
+			await flushLatencyLog();
+			const outside = tempDir("pi-lens-4530-cache-bound-");
+			const queries = path.join(outside, "queries");
+			writeScript(
+				path.join(outside, "npm"),
+				`#!/bin/sh\nprintf x >> ${JSON.stringify(queries)}\nprintf '%s\\n' ${JSON.stringify(outside)}\n`,
+			);
+			process.env.PATH = [outside, "/usr/bin", "/bin"].join(path.delimiter);
+			setProjectTrustState("unknown");
+			const roots = Array.from({ length: 9 }, () => makeProject().root);
+			for (const root of roots)
+				await allAvailableGlobalBinDirs(undefined, root);
+			await flushLatencyLog();
+			const beforeQueries = fs.readFileSync(queries, "utf8").length;
+			const records = () =>
+				fs
+					.readFileSync(getLatencyLogPath(), "utf8")
+					.split("\n")
+					.filter(
+						(line) =>
+							line.includes('"phase":"availability_decision"') &&
+							line.includes('"tool":"npm"'),
+					).length;
+			const beforeRecords = records();
+			expect(beforeQueries).toBe(9);
+			expect(beforeRecords).toBe(9);
+			// Root-bearing keys must not turn the previous eight-key domain
+			// into unbounded process state; revisiting an evicted root probes again.
+			await allAvailableGlobalBinDirs(undefined, roots[0]);
+			await flushLatencyLog();
+			expect(fs.readFileSync(queries, "utf8").length).toBe(beforeQueries + 1);
+			expect(records()).toBe(beforeRecords + 1);
+		});
+
+		it("normalizes the Python environment PATH (#4566 F4)", async () => {
+			const { augmentPythonEnvironment } =
+				await import("../../clients/python-environment.js");
+			const env = augmentPythonEnvironment(
+				{ PATH: "/usr/bin:" },
+				{
+					root: "/venv",
+					binDir: "/venv/bin",
+					pythonPath: "/venv/bin/python",
+					source: "virtual-env",
+				},
+			);
+			expect(env.PATH?.split(path.delimiter)).not.toContain("");
 		});
 
 		it("joins a search path without a zero-length entry", () => {
@@ -979,8 +1060,7 @@ describe.skipIf(process.platform === "win32")(
 			process.env.PATH = [project.bin, savedEnv.get("PATH")].join(
 				path.delimiter,
 			);
-			process.chdir(project.root);
-
+			// F2: judge the adopted root, not process.cwd().
 			setProjectTrustState("unknown");
 			expect(await resolveNodePackageManager(project.root)).toBe("npm");
 
@@ -989,5 +1069,61 @@ describe.skipIf(process.platform === "win32")(
 			expect(await resolveNodePackageManager(project.root)).toBe("pnpm");
 			expect(project.ran()).toBe("");
 		});
+	},
+);
+
+it("isolates availability by the caller root (#4566 F2)", async () => {
+	const project = makeProject();
+	const other = makeProject();
+	for (const root of [project.root, other.root]) {
+		fs.writeFileSync(
+			path.join(root, "package.json"),
+			JSON.stringify({ packageManager: "pnpm@9.0.0" }),
+		);
+	}
+	plant(
+		path.join(project.bin, process.platform === "win32" ? "pnpm.cmd" : "pnpm"),
+		project.marker,
+	);
+	process.env.PATH = [project.bin, savedEnv.get("PATH")].join(path.delimiter);
+	setProjectTrustState("unknown");
+	expect(await resolveNodePackageManager(project.root)).toBe("npm");
+	expect(await resolveNodePackageManager(other.root)).toBe("pnpm");
+	expect(await resolveNodePackageManager(project.root)).toBe("npm");
+});
+
+it.each(["cmd", "ps1"])(
+	"judges the script target of an npm %s shim (#4566 F3)",
+	(extension) => {
+		const project = makeProject();
+		const outside = tempDir("pi-lens-shim-");
+		const script = path.join(project.root, "server.js");
+		fs.writeFileSync(script, "");
+		const relative = path.relative(outside, script).replaceAll(path.sep, "\\");
+		const shim = path.join(outside, `server.${extension}`);
+		fs.writeFileSync(
+			shim,
+			extension === "cmd"
+				? `@echo off\n@"%~dp0\\node.exe" "%~dp0\\${relative}" %*\n`
+				: `& "$basedir/node$exe" "$basedir/${relative.replaceAll("\\", "/")}" $args`,
+		);
+		// cmd-shim v6.0.0, npm/cmd-shim@25724bfea794ebec14432278b1a4d223cc158f83:
+		// lib/index.js emits %dp0% and $basedir with these path spellings.
+		setProjectTrustState("unknown");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+		fs.writeFileSync(
+			shim,
+			fs.readFileSync(shim, "utf8").replaceAll("%~dp0", "%dp0%"),
+		);
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+		expect(commandResolvesIntoProject(shim, makeProject().root)).toBe(false);
+		setProjectTrustState("untrusted");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+		fs.writeFileSync(shim, "unrecognised shim");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+		fs.unlinkSync(shim);
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+		setProjectTrustState("trusted");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
 	},
 );
