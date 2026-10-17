@@ -108,9 +108,16 @@ describe("lsp launch", () => {
 		}
 	});
 	it("redacts secrets in crash-adjacent session-start writes", async () => {
-		const tempDir = fs.mkdtempSync(
-			path.join(os.tmpdir(), "pi-lens-launch-log-"),
-		);
+		// #4566 r14: CI shard 2 leaked `pi-lens-launch-log-*` from this fixture.
+		// A raw `mkdtempSync` root is only swept when a sample saw it absent, and
+		// this test doubles both log-dir resolvers, so a queued writer that
+		// recreates the root between the test's removal and the next sample leaves
+		// it for the hygiene owner. A `registered` root (`setupTestEnvironment`) is
+		// removed whenever it still exists at file teardown and on SIGTERM, and this
+		// file's `useTrackedTempDirs("pi-lens-launch-")` afterEach drains the known
+		// writers and removes every matching root again over three ticks.
+		const fixture = setupTestEnvironment("pi-lens-launch-log-");
+		const tempDir = fixture.tmpDir;
 		const token = `ghp_${"a".repeat(36)}`;
 		const command = path.join(
 			tempDir,
@@ -158,7 +165,8 @@ describe("lsp launch", () => {
 			vi.doUnmock("../../../clients/env-utils.js");
 			vi.doUnmock("../../../clients/file-utils.js");
 			vi.doUnmock("../../../clients/probe-home-state.js");
-			removeTempDirSync(tempDir);
+			// Keeps the root tracked so the harness sweep still owns it.
+			fixture.cleanup();
 		}
 	});
 
@@ -268,7 +276,9 @@ describe("lsp launch", () => {
 			const global = path.join(dir, "global.exe");
 			fs.writeFileSync(global, "", { mode: 0o755 });
 			let selected = direct;
-			const spawn = vi.fn(() => new MockChildProcess(9876));
+			const spawn = vi.fn(
+				(_command: string, _args: string[]) => new MockChildProcess(9876),
+			);
 			vi.doMock("node:child_process", () => ({
 				execFileSync: vi.fn(() => selected),
 				spawn,
@@ -304,6 +314,117 @@ describe("lsp launch", () => {
 			}
 		},
 	);
+
+	// #4566 r14 (Greptile r4303887682): an npm `cmd` shim may name an
+	// extensionless launcher script. The shim parser understood only .js/.mjs/.cjs,
+	// so a GLOBAL shim (yaml-language-server's documented wrapper) read as project
+	// code and an adopted root refused it. The target still decides: inside the
+	// project it remains a refusal.
+	it.each(["unknown", "trusted"] as const)(
+		"spawns a global npm shim whose target is an extensionless script under %s trust (#4566 r14)",
+		async (trust) => {
+			const dir = setupTestEnvironment("pi-lens-launch-").tmpDir;
+			const root = path.join(dir, "project");
+			fs.mkdirSync(root);
+			const globalDir = path.join(dir, "global");
+			const target = path.join(
+				globalDir,
+				"yaml-language-server",
+				"bin",
+				"yaml-language-server",
+			);
+			fs.mkdirSync(path.dirname(target), { recursive: true });
+			fs.writeFileSync(target, "#!/usr/bin/env node\n", { mode: 0o755 });
+			const shim = path.join(globalDir, "yaml-language-server.cmd");
+			// npm cmd-shim v6 spelling, `%dp0%` arm: the node copy is named FIRST
+			// (the `IF EXIST` line), so a parser that takes the first quoted spelling
+			// judges `node.exe` instead of the script.
+			fs.writeFileSync(
+				shim,
+				[
+					"@ECHO off",
+					'IF EXIST "%dp0%\\node.exe" (',
+					'  SET "_prog=%dp0%\\node.exe"',
+					") ELSE (",
+					'  SET "_prog=node"',
+					")",
+					'endLocal & "%_prog%"  "%dp0%\\..\\yaml-language-server\\bin\\yaml-language-server" %*',
+				].join("\r\n"),
+				{ mode: 0o755 },
+			);
+			const spawn = vi.fn(
+				(_command: string, _args: string[]) => new MockChildProcess(9876),
+			);
+			vi.doMock("node:child_process", () => ({
+				execFileSync: vi.fn(() => shim),
+				spawn,
+			}));
+			const { launchLSP, withLspProjectCodePermission } =
+				await import("../../../clients/lsp/launch.js");
+			const { setProjectTrustState, resetProjectTrust } =
+				await import("../../../clients/project-trust.js");
+			setProjectTrustState(trust);
+			try {
+				const launched = await withLspProjectCodePermission(false, () =>
+					launchLSP("yaml-language-server", [], { cwd: root }),
+				);
+				expect(launched.pid).toBe(9876);
+				expect(spawn.mock.calls.map(([command]) => command)).toContain(shim);
+			} finally {
+				resetProjectTrust();
+			}
+		},
+	);
+
+	it("refuses a global npm shim whose extensionless target is the project's script (#4566 r14)", async () => {
+		const dir = setupTestEnvironment("pi-lens-launch-").tmpDir;
+		const root = path.join(dir, "project");
+		const target = path.join(root, "bin", "yaml-language-server");
+		fs.mkdirSync(path.dirname(target), { recursive: true });
+		fs.writeFileSync(target, "#!/usr/bin/env node\n", { mode: 0o755 });
+		const globalDir = path.join(dir, "global");
+		fs.mkdirSync(globalDir);
+		const shim = path.join(globalDir, "yaml-language-server.cmd");
+		fs.writeFileSync(
+			shim,
+			'endLocal & "%_prog%"  "%dp0%\\..\\project\\bin\\yaml-language-server" %*',
+			{ mode: 0o755 },
+		);
+		const spawn = vi.fn(
+			(_command: string, _args: string[]) => new MockChildProcess(9876),
+		);
+		vi.doMock("node:child_process", () => ({
+			execFileSync: vi.fn(() => shim),
+			spawn,
+		}));
+		const { launchLSP, withLspProjectCodePermission } =
+			await import("../../../clients/lsp/launch.js");
+		const { setProjectTrustState, resetProjectTrust } =
+			await import("../../../clients/project-trust.js");
+		const { getDegradationSummary, resetDegradationLedger } =
+			await import("../../../clients/degradation-ledger.js");
+		setProjectTrustState("unknown");
+		resetDegradationLedger();
+		try {
+			await expect(
+				withLspProjectCodePermission(false, () =>
+					launchLSP("yaml-language-server", [], { cwd: root }),
+				),
+			).rejects.toMatchObject({ kind: "trust-refused" });
+			expect(spawn.mock.calls.map(([command]) => command)).not.toContain(shim);
+			expect(
+				getDegradationSummary()
+					.filter((row) => row.kind === "lsp-registry-decision")
+					.flatMap((row) => row.latestReasons),
+			).toEqual([
+				expect.objectContaining({
+					subject: expect.stringContaining("project-local-binary:"),
+				}),
+			]);
+		} finally {
+			resetProjectTrust();
+		}
+	});
 
 	// #4530 r7: finder output is evidence, not command-file acceptance.
 	it("skips a directory returned by the command finder", async () => {

@@ -707,24 +707,50 @@ export function commandResolvesIntoProject(
 ): boolean {
 	if (!classifyRegardlessOfTrust && getProjectTrustState() === "trusted")
 		return false;
-	const target = normalizeFilePath(realpathOrResolve(resolvedCommand));
+	// #4566 r14: a discovered spelling can be relative (`which` echoes the PATH
+	// entry it searched with), and the child resolves it against ITS cwd. Judging
+	// it against `process.cwd()` measured the session's file while the spawn ran
+	// the launch cwd's, so a relative project PATH entry executed unowned code
+	// (R13-V1). The target that runs is the one this must judge.
+	const commandPath = path.isAbsolute(resolvedCommand)
+		? resolvedCommand
+		: path.resolve(cwd, resolvedCommand);
+	const target = normalizeFilePath(realpathOrResolve(commandPath));
 	const reaches = projectReach(cwd);
 	if (reaches(target)) return true;
 	// #4566 F3: npm Windows shims are regular files, not symlinks. Their
 	// script is the executable target; unknown script text cannot vouch for it.
-	if (!/\.(?:cmd|ps1)$/i.test(resolvedCommand)) return false;
+	// #4566 r14: npm emits an extensionless launcher for a bin with no suffix
+	// (yaml-language-server's documented wrapper), so an extensionless basename is
+	// a supported target too. Every other spelling — the shim's own `node.exe`
+	// copy, a `.dll`, a stray `$exe` variable — is not a target this parser can
+	// vouch for, and a shim with no supported target stays refused.
+	if (!/\.(?:cmd|ps1)$/i.test(commandPath)) return false;
 	try {
-		const content = fs.readFileSync(resolvedCommand, "utf8");
-		const match =
-			/["'](?:%~dp0|%dp0%|\$basedir)[/\\]([^"'\r\n]+\.(?:mjs|cjs|js))["']/i.exec(
-				content,
-			)?.[1];
-		if (!match) return true;
-		const script = path.resolve(
-			path.dirname(resolvedCommand),
-			match.replace(/[/\\]/g, path.sep),
+		const content = fs.readFileSync(commandPath, "utf8");
+		const scripts: string[] = [];
+		for (const match of content.matchAll(
+			/["'](?:%~dp0|%dp0%|\$basedir)[/\\]([^"'\r\n]+)["']/gi,
+		)) {
+			const spelling = match[1];
+			if (typeof spelling !== "string") continue;
+			const base = spelling.split(/[/\\]/).pop() ?? "";
+			if (/\.(?:mjs|cjs|js)$/i.test(base) || !base.includes("."))
+				scripts.push(spelling);
+		}
+		if (scripts.length === 0) return true;
+		return scripts.some((spelling) =>
+			reaches(
+				normalizeFilePath(
+					realpathOrResolve(
+						path.resolve(
+							path.dirname(commandPath),
+							spelling.replace(/[/\\]/g, path.sep),
+						),
+					),
+				),
+			),
 		);
-		return reaches(normalizeFilePath(realpathOrResolve(script)));
 	} catch {
 		return true;
 	}

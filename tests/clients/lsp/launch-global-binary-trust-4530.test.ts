@@ -203,6 +203,48 @@ describe.skipIf(process.platform === "win32")(
 			},
 		);
 
+		it("refuses a relative PATH entry that resolves into the adopted root (#4566 r14)", async () => {
+			// R13-V1: `which` echoes the relative spelling it searched with, so the
+			// judge must resolve that spelling against the LAUNCH cwd (the root the
+			// child gets), not the session's cwd. Judging the session spelling let a
+			// trusted, unowned launch run the adopted root's own binary.
+			const project = makeProject();
+			const session = tempDir("pi-lens-4530-relative-session-");
+			plant(path.join(project.root, "bin", SERVER), project.marker);
+			const benign = path.join(session, "bin", SERVER);
+			fs.mkdirSync(path.dirname(benign), { recursive: true });
+			fs.writeFileSync(benign, "#!/bin/sh\nexec sleep 5\n", { mode: 0o755 });
+			process.chdir(session);
+			process.env.PATH = ["bin", originalPath].join(path.delimiter);
+			setProjectTrustState("trusted");
+
+			const result = await withLspProjectCodePermission(false, () =>
+				launch(SERVER, project.root),
+			);
+
+			expect(result).toBeInstanceOf(SpawnFailureError);
+			expect((result as SpawnFailureError).kind).toBe("trust-refused");
+			expect(project.ran()).toBe(false);
+			await expect(
+				withLspProjectCodePermission(false, () =>
+					resolveAndLaunch(
+						{ candidates: [SERVER], args: ["--stdio"], cwd: project.root },
+						false,
+					),
+				),
+			).rejects.toMatchObject({ kind: "trust-refused" });
+			expect(project.ran()).toBe(false);
+			expect(
+				getDegradationSummary()
+					.filter((row) => row.kind === "lsp-registry-decision")
+					.flatMap((row) => row.latestReasons),
+			).toEqual([
+				expect.objectContaining({
+					subject: expect.stringContaining("project-local-binary:"),
+				}),
+			]);
+		});
+
 		it.each(["node_modules/.bin", "bin", "node_modules/pkg/bin", "."])(
 			"never launches a server whose real target is inside project %s",
 			async (targetDir) => {

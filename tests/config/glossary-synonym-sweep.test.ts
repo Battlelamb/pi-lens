@@ -1075,7 +1075,10 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		// `path.delimiter`.
 		// 25 -> 26 (#4566 r9): the shared search-path join defaults its
 		// separator to `path.delimiter`.
-		"clients/package-manager.ts": 29,
+		// 29 -> 31 (#4566 r14): commandResolvesIntoProject resolves a relative
+		// discovered spelling against the caller's cwd with `path.isAbsolute` and
+		// `path.resolve`, so the judged target is the one the child runs.
+		"clients/package-manager.ts": 31,
 		"clients/package-root.ts": 5,
 		"clients/path-keyed-map.ts": 11,
 		// 30 -> 34: findNearestMarkerRootDetailed (#3691) adds its own marker/root
