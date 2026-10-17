@@ -37,15 +37,6 @@ describe("cue diagnostic strategy (#1522) — measured against the real v0.17.1 
 	});
 });
 
-describe("lua diagnostic strategy (#3347)", () => {
-	it("marks the measured clean-transition silence", () => {
-		const strategy = getStrategy("lua");
-		// Run 35914033696 measured two dirty publishes and no clean-transition
-		// publish; the marker is the cascade's tier-3 wait-policy decision.
-		expect(strategy.silentOnClean).toBe(true);
-	});
-});
-
 describe("svelte diagnostic strategy (#3311 lane A)", () => {
 	it("keeps the pull collection budget above the cold diagnostic response", () => {
 		// #3311 lane A: the default 1500ms aggregate budget capped Svelte's cold

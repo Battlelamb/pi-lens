@@ -559,10 +559,11 @@ export class ClientRegistry {
 			}
 		}
 		if (!nearestAncestor) return root;
-		let boundary = this.projectBoundaryCache.get(rootKey);
+		const boundaryKey = `${server.id}:${rootKey}`;
+		let boundary = this.projectBoundaryCache.get(boundaryKey);
 		if (!boundary) {
-			boundary = hasProjectBoundaryMarker(root);
-			this.projectBoundaryCache.set(rootKey, boundary);
+			boundary = hasProjectBoundaryMarker(root, server);
+			this.projectBoundaryCache.set(boundaryKey, boundary);
 		}
 		if (await boundary) return root;
 		return (

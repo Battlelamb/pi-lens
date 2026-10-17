@@ -28,6 +28,7 @@ import {
 	noteWorkspaceFileCreated,
 	resetWorkspaceDiagnosticsCacheSession,
 } from "../../../clients/lsp/workspace-diagnostics-session.js";
+import { extractForwardImports } from "../../../clients/blocker-freshness.js";
 import { feedsJsTsGlobalScope } from "../../../clients/lsp/implicit-scope.js";
 import { getRecentLoggedPhases } from "../../../clients/latency-logger.js";
 import {
@@ -111,6 +112,108 @@ function created(file: string, serverId = "typescript"): void {
 }
 
 describe("finding entries: the import scope", () => {
+	// #4477: package/alias dependencies in JSDoc and module augmentations
+	// escaped both extraction and the relative-only completeness check.
+	it.each([
+		[
+			"jsdoc.js",
+			'/** @import { T } from "@/types" */\nexport {};\n',
+			"@/types",
+		],
+		[
+			"augment.ts",
+			'export {};\ndeclare module "pkg" { interface T {} }\n',
+			"pkg",
+		],
+	])(
+		"refuses a cached finding for an uncaptured dependency in %s",
+		async (name, content, source) => {
+			const user = write(name, content);
+			seed([{ file: user, serverId: "typescript" }]);
+			created(write("new-target.ts", "export interface T {}\n"));
+			const ctx = createWorkspaceDiagnosticsCacheContext(tmp);
+			const scope = await extractForwardImports(tmp, user);
+			ctx.noteImportScope(user, scope);
+			expect(ctx.lookup(user, SCOPE)).toBeUndefined();
+			expect(scope.unresolved).toContain(source);
+		},
+	);
+
+	it.each([
+		["alias.js", '/** @import { T } from "@/types" */\nexport {};\n'],
+		["package.ts", 'export {}; declare module "pkg" { interface T {} }\n'],
+	])(
+		"refuses a held finding when its only named dependency is created in %s",
+		async (name, content) => {
+			write(
+				"tsconfig.json",
+				JSON.stringify({
+					compilerOptions: {
+						baseUrl: ".",
+						paths: { "@/types": ["dep.ts"], pkg: ["dep.ts"] },
+					},
+				}),
+			);
+			const user = write(name, content);
+			seed([{ file: user, serverId: "typescript" }]);
+			const dep = write("dep.ts", "export interface T {}\n");
+			created(dep);
+			const ctx = createWorkspaceDiagnosticsCacheContext(tmp);
+			const scope = await extractForwardImports(tmp, user);
+			ctx.noteImportScope(user, scope);
+			expect(ctx.lookup(user, SCOPE)).toBeUndefined();
+			expect(scope.targets).toContain(dep);
+		},
+	);
+
+	it.each([
+		["jsdoc.ts", '/** @import { T } from "./dep" */\nexport {};\n'],
+		["jsdoc.tsx", '/** @import * as T from "./dep" */\nexport {};\n'],
+		["augment.ts", 'export {}; declare module "./dep" { interface T {} }\n'],
+		["type.ts", 'import type { T } from "./dep";\n'],
+		["dynamic.js", 'export const t = import("./dep");\n'],
+		["required.js", 'const t = require("./dep");\n'],
+		["required.cjs", 'const t = require("./dep");\n'],
+	])(
+		"captures the dependency through the production resolver in %s",
+		async (name, content) => {
+			const dep = write("dep.ts", "export interface T {}\n");
+			expect(
+				(await extractForwardImports(tmp, write(name, content))).targets,
+			).toContain(dep);
+		},
+	);
+
+	it.each([
+		['/// <reference path="generated.ts" />\nexport {};\n'],
+		['/// <reference types="pkg" />\nexport {};\n'],
+	])(
+		"refuses a cached finding for a triple-slash dependency: %s",
+		async (content) => {
+			const user = write("reference.ts", content);
+			seed([{ file: user, serverId: "typescript" }]);
+			created(write("new-target.ts", "export interface T {}\n"));
+			const ctx = createWorkspaceDiagnosticsCacheContext(tmp);
+			ctx.noteImportScope(user, await extractForwardImports(tmp, user));
+			expect(ctx.lookup(user, SCOPE)).toBeUndefined();
+		},
+	);
+
+	it("does not invent dependencies from ordinary comment or string text", async () => {
+		const user = write(
+			"plain.js",
+			'// from "pkg"\nexport const text = "@/types";\n',
+		);
+		seed([{ file: user, serverId: "typescript" }]);
+		created(write("new-target.ts", "export interface T {}\n"));
+		const scope = await extractForwardImports(tmp, user);
+		const ctx = createWorkspaceDiagnosticsCacheContext(tmp);
+		ctx.noteImportScope(user, scope);
+		expect(ctx.lookup(user, SCOPE)).toBeDefined();
+		expect(scope.targets).toEqual([]);
+		expect(scope.unresolved).toEqual([]);
+	});
+
 	// Acceptance item 4. Recurrence: #4320/#4344 refused this entry on any
 	// creation its server heard under its root.
 	it("serves a finding entry past a created file its resolved scope does not hold", () => {

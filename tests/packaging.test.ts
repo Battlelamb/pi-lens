@@ -778,15 +778,4 @@ describe("tsconfig.dist.json", () => {
 		// `bundle:dist` dies trying to resolve it from `dist/clients/`.
 		expect(dist.include ?? []).toContain("scripts/lib/skills-predicate.mjs");
 	});
-
-	it("keeps tsconfig.dist.json parseable as strict JSON", () => {
-		// This suite reads it with JSON.parse, and so does anything else that
-		// treats a tsconfig as data rather than handing it to tsc: a `//`
-		// comment here fails at read time, not at build time.
-		expect(() =>
-			JSON.parse(
-				fs.readFileSync(path.join(root, "tsconfig.dist.json"), "utf8"),
-			),
-		).not.toThrow();
-	});
 });

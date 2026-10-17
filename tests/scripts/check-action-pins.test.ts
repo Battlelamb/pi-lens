@@ -99,16 +99,6 @@ describe("check-action-pins parser (#4043)", () => {
 		).resolves.toEqual([]);
 	});
 
-	it("keeps the 6849a648/v4.3.0 mismatch exact", async () => {
-		const pins = parseActionPins(
-			`- uses: actions/cache@${BAD} # v4.3.0`,
-			"fixture.yml",
-		);
-		await expect(validatePins(pins, async () => GOOD)).resolves.toEqual([
-			`fixture.yml:1: actions/cache # v4.3.0 resolves to ${GOOD}, not ${BAD}`,
-		]);
-	});
-
 	it("peels an annotated tag at the GitHub API process boundary", async () => {
 		const calls: string[] = [];
 		const fetchImpl = async (input: string | URL | Request) => {

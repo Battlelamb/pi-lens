@@ -23,7 +23,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { toPosix } from "../../clients/path-utils.js";
-import { assertNonEmptyScan } from "../support/sweep-kit.js";
+import { assertNonEmptyScan, stripSource } from "../support/sweep-kit.js";
 
 const REPO_ROOT = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
@@ -42,6 +42,10 @@ const EXEMPT: Record<string, string> = {
 		"age-based maxAge expiry of a cached install probe, same TTL-not-freshness shape",
 	"lsp/lombok.ts":
 		"max-selection among candidates (find newest), no reference timestamp",
+	"project-snapshot.ts":
+		"compares in-process snapshot ownership metadata, not file freshness against a scan or record",
+	"sgconfig.ts":
+		"evicts oldest retained config baselines by an age cutoff, not freshness against a scan or record",
 };
 
 describe("freshness kernel coverage (#1739)", () => {
@@ -66,11 +70,15 @@ describe("freshness kernel coverage (#1739)", () => {
 				// the kernel-skip are clients/-relative by contract.
 				const rel = toPosix(path.relative(CLIENTS_DIR, full));
 				if (rel === KERNEL_FILE) continue;
-				const source = fs.readFileSync(full, "utf8");
+				const source = stripSource(fs.readFileSync(full, "utf8"), {
+					strings: "blank",
+				});
 				// Freshness-shaped needle: `.mtimeMs > identifier` / `>=` where
 				// the right side is not obviously `best.`-style selection.
 				const hits = [
-					...source.matchAll(/\.mtimeMs\s*(?:>|>=)\s*(?!best\b)[A-Za-z_$]/g),
+					...source.matchAll(
+						/(?:\b[A-Za-z_$][\w$]*\.)?mtimeMs\s*(?:>|>=|<|<=)\s*(?!best\b)[A-Za-z_$]/g,
+					),
 				];
 				scanned++;
 				matched += hits.length;

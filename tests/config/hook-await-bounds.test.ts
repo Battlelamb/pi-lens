@@ -1463,7 +1463,7 @@ const EXEMPT_SITES: Readonly<Record<string, SweepExemption>> = {
 			"caller's bound.",
 		owner: "#4507",
 	},
-	"clients/runtime-tool-result.ts#sendToHeldPrimaries:c4c6636f~a805713d": {
+	"clients/runtime-tool-result.ts#sendToHeldPrimaries:c4c6636f~415851d2": {
 		family: "hook-await",
 		site: "tool_result_edit",
 		reason:

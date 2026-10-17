@@ -1,4 +1,3 @@
-import * as nodeCrypto from "node:crypto";
 import * as nodeFs from "node:fs";
 import * as path from "node:path";
 import {
@@ -117,10 +116,10 @@ import type {
 } from "./runtime-coordinator.js";
 import { EXPANSION_LIMIT_LINES } from "./read-expansion.js";
 import { syncGitGuardRecord } from "./git-guard.js";
+import { hashContentBytes, hashFileBytes } from "./content-stamp.js";
 import { scheduleWordIndexPersist } from "./word-index.js";
 import { RUNTIME_CONFIG } from "./runtime-config.js";
 import { getActiveSessionId } from "./session-lifecycle.js";
-import { hashDiagnosticContent } from "./lsp/diagnostic-binding.js";
 import {
 	type LineageHandle,
 	recordDroppedRead,
@@ -255,7 +254,9 @@ async function sendToHeldPrimaries(
 				const sent = service.getTrackedContent(filePath, root)?.hash;
 				try {
 					const disk = await nodeFs.promises.readFile(filePath, "utf8");
-					return sent === hashDiagnosticContent(disk) ? undefined : filePath;
+					return sent === hashContentBytes(Buffer.from(disk, "utf8"))
+						? undefined
+						: filePath;
 				} catch {
 					return filePath;
 				}
@@ -917,8 +918,7 @@ function lastByteIsNewline(filePath: string): boolean {
 
 function getFileStateHash(filePath: string): string {
 	try {
-		const content = nodeFs.readFileSync(filePath);
-		return nodeCrypto.createHash("sha256").update(content).digest("hex");
+		return hashFileBytes(filePath);
 	} catch (err) {
 		const code = (err as { code?: string }).code ?? "unknown";
 		return `unreadable:${code}`;

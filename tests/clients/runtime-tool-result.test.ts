@@ -340,7 +340,7 @@ it("classifies outside-root path families through the real tool-result seam (#42
 	}
 });
 
-it("adopts a home sibling but refuses home, ancestors, and a home symlink (#4230 D1)", () => {
+it("adopts a home sibling but refuses home, ancestors, and a home symlink (#4230 D1)", (ctx) => {
 	const env = setupTestEnvironment("pi-lens-4230-home-boundary-");
 	const previousHome = process.env.HOME;
 	const previousUserProfile = process.env.USERPROFILE;
@@ -363,13 +363,12 @@ it("adopts a home sibling but refuses home, ancestors, and a home symlink (#4230
 	process.env.TMPDIR = isolatedTmpDir;
 	try {
 		fs.symlinkSync(home, homeLink, "dir");
-	} catch {
-		expect(true).toBe(true);
+	} catch (error) {
 		if (previousTmpDir === undefined) delete process.env.TMPDIR;
 		else process.env.TMPDIR = previousTmpDir;
 		fs.rmSync(home, { recursive: true, force: true });
 		env.cleanup();
-		return;
+		ctx.skip(`symlinks are unavailable here: ${String(error)}`);
 	}
 	process.env.HOME = home;
 	process.env.USERPROFILE = home;

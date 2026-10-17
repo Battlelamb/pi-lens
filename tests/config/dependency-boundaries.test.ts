@@ -24,7 +24,7 @@ const depcruiseBin = resolve(
 	dependencyCruiserPackage.bin.depcruise,
 );
 
-function cruiseBuiltGraph(): {
+type CruiseResult = {
 	modules: Array<{
 		source: string;
 		dependencies?: Array<{
@@ -39,7 +39,17 @@ function cruiseBuiltGraph(): {
 			rule: { name: string; severity: string };
 		}>;
 	};
-} {
+};
+
+// One depcruise spawn serves both cases that read the graph.
+let cruised: CruiseResult | undefined;
+
+function cruiseBuiltGraph(): CruiseResult {
+	cruised ??= runCruise();
+	return cruised;
+}
+
+function runCruise(): CruiseResult {
 	const output = execFileSync(
 		process.execPath,
 		[
@@ -55,7 +65,7 @@ function cruiseBuiltGraph(): {
 		],
 		{ cwd: repoRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
 	);
-	return JSON.parse(output) as ReturnType<typeof cruiseBuiltGraph>;
+	return JSON.parse(output) as CruiseResult;
 }
 
 /**

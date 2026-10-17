@@ -20,7 +20,6 @@ vi.mock("../../clients/latency-logger.js", async (importOriginal) => ({
 
 import {
 	dropFindingsForMissingPaths,
-	findingPathExistence,
 	partitionFindingsByCitedPath,
 	type FindingPathFacts,
 } from "../../clients/advisory-provenance.js";
@@ -149,13 +148,6 @@ describe("partitionFindingsByCitedPath (#1461 slice 1)", () => {
 		expect(result.live.map((f) => f.rule)).toEqual(["over-budget"]);
 		expect(result.statCount).toBe(1);
 		expect(result.truncated).toBe(true);
-	});
-
-	it("treats an ENOENT path as missing and an existing one as live", () => {
-		const { live, dead } = setup();
-		expect(findingPathExistence(live)).toBe("live");
-		fs.rmSync(path.dirname(dead), { recursive: true, force: true });
-		expect(findingPathExistence(dead)).toBe("missing");
 	});
 
 	// #1461 HIGH-1: the drop decision must resolve a cited path the SAME way

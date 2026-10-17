@@ -32,6 +32,10 @@ import { getProjectDataDir } from "../../../clients/file-utils.js";
 import { MTIME_DRIFT_TOLERANCE_MS } from "../../../clients/blocker-freshness.js";
 import { hashDiagnosticContent } from "../../../clients/lsp/diagnostic-binding.js";
 import {
+	CONTENT_HASH_MAX_BYTES,
+	hashFileBytes,
+} from "../../../clients/content-stamp.js";
+import {
 	PROJECT_SNAPSHOT_VERSION,
 	saveProjectSnapshot,
 } from "../../../clients/project-snapshot.js";
@@ -45,6 +49,23 @@ import {
 	getDegradationSummary,
 	resetDegradationLedger,
 } from "../../../clients/degradation-ledger.js";
+
+// F-4551-5: observe reads at the host boundary instead of through atime. A
+// noatime mount and Windows (NTFS last-access updates off by default) leave
+// atimeMs unchanged after a real read, so the old control read reddened a
+// correct no-read path. `node:fs` is the process/host boundary the counting
+// wrapper stands on; the target path and counter live in `vi.hoisted` because
+// the `vi.mock` factory is hoisted above this module's imports.
+const contentReads = vi.hoisted(() => ({ target: "", count: 0 }));
+
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	const readFileSync = ((...args: Parameters<typeof actual.readFileSync>) => {
+		if (String(args[0]) === contentReads.target) contentReads.count += 1;
+		return actual.readFileSync(...args);
+	}) as typeof actual.readFileSync;
+	return { ...actual, readFileSync };
+});
 
 let tmp: string;
 
@@ -86,6 +107,42 @@ describe("loadWorkspaceDiagnosticsCache / saveWorkspaceDiagnosticsCache (#671)",
 		});
 		const loaded = loadWorkspaceDiagnosticsCache(tmp);
 		expect(loaded?.entries["/a.ts"]).toEqual(entry);
+	});
+
+	it("parses and compares a current-version cache fixture from master", () => {
+		const filePath = path.join(tmp, "a.ts");
+		fs.writeFileSync(filePath, "const a = 1;\n");
+		const stat = fs.statSync(filePath);
+		const key = cacheKeyFor(filePath);
+		const cachePath = path.join(
+			getProjectDataDir(tmp),
+			"cache",
+			"lsp-workspace-diagnostics.json",
+		);
+		fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+		// Literal v4 record shape from master: no content stamp was required.
+		fs.writeFileSync(
+			cachePath,
+			JSON.stringify({
+				version: WORKSPACE_DIAGNOSTICS_CACHE_VERSION,
+				entries: {
+					[key]: {
+						diagnostics: [],
+						count: 0,
+						mtimeMs: stat.mtimeMs,
+						scannedAt: Date.now(),
+						scopeKey: "all|",
+						depIndexAtScan: false,
+						sizeBytes: stat.size,
+					},
+				},
+			}),
+		);
+
+		const loaded = loadWorkspaceDiagnosticsCache(tmp);
+		const entry = loaded?.entries[key];
+		expect(entry).toBeDefined();
+		expect(isEntryFresh(filePath, entry!, () => undefined)).toBe(true);
 	});
 
 	it("records content and scan freshness without duplicate provenance", () => {
@@ -265,6 +322,58 @@ describe("isEntryFresh (#671)", () => {
 			scannedAt: Date.now(),
 		});
 		expect(isEntryFresh(filePath, entry, () => undefined)).toBe(true);
+	});
+
+	// #4541: a confirmed cache entry whose bytes are stamped must survive an
+	// external touch; strict mtime equality used to discard unchanged content.
+	it("stays fresh when touch changes only mtime and stamped content is unchanged", () => {
+		const original = fs.statSync(filePath);
+		const entry = makeEntry({
+			mtimeMs: original.mtimeMs,
+			sizeBytes: original.size,
+			contentHash: hashFileBytes(filePath),
+			scannedAt: Date.now(),
+		});
+		const touchedAt = original.mtimeMs + 1000;
+		fs.utimesSync(filePath, new Date(touchedAt), new Date(touchedAt));
+
+		expect(isEntryFresh(filePath, entry, () => undefined)).toBe(true);
+	});
+
+	it("admits matching stamped touch exactly at the shared hash budget", () => {
+		fs.writeFileSync(filePath, Buffer.alloc(CONTENT_HASH_MAX_BYTES, 97));
+		const stat = fs.statSync(filePath);
+		const entry = makeEntry({
+			mtimeMs: stat.mtimeMs,
+			sizeBytes: stat.size,
+			contentHash: hashFileBytes(filePath),
+			scannedAt: Date.now(),
+		});
+		fs.utimesSync(filePath, 1, (stat.mtimeMs + 1000) / 1000);
+		expect(isEntryFresh(filePath, entry, () => undefined)).toBe(true);
+	});
+
+	it("rejects over-budget stamped touch without reading the file", () => {
+		fs.writeFileSync(filePath, Buffer.alloc(CONTENT_HASH_MAX_BYTES + 1, 97));
+		const original = fs.statSync(filePath);
+		const entry = makeEntry({
+			mtimeMs: original.mtimeMs,
+			sizeBytes: original.size,
+			contentHash: hashFileBytes(filePath),
+			scannedAt: Date.now(),
+		});
+		// A stamped touch: mtime moved, size over the hash budget. The budget
+		// guard must refuse without hashing the bytes.
+		fs.utimesSync(filePath, 1, (original.mtimeMs + 1000) / 1000);
+		contentReads.target = filePath;
+		contentReads.count = 0;
+		const fresh = isEntryFresh(filePath, entry, () => undefined);
+		expect(contentReads.count).toBe(0);
+		expect(fresh).toBe(false);
+		// Control: the counter observes a real read of the same path.
+		fs.readFileSync(filePath);
+		expect(contentReads.count).toBe(1);
+		contentReads.target = "";
 	});
 
 	it("keeps failing OPEN to mtime-only for a legacy entry with no sizeBytes field at all", () => {
@@ -455,6 +564,26 @@ describe("WorkspaceDiagnosticsCacheContext (#671)", () => {
 		expect(fs.statSync(filePath).size).not.toBe(stat.size);
 
 		expect(ctx.lookup(filePath, "all|")).toBeUndefined();
+	});
+
+	it("does not discard a stamped cache entry when touch changes only mtime", () => {
+		const filePath = path.join(tmp, "a.ts");
+		fs.writeFileSync(filePath, "const a = 1;\n");
+		const original = fs.statSync(filePath);
+		const ctx = createWorkspaceDiagnosticsCacheContext(tmp);
+		ctx.record(
+			filePath,
+			"all|",
+			[],
+			original.mtimeMs,
+			hashFileBytes(filePath),
+			original.size,
+		);
+
+		const touchedAt = original.mtimeMs + 1000;
+		fs.utimesSync(filePath, new Date(touchedAt), new Date(touchedAt));
+
+		expect(ctx.lookup(filePath, "all|")).toBeDefined();
 	});
 
 	it("a lookup under a DIFFERENT scopeKey never sees an entry recorded under another scope", () => {

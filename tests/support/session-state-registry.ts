@@ -1763,7 +1763,10 @@ export const SESSION_STATE_SYMBOL_COUNTS: Readonly<Record<string, number>> = {
 	// (1 → 2). Registered above and cleared by the same
 	// `resetPendingAuxiliaryCoverage`.
 	"lsp/pending-aux-coverage.ts": 2,
-	"lsp/server.ts": 6,
+	// #4547: 6 -> 8. `PYTHON_BOUNDARY_MARKERS` and `PYTHON_EXTENSIONS` are
+	// import-time constant sets that nothing writes after load
+	// (SWEEP_HEURISTIC_LIMITS item 5); a session boundary cannot change them.
+	"lsp/server.ts": 8,
 	"lsp/service-singleton.ts": 0,
 	"lsp/session-roots.ts": 1,
 	"lsp/spawn-history.ts": 1,

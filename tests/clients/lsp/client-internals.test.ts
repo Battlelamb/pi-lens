@@ -1570,21 +1570,35 @@ describe("handleNotifyChange", () => {
 
 describe("clientWaitForDiagnostics", () => {
 	it("resolves immediately if diagnostics already cached", async () => {
-		const state = createMockState();
-		state.diagnosticsVersion = 1;
-		state.pushDiagnostics.set(TEST_KEY, [
-			{
-				severity: 1,
-				message: "error",
-				range: {
-					start: { line: 0, character: 0 },
-					end: { line: 0, character: 0 },
+		vi.useFakeTimers();
+		try {
+			const state = createMockState();
+			state.diagnosticsVersion = 1;
+			state.pushDiagnostics.set(TEST_KEY, [
+				{
+					severity: 1,
+					message: "error",
+					range: {
+						start: { line: 0, character: 0 },
+						end: { line: 0, character: 0 },
+					},
 				},
-			},
-		]);
+			]);
 
-		await clientWaitForDiagnostics(state, TEST_FILE, 1000);
-		// Should resolve immediately without waiting
+			let settled = false;
+			const waitPromise = (async () => {
+				await clientWaitForDiagnostics(state, TEST_FILE, 1000);
+				settled = true;
+			})();
+			// No fake time passes: the early return settles it, and no deadline
+			// timer was armed.
+			await vi.advanceTimersByTimeAsync(0);
+			expect(settled).toBe(true);
+			expect(vi.getTimerCount()).toBe(0);
+			await waitPromise;
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("does not accept cached diagnostics at or below minVersion", async () => {
@@ -1716,21 +1730,36 @@ describe("clientWaitForDiagnostics", () => {
 	});
 
 	it("ignores diagnostics for other files", async () => {
-		const state = createMockState();
+		vi.useFakeTimers();
+		try {
+			const state = createMockState();
 
-		const waitPromise = clientWaitForDiagnostics(state, TEST_FILE, 5000);
+			let settled = false;
+			const waitPromise = (async () => {
+				await clientWaitForDiagnostics(state, TEST_FILE, 5000);
+				settled = true;
+			})();
 
-		// Emit diagnostics for a different file
-		setTimeout(() => {
-			state.diagnosticEmitter.emit("diagnostics", "/project/other.ts");
-		}, 50);
+			// Emit diagnostics for a different file
+			setTimeout(() => {
+				state.diagnosticEmitter.emit("diagnostics", "/project/other.ts");
+			}, 50);
 
-		// Emit for the right file after a bit longer
-		setTimeout(() => {
-			state.diagnosticEmitter.emit("diagnostics", TEST_FILE);
-		}, 100);
+			// Emit for the right file after a bit longer
+			setTimeout(() => {
+				state.diagnosticEmitter.emit("diagnostics", TEST_FILE);
+			}, 100);
 
-		await waitPromise;
+			// The other file's emit at 50ms must not end this file's wait.
+			await vi.advanceTimersByTimeAsync(99);
+			expect(settled).toBe(false);
+
+			await vi.advanceTimersByTimeAsync(51);
+			expect(settled).toBe(true);
+			await waitPromise;
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 

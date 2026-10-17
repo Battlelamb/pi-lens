@@ -526,7 +526,6 @@ describe("head-tree citations", () => {
 });
 
 describe("test-reference shape and placement", () => {
-	it("A01", () => {});
 	const clean = (extra: string) => lintPrBody(`${body}\n${extra}`);
 	const missing = (result: ReturnType<typeof lintPrBody>, value: string) => {
 		expect(result.valid).toBe(false);
@@ -3036,8 +3035,110 @@ describe("PR body lint (#1844)", () => {
 		}
 	});
 
+	// F-4551-3: pr-preflight and lane-check pass only `--lint-local <body>`, so
+	// the refactor "Behavior equivalence" rule (title-gated) never ran locally,
+	// and the documented positional title form was ignored.
+	it("feeds the local CLI a title from the positional form or COMMIT_MSG.txt (#4551)", () => {
+		const directory = mkdtempSync(join(tmpdir(), "pi-lens-pr-body-cli-title-"));
+		const bodyPath = join(directory, "PR_BODY.md");
+		const checker = resolve(repositoryRoot, "scripts/check-pr-body.mjs");
+		const refactorTitle = "refactor(test): verify local body lint (refs #2807)";
+		const run = (args: string[]) =>
+			spawnSync(process.execPath, [checker, ...args], {
+				cwd: fixtureCwd,
+				encoding: "utf8",
+			});
+		try {
+			writeFileSync(
+				bodyPath,
+				`${body}\n\n### Test assessment\nThe targeted test covers the local CLI.`,
+			);
+			const positional = run(["--lint-local", bodyPath, refactorTitle]);
+			expect(positional.status).toBe(1);
+			expect(positional.stderr).toContain('"## Behavior equivalence"');
+
+			writeFileSync(join(fixtureCwd, "COMMIT_MSG.txt"), `${refactorTitle}\n`);
+			const fromCommit = run(["--lint-local", bodyPath]);
+			expect(fromCommit.status).toBe(1);
+			expect(fromCommit.stderr).toContain('"## Behavior equivalence"');
+
+			writeFileSync(
+				join(fixtureCwd, "COMMIT_MSG.txt"),
+				"ci(test): verify local body lint (refs #2807)\n",
+			);
+			const control = run(["--lint-local", bodyPath]);
+			expect(control.stderr).not.toContain('"## Behavior equivalence"');
+			expect(control.status).toBe(0);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it("accepts the required sections", () => {
 		expect(lintPrBody(body)).toEqual({ valid: true, errors: [] });
+	});
+
+	it("rejects a refactor title without Behavior equivalence", () => {
+		const result = lintPrBody(body, {
+			title: "refactor(freshness): fold stamps",
+		});
+		expect(result.valid).toBe(false);
+		expect(result.errors.join(" ")).toContain(
+			'"## Behavior equivalence" must contain a markdown table',
+		);
+	});
+
+	it("rejects a placeholder-only Behavior equivalence table", () => {
+		const result = lintPrBody(
+			`${body}\n\n## Behavior equivalence\n\n| Site | Before | After |\n| --- | --- | --- |\n| n/a | none | tbd |`,
+			{ title: "refactor(freshness): fold stamps" },
+		);
+		expect(result.valid).toBe(false);
+		expect(result.errors.join(" ")).toContain(
+			'"## Behavior equivalence" must contain a markdown table',
+		);
+	});
+
+	it("accepts a real Behavior equivalence row for a refactor", () => {
+		expect(
+			lintPrBody(
+				`${body}\n\n## Behavior equivalence\n\n| Site | Before | After |\n| --- | --- | --- |\n| cache | mtime > stamp | freshnessFromMtime(..., 0) |`,
+				{ title: "refactor(freshness): fold stamps" },
+			),
+		).toEqual({ valid: true, errors: [] });
+	});
+
+	// F-4551-4: the row scan ran to the end of the section instead of stopping
+	// at the table's edge, so an empty equivalence table passed when a later,
+	// unrelated table happened to have three filled cells (its header line
+	// counted as a data row too).
+	it("rejects an empty Behavior equivalence table with a filled table later in the section", () => {
+		const result = lintPrBody(
+			`${body}\n\n## Behavior equivalence\n\n| Site | Before | After |\n| --- | --- | --- |\n\nSome prose.\n\n| Step | Input | Output |\n| --- | --- | --- |\n| build | source | bundle |`,
+			{ title: "refactor(freshness): fold stamps" },
+		);
+		expect(result.valid).toBe(false);
+		expect(result.errors.join(" ")).toContain(
+			'"## Behavior equivalence" must contain a markdown table',
+		);
+	});
+
+	it("still accepts a filled Behavior equivalence table followed by prose and another table", () => {
+		expect(
+			lintPrBody(
+				`${body}\n\n## Behavior equivalence\n\n| Site | Before | After |\n| --- | --- | --- |\n| cache | mtime > stamp | freshnessFromMtime(..., 0) |\n\nSome prose.\n\n| Step | Input | Output |\n| --- | --- | --- |\n| build | source | bundle |`,
+				{ title: "refactor(freshness): fold stamps" },
+			),
+		).toEqual({ valid: true, errors: [] });
+	});
+
+	it("does not require Behavior equivalence for a fix title", () => {
+		expect(
+			lintPrBody(body, { title: "fix(freshness): preserve stamps" }),
+		).toEqual({
+			valid: true,
+			errors: [],
+		});
 	});
 
 	it("rejects two sentences in Why but accepts one", () => {

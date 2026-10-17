@@ -32,10 +32,10 @@
  * commit while a 5 s+ runner runs would block the agent on nothing it can fix.
  */
 
-import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { resolve } from "node:path";
 import { gateFindingsByPathFreshness } from "./advisory-provenance.js";
+import { hashContentBytes } from "./content-stamp.js";
 import {
 	peekSettledRunnerFindings,
 	type PendingRunnerFindings,
@@ -160,7 +160,7 @@ export function recordDeferredRunnerBlockers(
 				? {
 						contentBaseline: {
 							size: bytes.byteLength,
-							sha256: createHash("sha256").update(bytes).digest("hex"),
+							sha256: hashContentBytes(bytes),
 						},
 					}
 				: {}),
@@ -208,9 +208,7 @@ export function retireSettledRunnerBlockers(
 			...(result.outOfEditScope ?? []),
 		].flatMap((d) => (d.semantic === "blocking" ? [d] : [])),
 		markedAtMs: pending.markedAtMs,
-		sha256: bytes
-			? createHash("sha256").update(bytes).digest("hex")
-			: undefined,
+		sha256: bytes ? hashContentBytes(bytes) : undefined,
 		...(result.unconfirmedServerIds !== undefined && {
 			unconfirmedServerIds: result.unconfirmedServerIds,
 		}),

@@ -11,7 +11,6 @@
  */
 
 import { constants as bufferConstants } from "node:buffer";
-import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { BoundedSet } from "./bounded-cache.js";
 import {
@@ -19,7 +18,7 @@ import {
 	recordDegradationOnce,
 } from "./degradation-ledger.js";
 import { createFileTime, type FileTime } from "./file-time.js";
-import { hashDiagnosticContent } from "./lsp/diagnostic-binding.js";
+import { hashContentBytes, hashFileBytes } from "./content-stamp.js";
 import {
 	normalizeEphemeralMapKey,
 	normalizeFilePath,
@@ -263,10 +262,6 @@ const READ_HASH_MAX_LINES = Math.max(
  * synchronous disk read so bridge registration never hashes an unbounded file.
  */
 const READ_BINDING_MAX_BYTES = 4 * 1024 * 1024;
-
-function hashFileBytes(filePath: string): string {
-	return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
-}
 
 /** `size` of an authorship credited while the file could not be read. */
 const ABSENT_SIZE = -1;
@@ -532,7 +527,7 @@ export function captureReadContentBinding(
 		const lines = splitLinesThrough(content, READ_HASH_MAX_LINES + 1);
 		if (lines.length <= READ_HASH_MAX_LINES) {
 			return {
-				hash: hashDiagnosticContent(content),
+				hash: hashContentBytes(Buffer.from(content, "utf8")),
 				fullFile: true,
 				offset: 1,
 				limit: lines.length,
@@ -549,7 +544,7 @@ export function captureReadContentBinding(
 			.slice(scopedOffset - 1, scopedOffset - 1 + scopedLimit)
 			.join("\n");
 		return {
-			hash: hashDiagnosticContent(scopedContent),
+			hash: hashContentBytes(Buffer.from(scopedContent, "utf8")),
 			fullFile: false,
 			offset: scopedOffset,
 			limit: scopedLimit,
@@ -570,7 +565,7 @@ export function _currentContentMatchesBindingForTests(
 			: splitLines(content)
 					.slice(binding.offset - 1, binding.offset - 1 + binding.limit)
 					.join("\n");
-		return hashDiagnosticContent(boundContent) === binding.hash;
+		return hashContentBytes(Buffer.from(boundContent, "utf8")) === binding.hash;
 	} catch {
 		return false;
 	}

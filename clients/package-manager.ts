@@ -318,14 +318,6 @@ export function runScriptArgs(script: string): string[] {
 	return ["run", script];
 }
 
-/** Human-readable "run script" command for display (bare manager name). */
-export function formatRunScript(
-	pm: NodePackageManager,
-	script: string,
-): string {
-	return `${pm} run ${script}`;
-}
-
 export interface InstallOptions {
 	/** Skip lifecycle scripts (`--ignore-scripts`). */
 	ignoreScripts?: boolean;
@@ -369,53 +361,6 @@ export function updateArgs(
 	if (options.ignoreScripts) args.push("--ignore-scripts");
 	args.push(pkg);
 	return args;
-}
-
-/**
- * Args to install a single package **globally** (`-g`). npm/pnpm/bun spell this
- * `install -g` / `add -g`; yarn uses `global add` (yarn classic — Berry removed
- * global installs, but pi-lens's manager resolution prefers npm/pnpm first, so
- * yarn is only chosen when it is the declared/only manager). The resulting
- * binary is found again by `allAvailableGlobalBinDirs`, which covers every
- * manager's global bin dir.
- */
-export function globalInstallArgs(
-	pm: NodePackageManager,
-	pkg: string,
-): string[] {
-	switch (pm) {
-		case "yarn":
-			return ["global", "add", pkg];
-		case "npm":
-			return ["install", "-g", pkg];
-		default: // pnpm, bun
-			return ["add", "-g", pkg];
-	}
-}
-
-/**
- * Command + args to run a package's binary without a global install — the
- * `npx --no <pkg>` equivalent for each manager (`bun x`, `pnpm dlx`, `yarn dlx`).
- */
-export function execArgs(
-	pm: NodePackageManager,
-	pkg: string,
-	args: string[] = [],
-): { command: string; args: string[] } {
-	switch (pm) {
-		case "bun":
-			return { command: pmBinary("bun"), args: ["x", pkg, ...args] };
-		case "pnpm":
-			return { command: pmBinary("pnpm"), args: ["dlx", pkg, ...args] };
-		case "yarn":
-			return { command: pmBinary("yarn"), args: ["dlx", pkg, ...args] };
-		default:
-			// --no prevents silently downloading an uncached package.
-			return {
-				command: onWindows() ? "npx.cmd" : "npx",
-				args: ["--no", pkg, ...args],
-			};
-	}
 }
 
 // ============================================================================

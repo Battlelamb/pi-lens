@@ -59,6 +59,12 @@ process.env.PI_LENS_MAX_LOG_SIZE_MB = "10";
 // themselves (loadPiLensGlobalConfig takes an explicit path parameter too).
 process.env.PI_LENS_CONFIG_PATH = "/nonexistent-pi-lens-tests/config.json";
 
+// Same class: resolveStartupMode reads PI_LENS_STARTUP_MODE before any config,
+// so a developer shell's "minimal" changed session_start for every test that
+// drives it (seen 2026-10-16: six golden witnesses gained the startup guidance
+// block). Tests that exercise a mode set it themselves.
+delete process.env.PI_LENS_STARTUP_MODE;
+
 // Hermeticity (#525, same class as #515 above): never let a test write into
 // the developer's REAL machine-global ~/.pi-lens (instances.json, logs,
 // probe-cache.json, managed tool/bin dirs, ...). Dogfooded live 2026-07-11: a

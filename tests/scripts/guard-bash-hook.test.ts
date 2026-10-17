@@ -16,6 +16,14 @@
 // tests/scripts/classify-ci-failure-cli.test.ts documents for its own CLI:
 // an in-process call to the exported functions can't notice a drift in the
 // stdin shape, the exit code, or which stream carries the message.
+//
+// Only that wiring needs a child. The verdict-only table rows (the deny and
+// allow lists, the #3778 hook-bypass rows, the #3988 path-argument rows) call
+// the exported classifyPayload through hookVerdict() under the env the child
+// would get; the spawn cases (the pipe-safe ci-verdict message, the tmpWrite
+// exit-2/exit-0 witness, malformed JSON, the large-payload drain, the broken
+// stderr and the transcript corpus) pin the stdin, exit-code and stderr wiring
+// those rows skip.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -92,6 +100,44 @@ function runHook(
 		encoding: "utf8",
 		env,
 	});
+}
+
+/**
+ * runHook's verdict without the child: the same PreToolUse payload through the
+ * hook's own `classifyPayload`, with `process.env` swapped for exactly the
+ * `env` the child would get (the classifier reads `$NAME`, HOME and
+ * PI_LENS_HOME from it) and restored before returning. The rule-to-result
+ * mapping mirrors run()'s success path only (a throw must red here, where the
+ * child would allow with a note); the spawn cases pin run() itself.
+ */
+function hookVerdict(
+	command: string,
+	env: NodeJS.ProcessEnv = BASE_ENV,
+	cwd: string = PAYLOAD_CWD,
+): { status: number; stderr: string } {
+	const payload: unknown = JSON.parse(
+		JSON.stringify({
+			session_id: "test",
+			cwd,
+			permission_mode: "default",
+			hook_event_name: "PreToolUse",
+			tool_name: "Bash",
+			tool_input: { command },
+		}),
+	);
+	const saved = { ...process.env };
+	for (const key of Object.keys(process.env)) delete process.env[key];
+	for (const [key, value] of Object.entries(env))
+		if (value !== undefined) process.env[key] = value;
+	try {
+		const rule = classifyPayload(payload);
+		return rule
+			? { status: 2, stderr: `${RULE_MESSAGES[rule]}\n` }
+			: { status: 0, stderr: "" };
+	} finally {
+		for (const key of Object.keys(process.env)) delete process.env[key];
+		Object.assign(process.env, saved);
+	}
 }
 
 /**
@@ -521,18 +567,11 @@ const ALLOW_CASES: string[] = [
 	"npm run lint ; npm run build",
 ];
 
-// Round-2 survey harness retained as a regression fixture for #2705. The
-// synthetic 2026-09-07 corpus is above; the real transcript corpus below is
+// The real transcript corpus (#2705) is
 // `tests/fixtures/guard-bash/transcript-corpus-2026-09-08.json`, extracted
 // from this project's Claude Code session transcripts on 2026-09-06..08 with
 // secrets and the maintainer's email scrubbed. The fixture is data under
 // tests/fixtures, so test-file sweeps do not walk it as executable code.
-const SURVEY_CORPUS_DATE = "2026-09-07";
-const SURVEY_CORPUS = [
-	...DENY_CASES.map(([command]) => ({ command, expected: "deny" as const })),
-	...ALLOW_CASES.map((command) => ({ command, expected: "allow" as const })),
-];
-
 const TRANSCRIPT_CORPUS = JSON.parse(
 	readFileSync(
 		join(
@@ -682,7 +721,7 @@ const EXPECTED_TRANSCRIPT_ALLOWS = new Set([
 
 describe("scripts/hooks/guard-bash.mjs -- deny list (#2699)", () => {
 	it.each(DENY_CASES)("denies %j", (command, ruleNeedle) => {
-		const result = runHook(command);
+		const result = hookVerdict(command);
 		expect(result.status).toBe(2);
 		expect(result.stderr.toLowerCase()).toContain(ruleNeedle);
 	});
@@ -697,7 +736,7 @@ describe("scripts/hooks/guard-bash.mjs -- deny list (#2699)", () => {
 
 describe("scripts/hooks/guard-bash.mjs -- allow list (#2699)", () => {
 	it.each(ALLOW_CASES)("allows %j", (command) => {
-		const result = runHook(command);
+		const result = hookVerdict(command);
 		expect(result.status).toBe(0);
 		expect(result.stderr).toBe("");
 	});
@@ -1973,9 +2012,10 @@ describe("scripts/hooks/guard-bash.mjs -- npm writers and deletes through a link
 // cannot be resolved statically fails CLOSED for the destructive rule
 // (`git worktree remove`), with its own named rule.
 //
-// Every row goes through the real hook entry (stdin JSON -> exit code ->
-// stderr), against a REAL registered linked worktree whose node_modules is a
-// symlink into a shared directory, the reviewer's probe from the issue body.
+// Every row goes through the hook's classifier (hookVerdict, the PreToolUse
+// payload under the env the child would get), against a REAL registered
+// linked worktree whose node_modules is a symlink into a shared directory, the
+// reviewer's probe from the issue body.
 describe("scripts/hooks/guard-bash.mjs -- path-argument resolver (#3988)", () => {
 	type PathRow = {
 		label: string;
@@ -2034,7 +2074,7 @@ describe("scripts/hooks/guard-bash.mjs -- path-argument resolver (#3988)", () =>
 		for (const [key, value] of Object.entries(row.env ?? {}))
 			if (value === undefined) delete env[key];
 			else env[key] = fill(value);
-		return runHook(fill(row.command), env, fill(row.cwd ?? PAYLOAD_CWD));
+		return hookVerdict(fill(row.command), env, fill(row.cwd ?? PAYLOAD_CWD));
 	}
 
 	function expectRule(row: PathRow) {
@@ -2575,7 +2615,7 @@ describe("scripts/hooks/guard-bash.mjs -- path-argument resolver (#3988)", () =>
 		])(
 			"allows a %s spelling of a runtime file in ANOTHER repository",
 			(_label, spelling) => {
-				const result = runHook(
+				const result = hookVerdict(
 					`node ${spelling} --help`,
 					{ ...BASE_ENV, HOME: otherRepo },
 					repoRoot,
@@ -2591,7 +2631,7 @@ describe("scripts/hooks/guard-bash.mjs -- path-argument resolver (#3988)", () =>
 		])(
 			"denies a %s spelling of a runtime file in THIS repository, from a foreign cwd",
 			(_label, spelling) => {
-				const result = runHook(
+				const result = hookVerdict(
 					`node ${spelling}`,
 					{ ...BASE_ENV, HOME: repoRoot },
 					foreignDir,
@@ -2648,24 +2688,6 @@ describe("scripts/hooks/guard-bash.mjs -- ambient PI_LENS_HOME (#2699)", () => {
 		});
 		expect(result.status).toBe(0);
 	});
-});
-
-describe("scripts/hooks/guard-bash.mjs -- round-2 survey corpus (#2705)", () => {
-	it.each(SURVEY_CORPUS)(
-		`keeps the ${SURVEY_CORPUS_DATE} corpus free of non-rule denies: $command`,
-		({ command, expected }) => {
-			const result = runHook(command);
-			if (expected === "allow") {
-				expect(result.status, command).toBe(0);
-				expect(result.stderr, command).toBe("");
-			} else {
-				expect(result.status, command).toBe(2);
-				expect(result.stderr.toLowerCase(), command).toMatch(
-					/stash|reset|worktree|probe|tmpdir|tmp|pkill|chained|ci-verdict|force|rebase/,
-				);
-			}
-		},
-	);
 });
 
 describe(`scripts/hooks/guard-bash.mjs -- transcript corpus ${TRANSCRIPT_CORPUS_DATE} (#2705)`, () => {
@@ -4520,8 +4542,8 @@ describe("scripts/hooks/guard-bash.mjs -- git hook bypass (#3778)", () => {
 		"git add -A && git commit --no-verify -m x",
 	];
 
-	it.each(DENY)("denies %j through the real hook entry", (command) => {
-		const result = runHook(command);
+	it.each(DENY)("denies %j", (command) => {
+		const result = hookVerdict(command);
 		expect(result.status).toBe(2);
 		expect(result.stderr).toContain("hook");
 		// the one-line teaching message names the sanctioned path
@@ -4591,8 +4613,8 @@ describe("scripts/hooks/guard-bash.mjs -- git hook bypass (#3778)", () => {
 		"git log --no-verify",
 	];
 
-	it.each(ALLOW)("allows %j through the real hook entry", (command) => {
-		const result = runHook(command);
+	it.each(ALLOW)("allows %j", (command) => {
+		const result = hookVerdict(command);
 		expect(result.status).toBe(0);
 		expect(result.stderr).toBe("");
 	});

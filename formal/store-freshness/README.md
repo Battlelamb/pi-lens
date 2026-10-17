@@ -205,3 +205,19 @@ excuse it.
   (`WorkspaceOwnCoarseSameSize`, #2300).
 - `BlockerLspOwn` runs with two writes in six ticks (three in eight in the
   investigation, 957k states) to fit the CI budget.
+
+## #4541 mtime-only drift
+
+`WorkspaceOwnTouchBound.cfg` models the current pull binding with `Gate =
+"eqTouch"`: size still gates, and mtime drift is waived only by a matching
+hash bound to the diagnosed text. `WorkspaceOwnTouchUnbound.cfg` models the
+per-file path with no binding: mtime drift still refuses it.
+`MutWorkspaceOwnTouchPostHocHash.cfg` replaces the sent-text binding with a
+post-answer disk hash and must violate `NoStaleServe`. These three configs
+have not been run in the round-3 sandbox (Java is absent); their expected
+results are obligations for the host, not measured results.
+
+The writer is `recordSentContent` in `clients/lsp/client.ts`; the full pull
+answer accepts its hash only when the reported version matches. The sweep
+threads that hash into `record`, never a post-answer disk hash. Existing
+`eq` configs remain as the historical strict-stat gate and its counterexamples.

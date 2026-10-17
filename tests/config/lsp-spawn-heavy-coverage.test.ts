@@ -34,8 +34,7 @@
  *
  * Known marker gap, named rather than papered over: the opt-in live suites
  * (`*.integration.test.ts` that strays outside `integrationInclude`, e.g.
- * typescript-classic-repair / typescript-document-symbol / typescript-native-
- * vitest) spawn a REAL TypeScript server through `TypeScriptServer.spawn(...)`
+ * typescript-classic-repair / typescript-native-vitest) spawn a REAL TypeScript server through `TypeScriptServer.spawn(...)`
  * with NO `launchLSP(`/`getServerById(`/fixture reference, so neither marker
  * catches them. They run only with `PI_LENS_INTEGRATION=1` and skip otherwise;
  * their membership target belongs to a live-suite owner, not this lane.

@@ -3466,15 +3466,6 @@ export async function dispatchLintDetailed(
 }
 
 /**
- * Check if a file should be processed by the dispatcher
- * based on the file kind
- */
-export function shouldDispatch(filePath: string): boolean {
-	const kind = detectFileKind(filePath);
-	return kind !== undefined;
-}
-
-/**
  * Get list of available runners for a file
  */
 export async function getAvailableRunners(filePath: string): Promise<string[]> {

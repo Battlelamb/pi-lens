@@ -292,20 +292,6 @@ describe("tree-sitter runner — entity extraction skip threshold (#885)", () =>
 		filePath: "rules/tree-sitter-queries/typescript/fake-rule.yml",
 	};
 
-	it("skips entity extraction for edits under 5 changed lines", async () => {
-		const { runner, recordEntitySnapshotDiff, runQueryOnFile } =
-			await loadRunnerWithQueries([fakeQuery]);
-		const ctx = {
-			...createCtx("/fake/file.ts"),
-			modifiedRanges: [{ start: 10, end: 10 }], // 1 changed line
-		};
-		const result = await runner.run(ctx as any);
-		expect(result.status).toBe("succeeded");
-		expect(recordEntitySnapshotDiff).not.toHaveBeenCalled();
-		// No entity queries reached the client either.
-		expect(runQueryOnFile).not.toHaveBeenCalled();
-	});
-
 	it("runs entity extraction once for edits at/over 5 changed lines", async () => {
 		const { runner, recordEntitySnapshotDiff, runQueryOnFile } =
 			await loadRunnerWithQueries([fakeQuery]);

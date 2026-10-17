@@ -46,9 +46,15 @@ vi.mock("../../../../clients/latency-logger.js", async (importOriginal) => ({
 	logLatency: logLatencySpy,
 }));
 
-vi.mock("../../../../clients/sessionstart-logger.js", () => ({
-	logSessionStart: vi.fn(),
-}));
+vi.mock(
+	"../../../../clients/sessionstart-logger.js",
+	async (importOriginal) => ({
+		...(await importOriginal<
+			typeof import("../../../../clients/sessionstart-logger.js")
+		>()),
+		logSessionStart: vi.fn(),
+	}),
+);
 
 vi.mock("../../../../clients/safe-spawn.js", async (importOriginal) => ({
 	...(await importOriginal<
@@ -132,7 +138,9 @@ function writeManagedBinaryNamed(tool: string): string {
 async function checkerFor(command: string, windowsExt = ".exe") {
 	const helpers =
 		await import("../../../../clients/dispatch/runners/utils/runner-helpers.js");
-	helpers.resetDispatchAvailabilityState();
+	const { resetSessionScopedState } =
+		await import("../../../../clients/runtime-session.js");
+	resetSessionScopedState(cwd);
 	return helpers.createAvailabilityChecker(command, windowsExt);
 }
 

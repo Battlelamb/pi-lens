@@ -34,6 +34,8 @@ export declare function lintPrBody(
 		bugClosing?: boolean;
 		existsOnBase?: (path: string) => boolean | null;
 		shapeCatalog?: () => Map<number, string> | null;
+		/** PR title; a `refactor(...)` title requires "## Behavior equivalence". */
+		title?: string;
 	},
 ): {
 	valid: boolean;

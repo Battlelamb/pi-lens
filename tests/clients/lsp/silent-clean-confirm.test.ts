@@ -298,6 +298,7 @@ describe("touchFile capability-aware AGGREGATE wait (#814)", () => {
 		process.env.PI_LENS_LSP_DIAGNOSTICS_MAX_WAIT_MS = "50";
 	});
 	afterEach(() => {
+		vi.useRealTimers();
 		delete process.env.PI_LENS_LSP_DIAGNOSTICS_MAX_WAIT_MS;
 		removeTempDirSync(tmp);
 	});
@@ -496,14 +497,28 @@ describe("touchFile capability-aware AGGREGATE wait (#814)", () => {
 		const { LSPService } = await import("../../../clients/lsp/index.js");
 		const service = new LSPService();
 
+		// The stubs' silent waits sleep on the faked setTimeout; setImmediate
+		// stays real so the touch's own file I/O can interleave with the pump.
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
 		const startedAt = Date.now();
-		const result = await service.touchFile(filePath, "const x = 1;\n", {
-			diagnostics: "document",
-			collectDiagnostics: true,
-			clientScope: "all",
-			source: "lens_diagnostics_full",
-		});
-		const elapsedMs = Date.now() - startedAt;
+		let finishedAt: number | undefined;
+		const touch = service
+			.touchFile(filePath, "const x = 1;\n", {
+				diagnostics: "document",
+				collectDiagnostics: true,
+				clientScope: "all",
+				source: "lens_diagnostics_full",
+			})
+			.then((settled) => {
+				finishedAt = Date.now();
+				return settled;
+			});
+		for (let step = 0; step < 100 && finishedAt === undefined; step++) {
+			await vi.advanceTimersByTimeAsync(50);
+			await new Promise((resolve) => setImmediate(resolve));
+		}
+		const result = await touch;
+		const elapsedMs = (finishedAt ?? Number.NaN) - startedAt;
 
 		expect(Array.isArray(result?.diags)).toBe(true);
 		expect(result?.diags).toHaveLength(0);

@@ -64,6 +64,22 @@ function makeClient(root: string): MockRenameClient {
 	};
 }
 
+/** Returns as soon as `promise` settles, or after `ms` if it never does. */
+async function settleWithin(
+	promise: Promise<unknown>,
+	ms: number,
+): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<void>((resolve) => {
+		timer = setTimeout(resolve, ms);
+	});
+	try {
+		await Promise.race([promise, deadline]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 function addClient(
 	// biome-ignore lint/suspicious/noExplicitAny: test double, mirrors service-rename-file.test.ts
 	service: any,
@@ -119,7 +135,7 @@ describe("LSPService.renameFile with a wedged notify (#1621)", () => {
 
 			// Well inside vitest's default per-test timeout, but comfortably
 			// beyond even TWO sequential 80ms notify budgets (close, then resync).
-			await new Promise((resolve) => setTimeout(resolve, 1000));
+			await settleWithin(renamePromise, 1000);
 			expect(settled, "renameFile must settle within its notify budget").toBe(
 				true,
 			);
@@ -165,7 +181,7 @@ describe("LSPService.renameFile with a wedged notify (#1621)", () => {
 					return result;
 				});
 
-			await new Promise((resolve) => setTimeout(resolve, 1000));
+			await settleWithin(renamePromise, 1000);
 			expect(settled, "renameFile must settle within its notify budget").toBe(
 				true,
 			);

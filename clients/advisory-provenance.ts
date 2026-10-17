@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { RuntimeCoordinator } from "./runtime-coordinator.js";
@@ -6,6 +5,7 @@ import { logLatency } from "./latency-logger.js";
 import { normalizeMapKey, toProjectRelativePath } from "./path-utils.js";
 import { resolveRunnerPath } from "./dispatch/runner-context.js";
 import { freshnessFromMtime } from "./freshness.js";
+import { hashFileBytes } from "./content-stamp.js";
 
 export type AdvisoryFileRole = "source" | "test" | "affected";
 
@@ -45,7 +45,7 @@ export function advisoryPathKey(filePath: string, cwd: string): string {
 /** Shared with git guard: there is one SHA-256 implementation for advisories. */
 export function advisoryFileHash(filePath: string): string {
 	try {
-		return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+		return hashFileBytes(filePath);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code ?? "unknown";
 		return code === "ENOENT" ? "missing" : `unreadable:${code}`;
@@ -209,7 +209,7 @@ export function validateAdvisoryProvenance(
 			changedPaths.add(advisoryPathKey(resolved, cwd));
 			continue;
 		}
-		if (stat.mtimeMs !== captured.mtimeMs || stat.size !== captured.size) {
+		if (stat.size !== captured.size) {
 			reasons.push(`metadata-changed:${advisoryPathKey(resolved, cwd)}`);
 		}
 		const currentHash = advisoryFileHash(resolved);
@@ -319,12 +319,6 @@ const MAX_LOGGED_DEAD_PATHS = 3;
 export type FindingPathFreshness = "live" | "stale" | "missing" | "unknown";
 
 /**
- * Existence-only verdict, kept as the name #1460's callers and tests use. It is
- * the subset of `FindingPathFreshness` that carries no staleness arm.
- */
-export type FindingPathExistence = "live" | "missing" | "unknown";
-
-/**
  * What a store means by "the cited file is gone".
  *
  * `drop` is right when the finding IS the file's content: a secret in a deleted
@@ -413,13 +407,6 @@ function freshnessFromFacts(
 	}).verdict === "stale"
 		? "stale"
 		: "live";
-}
-
-/** Existence-only probe. Retained for callers that have no scan timestamp. */
-export function findingPathExistence(
-	resolvedPath: string,
-): FindingPathExistence {
-	return findingPathFreshness(resolvedPath) as FindingPathExistence;
 }
 
 /**

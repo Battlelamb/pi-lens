@@ -284,6 +284,9 @@ const PROJECT_BOUNDARY_MARKERS = [
 	"Cargo.toml",
 	"Cargo.lock",
 	"pyproject.toml",
+	"setup.py",
+	"setup.cfg",
+	"requirements.txt",
 	"uv.lock",
 	"poetry.lock",
 	"Pipfile",
@@ -297,6 +300,12 @@ const PROJECT_BOUNDARY_MARKERS = [
 	"pubspec.yaml",
 	"Package.swift",
 ] as const;
+const PYTHON_BOUNDARY_MARKERS = new Set([
+	"setup.py",
+	"setup.cfg",
+	"requirements.txt",
+]);
+const PYTHON_EXTENSIONS = new Set(extensionsForLanguage("python"));
 
 // This is process-global state, so each candidate pair is logged once per
 // process (not once per session). Keep the root-boundary marker below aligned
@@ -412,12 +421,20 @@ export function enforceLspRootCeiling(
 	return resolvedCwd;
 }
 
-export async function hasProjectBoundaryMarker(dir: string): Promise<boolean> {
+export async function hasProjectBoundaryMarker(
+	dir: string,
+	server: Pick<LSPServerInfo, "extensions">,
+): Promise<boolean> {
 	// A nested Git checkout is an independently hosted project even when it has
 	// no language manifest. Keep this directory boundary aligned with the shared
 	// FALLBACK_PROJECT_MARKERS policy used by nearestNonExcludedFallbackRoot.
 	if (await markerExists(dir, ".git")) return true;
 	for (const marker of PROJECT_BOUNDARY_MARKERS) {
+		if (
+			PYTHON_BOUNDARY_MARKERS.has(marker) &&
+			!server.extensions.some((extension) => PYTHON_EXTENSIONS.has(extension))
+		)
+			continue;
 		if (await markerExists(dir, marker)) return true;
 	}
 	return false;

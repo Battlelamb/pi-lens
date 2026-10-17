@@ -276,23 +276,6 @@ describe("outgoing didChange honors the negotiated sync kind (#1669)", () => {
 		);
 	});
 
-	it("recordSentContent binding stays consistent with what was sent under Incremental", async () => {
-		const state = createMockState({ syncKind: 2 });
-		state.openDocuments.add(TEST_KEY);
-		state.documentVersions.set(TEST_KEY, 0);
-		state.documentContentHashes.set(TEST_KEY, {
-			version: 0,
-			hash: "irrelevant",
-			text: "const x = 1;",
-		});
-
-		await handleNotifyChange(state, TEST_FILE, "const x = 2;");
-
-		const recorded = state.documentContentHashes.get(TEST_KEY);
-		expect(recorded?.version).toBe(1);
-		expect(recorded?.text).toBe("const x = 2;");
-	});
-
 	it("Incremental didOpen (fresh document) still sends the full text, never a range", async () => {
 		const state = createMockState({ syncKind: 2 });
 

@@ -142,10 +142,10 @@
  * with this module is the one number both caps retire against,
  * `DEPENDENCY_DRIFT_MAX_DELIVERIES`, rather than inventing a second one.
  */
-import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as nodePath from "node:path";
 import { BoundedLruCache } from "./bounded-cache.js";
+import { hashContentBytes } from "./content-stamp.js";
 import { bounded } from "./deadline-utils.js";
 import { recordDegradationOnce } from "./degradation-ledger.js";
 import { HOOK_WALL_BUDGET_MS } from "./hook-budgets.js";
@@ -619,24 +619,17 @@ const JS_TS_LANGUAGES = new Set(["typescript", "tsx", "javascript"]);
  */
 const RELATIVE_SPECIFIER = /(["'])(\.{1,2}\/(?:(?!\1)[^\n])*)\1/g;
 /**
- * A dependency whose specifier rule A cannot see: an `import(` or `require(`
- * call (a package or alias name, or computed), or a `/// <reference path>`,
- * whose path needs no `./` and may name a module (TS6053 depends only on the
- * file existing, so the ambient arm misses its creation; #4430 r3 verify).
+ * Dependency forms whose specifiers need not start with `./` or `../`.
+ * Even when captured, keep their scope conservative: an alias, package or
+ * triple-slash reference can name a newly created module (#4477).
  */
 const DEPENDENCY_CALL =
-	/\bimport\s*\(|\brequire\s*\(|\/\/\/\s*<reference\s+path/;
+	/\bimport\s*\(|\brequire\s*\(|@import\b|\bdeclare\s+module\s*["']|\/\/\/\s*<reference\s+(?:path|types)/;
 
 /**
- * #4346 r3: whether a JS/TS file's captured `sources` may miss a dependency.
- * Derived from the text, not from a list of forms (rounds 1 and 2 listed forms
- * and each review found one more): any relative specifier string, comments
- * included, that is not a captured source (a JSDoc `@import`, `declare
- * module "./x"`, `import("./x")`, `require("./x")`), or an `import(` or
- * `require(` call or a `/// <reference path>`, whose specifier a relative
- * test cannot see. A false
- * positive only makes the scope incomplete, which refuses a finding entry
- * once more (fails closed).
+ * #4346 r3: whether a JS/TS file's captured sources may miss a dependency.
+ * Uncaptured relative strings and non-relative dependency forms fail closed;
+ * a false positive costs a cache refusal and a re-touch, not stale findings.
  */
 function holdsUncapturedDependency(
 	content: string,
@@ -899,7 +892,7 @@ async function detectSelfDrift(args: {
 	if (content === undefined)
 		return { verdict: "unverifiable", unverifiableReason: "hash-unavailable" };
 	args.budget.bytesLeft -= content.byteLength;
-	const hash = createHash("sha256").update(content).digest("hex");
+	const hash = hashContentBytes(content);
 	return { verdict: hash === args.recordedHash ? "unchanged" : "drift" };
 }
 

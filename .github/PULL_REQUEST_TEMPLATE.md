@@ -30,6 +30,11 @@ checked against the cited source line. Test ids in tables are real `it(` titles;
 pre-existing-red claims carry the
 `origin/master` transcript.
 
+## Behavior equivalence
+
+Refactor PRs must include a table with `Site`, `Before`, and `After` columns and
+at least one real old-versus-new predicate row.
+
 ## Type of change
 
 - [ ] Bug fix

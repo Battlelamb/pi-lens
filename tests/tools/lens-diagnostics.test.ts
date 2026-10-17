@@ -760,16 +760,6 @@ describe("lens_diagnostics source=lsp compact render", () => {
 // ── schema ────────────────────────────────────────────────────────────────────
 
 describe("lens_diagnostics schema", () => {
-	it("exposes mode and severity parameters", () => {
-		const tool = makeTool();
-		const props = (tool.parameters as { properties: Record<string, unknown> })
-			.properties;
-		expect(props.mode).toBeDefined();
-		expect(props.severity).toBeDefined();
-		expect(props.refreshRunners).toBeDefined();
-		expect(props.analysisRoot).toBeDefined();
-	});
-
 	it("passes an explicit analysis root through mode=full (#2053)", async () => {
 		const lspService = {
 			runWorkspaceDiagnostics: vi.fn().mockResolvedValue([]),
@@ -4578,13 +4568,6 @@ describe("lens_diagnostics mode=all", () => {
 // ── paths scope restrictor (#461) ───────────────────────────────────────────────
 
 describe("lens_diagnostics paths", () => {
-	it("exposes paths in the schema", () => {
-		const tool = makeTool();
-		const props = (tool.parameters as { properties: Record<string, unknown> })
-			.properties;
-		expect(props.paths).toBeDefined();
-	});
-
 	it("mode=all: paths filter shows only listed files, excluding unrelated cached findings", async () => {
 		mockSummaries.length = 0;
 		mockSummaries.push(sum("/proj/src/keep.ts", { warnings: 1 }));

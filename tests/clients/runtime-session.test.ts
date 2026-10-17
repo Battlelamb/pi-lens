@@ -326,7 +326,58 @@ async function runSessionStart(
 	}
 }
 
+// The ast-grep-exports defer (STARTUP_TASK_DEFER_MS) is the one long real wait
+// these cases would otherwise sit through. The literal pins the delay: a longer
+// or removed defer reds the boundary checks in `runSessionStartPastExportsDefer`.
+const EXPORTS_DEFER_MS = 5400;
+
+const exportsTaskStarted = (dbg: { mock: { calls: unknown[][] } }): boolean =>
+	dbg.mock.calls.some(([msg]) =>
+		String(msg).includes("session_start task ast-grep-exports: start"),
+	);
+
+/**
+ * `runSessionStart` with setTimeout faked, stepped to the ast-grep-exports
+ * defer boundary by hand, then back on real timers. Only the timer pair is
+ * faked: the scans' fs reads and setImmediate ticks still run for real, and
+ * the settle loops below yield on setImmediate, never on a timer.
+ */
+async function runSessionStartPastExportsDefer(
+	...args: Parameters<typeof runSessionStart>
+): Promise<Awaited<ReturnType<typeof runSessionStart>>> {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const run = await runSessionStart(...args);
+	try {
+		const yieldTick = () =>
+			new Promise<void>((resolve) => setImmediate(resolve));
+		await waitForCondition(
+			() =>
+				run.dbg.mock.calls.some(
+					([msg]) =>
+						msg ===
+						`session_start task ast-grep-exports: scheduled deferMs=${EXPORTS_DEFER_MS}`,
+				),
+			Boolean,
+			{ yieldControl: yieldTick },
+		);
+		await vi.advanceTimersByTimeAsync(EXPORTS_DEFER_MS - 1);
+		await yieldTick();
+		expect(exportsTaskStarted(run.dbg)).toBe(false);
+		await vi.advanceTimersByTimeAsync(1);
+		await waitForCondition(() => exportsTaskStarted(run.dbg), Boolean, {
+			yieldControl: yieldTick,
+		});
+	} catch (error) {
+		await run.env.cleanup();
+		throw error;
+	} finally {
+		vi.useRealTimers();
+	}
+	return run;
+}
+
 afterEach(() => {
+	vi.useRealTimers();
 	delete process.env.PI_LENS_STARTUP_MODE;
 });
 
@@ -338,7 +389,7 @@ it(
 			["writeConfig", "src/config.ts"],
 		]);
 		const scanExports = vi.fn(async () => exports);
-		const { env, astGrepEnsure, dbg } = await runSessionStart(
+		const { env, astGrepEnsure, dbg } = await runSessionStartPastExportsDefer(
 			"full",
 			(tmpDir) =>
 				createTempFile(
@@ -813,6 +864,15 @@ describe(
 			const restoreStartupMode = setStartupMode("quick");
 			const previousDataDir = process.env.PILENS_DATA_DIR;
 			process.env.PILENS_DATA_DIR = path.join(env.tmpDir, "data");
+			// Own root marker, as the nested-cwd cell below plants: without it an
+			// ancestor `.git` (a stray empty /tmp/.git on the dev host) became the
+			// project root, the snapshot under env.tmpDir was never read, and the
+			// cell redded #4546's pre-push three times with `expected undefined`.
+			createTempFile(
+				env.tmpDir,
+				"package.json",
+				JSON.stringify({ type: "module" }),
+			);
 			const runtime = new RuntimeCoordinator();
 			try {
 				saveProjectSnapshot(env.tmpDir, {
@@ -1047,7 +1107,7 @@ describe(
 					astGrepEnsure,
 					knipAnalyze,
 					jscpdEnsure,
-				} = await runSessionStart("full", (tmpDir) => {
+				} = await runSessionStartPastExportsDefer("full", (tmpDir) => {
 					createTempFile(
 						tmpDir,
 						"package.json",
@@ -1102,7 +1162,7 @@ describe(
 					knipAnalyze,
 					jscpdEnsure,
 					dbg,
-				} = await runSessionStart("full", (tmpDir) => {
+				} = await runSessionStartPastExportsDefer("full", (tmpDir) => {
 					createTempFile(
 						tmpDir,
 						"package.json",
@@ -1513,7 +1573,7 @@ describe(
 				knipEnsure,
 				knipAnalyze,
 				jscpdEnsure,
-			} = await runSessionStart("full", (tmpDir) => {
+			} = await runSessionStartPastExportsDefer("full", (tmpDir) => {
 				createTempFile(
 					tmpDir,
 					"package.json",
@@ -1523,6 +1583,8 @@ describe(
 			});
 
 			try {
+				// Exactly once: the startup madge scan ensures madge; a deferred madge
+				// probe on top of it was the duplicate this test exists to catch.
 				await vi.waitFor(() => expect(depEnsure).toHaveBeenCalledTimes(1), {
 					timeout: HEAVY_IO_TIMEOUT_MS,
 				});

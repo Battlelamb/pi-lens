@@ -390,6 +390,45 @@ describe("Pipeline", () => {
 		});
 	});
 
+	it.each([2 * 1024 * 1024, 2 * 1024 * 1024 + 1])(
+		"preserves inline baseline byte boundary at %i",
+		async (size) => {
+			const filePath = createTempFile(
+				tmpDir,
+				"clean-baseline.ts",
+				"x".repeat(size),
+			);
+			vi.mocked(dispatchLintWithResult).mockImplementationOnce(async () => ({
+				diagnostics: [],
+				blockers: [],
+				warnings: [],
+				baselineWarningCount: 0,
+				fixed: [],
+				resolvedCount: 0,
+				output: "clean",
+				blockerOutput: "",
+				hasBlockers: false,
+			}));
+
+			const result = await runPipeline(
+				createMockContext(filePath, { allowAutonomousWriters: false }),
+				createMockDeps(),
+			);
+
+			expect(result.hasBlockers).toBe(false);
+			expect(result.inlineBlockerFileContent).toEqual(
+				size <= 2 * 1024 * 1024
+					? {
+							size,
+							sha256: createHash("sha256")
+								.update("x".repeat(size))
+								.digest("hex"),
+						}
+					: undefined,
+			);
+		},
+	);
+
 	it("states why a delta-promoted unused finding blocks in the enriched STOP block (#3218)", async () => {
 		// The turn-end replay renders through `formatDiagnostics`, but the inline
 		// tool result renders the enriched variant. Both must carry the seam's

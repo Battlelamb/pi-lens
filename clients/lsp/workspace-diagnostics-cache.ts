@@ -7,6 +7,7 @@ import { createGenerationMap } from "../generation-guard.js";
 import { isUnderDir, normalizeMapKey } from "../path-utils.js";
 import { loadReverseDependencyIndexFromSnapshot } from "../reverse-deps.js";
 import { freshnessFromMtime } from "../freshness.js";
+import { CONTENT_HASH_MAX_BYTES, hashFileBytes } from "../content-stamp.js";
 import { logLatency } from "../latency-logger.js";
 import { recordDegradationOnce } from "../degradation-ledger.js";
 import { compareOrdinal } from "../string-utils.js";
@@ -468,9 +469,10 @@ export function classifyWorkspaceDiagnosticsCacheExpiry(
  * instead of paying for a fresh `touchFile`.
  *
  * Two invalidation layers:
- * 1. The file's OWN mtime must be unchanged since it was scanned (exact
- *    match against `entry.mtimeMs`) — any drift, or a stat failure
- *    (deleted/unreadable), invalidates. #2300: when the entry also carries a
+ * 1. The file's OWN mtime must be unchanged since it was scanned, unless the
+ *    entry carries a content stamp that proves the bytes are unchanged — a
+ *    touch must not discard a valid result (#4541). A stat failure
+ *    (deleted/unreadable) invalidates. #2300: when the entry also carries a
  *    `sizeBytes`, the current size must match too — an external rewrite that
  *    lands in the same mtime bucket with a different length is otherwise
  *    invisible to mtime alone. A pre-#2300 entry without `sizeBytes` fails
@@ -529,10 +531,23 @@ export function isEntryFresh(
 	} catch {
 		return false; // deleted / unreadable
 	}
-	if (ownStat.mtimeMs !== entry.mtimeMs) return false;
 	// #2300: same axis reused from the stat above — no extra syscall.
 	if (entry.sizeBytes !== undefined && ownStat.size !== entry.sizeBytes) {
 		return false;
+	}
+	if (ownStat.mtimeMs !== entry.mtimeMs) {
+		// #4541: current-version entries with a raw-byte stamp survive a touch;
+		// legacy entries without one retain the strict mtime contract.
+		if (
+			entry.contentHash === undefined ||
+			ownStat.size > CONTENT_HASH_MAX_BYTES
+		)
+			return false;
+		try {
+			if (hashFileBytes(filePath) !== entry.contentHash) return false;
+		} catch {
+			return false;
+		}
 	}
 
 	const imports = getImports(filePath);

@@ -620,6 +620,7 @@ export function getSymbolQueryLanguages(): readonly string[] {
 // an unpredicated ruby `require` query over-matches `puts`/`foo`, the predicated
 // one returns only the require args.
 const JS_TS_IMPORT_QUERY = `
+      (comment) @importComment
       (import_statement source: (string) @importSource)
       (export_statement source: (string) @importSource)
       (call_expression
@@ -639,9 +640,12 @@ const IMPORT_QUERIES: Record<string, string> = {
 	// created-module producer read this query, and a dependency it missed
 	// stayed stale there. Node names probed on the shipped typescript, tsx and
 	// javascript grammars; a pattern one grammar lacks would fail the whole
-	// query (javascript shares this one), so `import x = require()` is left out.
-	typescript: JS_TS_IMPORT_QUERY,
-	tsx: JS_TS_IMPORT_QUERY,
+	// query. The ambient-module extension is TS/TSX-only; JavaScript uses
+	// the common query. `import x = require()` remains outside this query.
+	typescript: `${JS_TS_IMPORT_QUERY}
+      (ambient_declaration (module name: (string) @importSource))`,
+	tsx: `${JS_TS_IMPORT_QUERY}
+      (ambient_declaration (module name: (string) @importSource))`,
 	// #include "foo.h" (string_literal) and #include <stdio.h> (system_lib_string)
 	// on both the c and cpp grammars (validated). parseImportMatch strips the quotes
 	// from the local form; the system form keeps its <> so the resolver/bucketer can
@@ -721,7 +725,7 @@ const IMPORT_QUERIES: Record<string, string> = {
 // import/export ... from "..." have the same (import_statement source: (string))
 // / (export_statement source: (string)) shape on the javascript grammar
 // (validated — compiles + captures), so the typescript query applies unchanged.
-IMPORT_QUERIES.javascript = IMPORT_QUERIES.typescript;
+IMPORT_QUERIES.javascript = JS_TS_IMPORT_QUERY;
 
 export interface ImportRef {
 	/** Raw import source (quotes/whitespace stripped), e.g. "os.path", "fmt". */
@@ -743,15 +747,28 @@ export interface ExtractedSymbols {
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: tree-sitter match type
-function parseImportMatch(match: any): ImportRef | null {
+function parseImportMatch(match: any): ImportRef[] {
+	const imports: ImportRef[] = [];
 	for (const capture of match.captures) {
+		// JSDoc tags are comment text in all three shipped grammars (#4477).
+		if (capture.name === "importComment") {
+			for (const tag of capture.node.text.matchAll(
+				/@import\b[^@]*?\bfrom\s*(["'])([^"'\r\n]+)\1/g,
+			)) {
+				imports.push({
+					source: tag[2]!,
+					line: capture.node.startPosition.row + 1,
+				});
+			}
+			continue;
+		}
 		if (capture.name !== "importSource") continue;
 		const raw = String(capture.node.text ?? "").trim();
 		const source = raw.replace(/^["'`]+|["'`]+$/g, "");
 		if (!source) continue;
-		return { source, line: capture.node.startPosition.row + 1 };
+		imports.push({ source, line: capture.node.startPosition.row + 1 });
 	}
-	return null;
+	return imports;
 }
 
 export class TreeSitterSymbolExtractor {
@@ -898,8 +915,7 @@ export class TreeSitterSymbolExtractor {
 		const imports: ImportRef[] = [];
 		if (!this.importQuery) return imports;
 		for (const match of this.queryMatches(this.importQuery, tree.rootNode)) {
-			const ref = parseImportMatch(match);
-			if (ref) imports.push(ref);
+			imports.push(...parseImportMatch(match));
 		}
 		return imports;
 	}
