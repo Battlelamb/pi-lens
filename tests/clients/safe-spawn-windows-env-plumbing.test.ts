@@ -226,3 +226,60 @@ describe("Windows resolution honors the CALLER's env, not just ambient process.e
 		expect(spawnOptions.cwd).toBe("D:work");
 	});
 });
+
+// R16-F1: deletion must survive both dispatchers' ambient environment merge.
+it.each(["linux", "win32"])(
+	"r17 scoped env removal reaches sync and async spawn: %s",
+	async (platform) => {
+		const realPlatform = process.platform;
+		const { setTrustScopedPath } =
+			await import("../../clients/package-manager.js");
+		const { setProjectTrustState, resetProjectTrust } =
+			await import("../../clients/project-trust.js");
+		try {
+			Object.defineProperty(process, "platform", {
+				value: platform,
+				configurable: true,
+			});
+			vi.stubEnv("PATH", process.cwd());
+			vi.stubEnv("Path", process.cwd());
+			setProjectTrustState("unknown");
+			const env = { ...process.env };
+			setTrustScopedPath(env, process.cwd());
+			const command =
+				platform === "win32" ? "C:\\__r17__\\native.exe" : "/__r17__/native";
+			markFilesAsPresent(command);
+			spawnSyncMock.mockClear();
+			spawnMock.mockClear();
+			const child = makeFakeChild();
+			spawnMock.mockReturnValue(child);
+			safeSpawn(command, [], { env });
+			const pending = safeSpawnAsync(command, [], { env });
+			child.emit("exit", 0, null);
+			child.emit("close", 0, null);
+			await pending;
+			for (const calls of [spawnSyncMock.mock.calls, spawnMock.mock.calls]) {
+				expect(calls).toHaveLength(1);
+				const handed = calls[0][2].env;
+				expect(handed?.PATH).toBeUndefined();
+				expect(handed?.Path).toBe(
+					platform === "win32" ? undefined : process.cwd(),
+				);
+			}
+			// A partial unrelated override still inherits ambient PATH (#4566 F1).
+			safeSpawn(command, [], { env: { R17_UNRELATED: "kept" } });
+			expect(
+				spawnSyncMock.mock.calls.at(-1)?.[2].env?.[
+					platform === "win32" ? "Path" : "PATH"
+				],
+			).toBe(process.cwd());
+		} finally {
+			vi.unstubAllEnvs();
+			resetProjectTrust();
+			Object.defineProperty(process, "platform", {
+				value: realPlatform,
+				configurable: true,
+			});
+		}
+	},
+);

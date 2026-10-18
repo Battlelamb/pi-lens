@@ -16,6 +16,7 @@
 
 import { readFileSync } from "node:fs";
 import fc from "fast-check";
+import { scaledTestTimeout } from "../support/test-timeout-scale.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TRANSIENT_BASE_COOLDOWN_MS } from "../../clients/dispatch/runners/utils/availability-policy.js";
 import { setupTestEnvironment, useTrackedTempDirs } from "./test-utils.js";
@@ -288,100 +289,108 @@ describe("package-manager availability (#1496)", () => {
 	});
 });
 
-it("keeps transient details for a flight joiner after latch eviction (#4566 r13)", async () => {
-	// #4566: the joiner must read the shared verdict, not its replacement latch.
-	// Schedule join and eviction requests; cover missing as well as transient
-	// so repairing disclosure cannot turn a genuine absence into a transient.
-	const { allAvailableGlobalBinDirs, _resetPackageManagerCache } =
-		await import("../../clients/package-manager.js");
-	const roots = await Promise.all(
-		Array.from({ length: 4 }, () => emptyProjectDir()),
-	);
-	const { clearLatencyLog, flushLatencyLog, getLatencyLogPath } =
-		await import("../../clients/latency-logger.js");
-	const savedMode = process.env.PI_LENS_TEST_MODE;
-	process.env.PI_LENS_TEST_MODE = "0";
-	try {
-		await fc.assert(
-			fc.asyncProperty(
-				fc.scheduler(),
-				fc.boolean(),
-				fc.boolean(),
-				async (scheduler, transient, evictFirst) => {
-					_resetPackageManagerCache();
-					clearLatencyLog();
-					await flushLatencyLog();
-					let release!: (
-						value: typeof timeoutResult | typeof notFoundResult,
-					) => void;
-					let started!: () => void;
-					const pending = new Promise<
-						typeof timeoutResult | typeof notFoundResult
-					>((resolve) => {
-						release = resolve;
-					});
-					const entered = new Promise<void>((resolve) => {
-						started = resolve;
-					});
-					let pnpmCalls = 0;
-					safeSpawnAsync.mockImplementation(
-						async (cmd: string, args: string[]) => {
-							if (cmd === finder() && args[0] === "pnpm" && ++pnpmCalls === 1) {
-								started();
-								return pending;
-							}
-							return notFoundResult;
-						},
-					);
-					const firstTransient = vi.fn();
-					const joinTransient = vi.fn();
-					const first = allAvailableGlobalBinDirs(firstTransient, roots[0]);
-					await entered;
-					const churn = scheduler
-						.schedule(Promise.resolve(), "sibling roots")
-						.then(async () => {
-							for (const root of roots.slice(1))
-								await allAvailableGlobalBinDirs(undefined, root);
-						});
-					let joiner!: Promise<string[]>;
-					const joined = scheduler
-						.schedule(Promise.resolve(), "same-key joiner")
-						.then(async () => {
-							if (evictFirst) await churn;
-							joiner = allAvailableGlobalBinDirs(joinTransient, roots[0]);
-							await Promise.resolve();
-							await Promise.resolve();
-						});
-					await scheduler.waitFor(Promise.all([churn, joined]));
-					release(transient ? timeoutResult : notFoundResult);
-					await Promise.all([first, joiner]);
-					expect(firstTransient).toHaveBeenCalledTimes(transient ? 1 : 0);
-					expect(joinTransient).toHaveBeenCalledTimes(transient ? 1 : 0);
-					expect(pnpmCalls).toBe(4);
-					await flushLatencyLog();
-					const rows = readFileSync(getLatencyLogPath(), "utf8")
-						.trim()
-						.split("\n")
-						.map((line) => JSON.parse(line))
-						.filter(
-							(row) =>
-								row.phase === "availability_decision" &&
-								row.metadata?.tool === "pnpm",
-						);
-					expect(rows.at(-1)?.metadata).toMatchObject({
-						outcome: transient ? "transient" : "missing",
-						cause: transient ? "probe-timeout" : "not-found",
-						classifiedBy: "probe",
-					});
-				},
-			),
-			{ seed: 456613, numRuns: 20 },
+it(
+	"keeps transient details for a flight joiner after latch eviction (#4566 r13)",
+	async () => {
+		// #4566: the joiner must read the shared verdict, not its replacement latch.
+		// Schedule join and eviction requests; cover missing as well as transient
+		// so repairing disclosure cannot turn a genuine absence into a transient.
+		const { allAvailableGlobalBinDirs, _resetPackageManagerCache } =
+			await import("../../clients/package-manager.js");
+		const roots = await Promise.all(
+			Array.from({ length: 4 }, () => emptyProjectDir()),
 		);
-	} finally {
-		if (savedMode === undefined) delete process.env.PI_LENS_TEST_MODE;
-		else process.env.PI_LENS_TEST_MODE = savedMode;
-	}
-});
+		const { clearLatencyLog, flushLatencyLog, getLatencyLogPath } =
+			await import("../../clients/latency-logger.js");
+		const savedMode = process.env.PI_LENS_TEST_MODE;
+		process.env.PI_LENS_TEST_MODE = "0";
+		try {
+			await fc.assert(
+				fc.asyncProperty(
+					fc.scheduler(),
+					fc.boolean(),
+					fc.boolean(),
+					async (scheduler, transient, evictFirst) => {
+						_resetPackageManagerCache();
+						clearLatencyLog();
+						await flushLatencyLog();
+						let release!: (
+							value: typeof timeoutResult | typeof notFoundResult,
+						) => void;
+						let started!: () => void;
+						const pending = new Promise<
+							typeof timeoutResult | typeof notFoundResult
+						>((resolve) => {
+							release = resolve;
+						});
+						const entered = new Promise<void>((resolve) => {
+							started = resolve;
+						});
+						let pnpmCalls = 0;
+						safeSpawnAsync.mockImplementation(
+							async (cmd: string, args: string[]) => {
+								if (
+									cmd === finder() &&
+									args[0] === "pnpm" &&
+									++pnpmCalls === 1
+								) {
+									started();
+									return pending;
+								}
+								return notFoundResult;
+							},
+						);
+						const firstTransient = vi.fn();
+						const joinTransient = vi.fn();
+						const first = allAvailableGlobalBinDirs(firstTransient, roots[0]);
+						await entered;
+						const churn = scheduler
+							.schedule(Promise.resolve(), "sibling roots")
+							.then(async () => {
+								for (const root of roots.slice(1))
+									await allAvailableGlobalBinDirs(undefined, root);
+							});
+						let joiner!: Promise<string[]>;
+						const joined = scheduler
+							.schedule(Promise.resolve(), "same-key joiner")
+							.then(async () => {
+								if (evictFirst) await churn;
+								joiner = allAvailableGlobalBinDirs(joinTransient, roots[0]);
+								await Promise.resolve();
+								await Promise.resolve();
+							});
+						await scheduler.waitFor(Promise.all([churn, joined]));
+						release(transient ? timeoutResult : notFoundResult);
+						await Promise.all([first, joiner]);
+						expect(firstTransient).toHaveBeenCalledTimes(transient ? 1 : 0);
+						expect(joinTransient).toHaveBeenCalledTimes(transient ? 1 : 0);
+						expect(pnpmCalls).toBe(4);
+						await flushLatencyLog();
+						const rows = readFileSync(getLatencyLogPath(), "utf8")
+							.trim()
+							.split("\n")
+							.map((line) => JSON.parse(line))
+							.filter(
+								(row) =>
+									row.phase === "availability_decision" &&
+									row.metadata?.tool === "pnpm",
+							);
+						expect(rows.at(-1)?.metadata).toMatchObject({
+							outcome: transient ? "transient" : "missing",
+							cause: transient ? "probe-timeout" : "not-found",
+							classifiedBy: "probe",
+						});
+					},
+				),
+				{ seed: 456613, numRuns: 20 },
+			);
+		} finally {
+			if (savedMode === undefined) delete process.env.PI_LENS_TEST_MODE;
+			else process.env.PI_LENS_TEST_MODE = savedMode;
+		}
+	},
+	scaledTestTimeout(5000),
+);
 
 it("keys the availability latch by the caller root's canonical spelling (#4566 r16)", async () => {
 	safeSpawnAsync.mockImplementation(async (cmd: string, args: string[]) =>

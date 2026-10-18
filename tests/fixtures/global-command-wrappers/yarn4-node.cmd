@@ -1,0 +1,1 @@
+@goto #_undefined_# 2>NUL || @title %COMSPEC% & @setlocal & @"__RUNTIME__" "__TARGET__" %*

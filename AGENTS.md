@@ -887,9 +887,10 @@ file-scoped worklist and receives no project-wide scanner output.
   project is skipped.
   Discovered commands are judged by their executable target anywhere in the
   caller's explicit project tree, including npm Windows shim script targets;
-  a shim is admitted only when every own-directory target it names resolves to
-  a concrete path outside the project, and a target the parser cannot fully
-  resolve (an unexpanded variable, an unknown wrapper) refuses the shim;
+  a cmd/PowerShell/shell wrapper is admitted only by a whole-file match to an
+  explicitly captured generator template with literal, existing targets outside
+  the project. Unknown formats, changed templates, and `.bat` wrappers refuse
+  until trusted; new generator versions/options require new captures;
   availability probes, global-dir queries, and their bounded cache keys carry
   that same root. POSIX reads and writes only `PATH`; Windows alone folds key
   casing. `tests/clients/global-binary-trust-4530.test.ts` and

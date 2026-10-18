@@ -78,7 +78,7 @@ const SAVED_ENV = [
 	"PI_LENS_DISABLE_TOOL_INSTALL",
 	"PI_LENS_TEST_MODE",
 ] as const;
-const savedEnv = new Map<string, string | undefined>();
+const savedEnv: NodeJS.ProcessEnv = {};
 const originalCwd = process.cwd();
 const dirs: string[] = [];
 
@@ -117,7 +117,7 @@ function plant(file: string, marker: string): string {
 }
 
 function dirOf(command: string): string {
-	const found = (savedEnv.get("PATH") ?? "")
+	const found = (savedEnv["PATH"] ?? "")
 		.split(path.delimiter)
 		.find((dir) => dir && fs.existsSync(path.join(dir, command)));
 	if (!found) throw new Error(`${command} is not on PATH`);
@@ -159,7 +159,7 @@ function clearStore(): void {
 }
 
 beforeEach(() => {
-	for (const key of SAVED_ENV) savedEnv.set(key, process.env[key]);
+	for (const key of SAVED_ENV) savedEnv[key] = process.env[key];
 	// The host's own npm prefix variable would answer for the global query.
 	delete process.env.npm_config_prefix;
 	delete process.env.NPM_CONFIG_PREFIX;
@@ -173,7 +173,7 @@ beforeEach(() => {
 afterEach(() => {
 	vi.restoreAllMocks();
 	process.chdir(originalCwd);
-	for (const [key, value] of savedEnv) {
+	for (const [key, value] of Object.entries(savedEnv)) {
 		if (value === undefined) delete process.env[key];
 		else process.env[key] = value;
 	}
@@ -236,9 +236,7 @@ describe.skipIf(process.platform === "win32")(
 		it("never runs a PATH lookup helper from a project bin dir", async () => {
 			const project = makeProject();
 			plant(path.join(project.bin, "which"), project.marker);
-			process.env.PATH = [project.bin, savedEnv.get("PATH")].join(
-				path.delimiter,
-			);
+			process.env.PATH = [project.bin, savedEnv["PATH"]].join(path.delimiter);
 			process.chdir(project.root);
 			setProjectTrustState("unknown");
 
@@ -252,9 +250,7 @@ describe.skipIf(process.platform === "win32")(
 			for (const manager of ["npm", "pnpm", "yarn"]) {
 				plant(path.join(project.bin, manager), project.marker);
 			}
-			process.env.PATH = [project.bin, savedEnv.get("PATH")].join(
-				path.delimiter,
-			);
+			process.env.PATH = [project.bin, savedEnv["PATH"]].join(path.delimiter);
 			process.chdir(project.root);
 			setProjectTrustState("unknown");
 
@@ -266,9 +262,7 @@ describe.skipIf(process.platform === "win32")(
 		it("resolves the package manager's own runtime outside a project bin dir", async () => {
 			const project = makeProject();
 			plant(path.join(project.bin, "node"), project.marker);
-			process.env.PATH = [project.bin, savedEnv.get("PATH")].join(
-				path.delimiter,
-			);
+			process.env.PATH = [project.bin, savedEnv["PATH"]].join(path.delimiter);
 			process.chdir(project.root);
 			setProjectTrustState("unknown");
 
@@ -316,7 +310,7 @@ describe.skipIf(process.platform === "win32")(
 				project.bin,
 				outside,
 				path.dirname(process.execPath),
-				savedEnv.get("PATH"),
+				savedEnv["PATH"],
 			].join(path.delimiter);
 			process.chdir(project.root);
 			setProjectTrustState("unknown");
@@ -927,7 +921,7 @@ describe.skipIf(process.platform === "win32")(
 			process.chdir(project.root);
 			setProjectTrustState("unknown");
 
-			expect(trustScopedSpawnEnv()).not.toHaveProperty("PATH");
+			expect(trustScopedSpawnEnv()?.PATH).toBeUndefined();
 
 			await findGlobalBinary(FIXTURE_TOOL);
 
@@ -992,7 +986,8 @@ describe.skipIf(process.platform === "win32")(
 			} finally {
 				if (previous === undefined) delete process.env.Path;
 				else process.env.Path = previous;
-				process.env.PATH = actualPath;
+				if (actualPath === undefined) delete process.env.PATH;
+				else process.env.PATH = actualPath;
 			}
 		});
 
@@ -1086,9 +1081,7 @@ describe.skipIf(process.platform === "win32")(
 				JSON.stringify({ packageManager: "pnpm@9.0.0" }),
 			);
 			plant(path.join(project.bin, "pnpm"), project.marker);
-			process.env.PATH = [project.bin, savedEnv.get("PATH")].join(
-				path.delimiter,
-			);
+			process.env.PATH = [project.bin, savedEnv["PATH"]].join(path.delimiter);
 			// F2: judge the adopted root, not process.cwd().
 			setProjectTrustState("unknown");
 			expect(await resolveNodePackageManager(project.root)).toBe("npm");
@@ -1114,229 +1107,106 @@ it("isolates availability by the caller root (#4566 F2)", async () => {
 		path.join(project.bin, process.platform === "win32" ? "pnpm.cmd" : "pnpm"),
 		project.marker,
 	);
-	process.env.PATH = [project.bin, savedEnv.get("PATH")].join(path.delimiter);
+	process.env.PATH = [project.bin, savedEnv["PATH"]].join(path.delimiter);
 	setProjectTrustState("unknown");
 	expect(await resolveNodePackageManager(project.root)).toBe("npm");
 	expect(await resolveNodePackageManager(other.root)).toBe("pnpm");
 	expect(await resolveNodePackageManager(project.root)).toBe("npm");
 });
 
-it.each([
-	["a project .exe target beside an outside script", "tool.exe"],
-	["a project trailing-dot target beside an outside script", "tool."],
-	["a project 8.3 spelling beside an outside script", "TOOL~1.EXE"],
-])(
-	"judges every shim target it can resolve, whatever its suffix: %s (#4566 r15)",
-	(_label, fileName) => {
-		// R14-V2: the r14 suffix allowlist dropped a target it could not match,
-		// so a concrete project target vouched for nothing next to a supported
-		// outside one. Nothing resolvable may be dropped.
+// Captured upstream bytes, independent of the runtime template registry.
+// R17: every admitted template needs an outside success witness so removing
+// an entry cannot hide behind the fail-closed default.
+const wrapperFixtures = path.resolve("tests/fixtures/global-command-wrappers");
+const wrapperNames = fs
+	.readdirSync(wrapperFixtures)
+	.filter((name) => /\.(cmd|ps1|sh)$/.test(name));
+const wrapperCases = wrapperNames.flatMap((name) =>
+	["exact", "near-miss", "suffix"].flatMap((form) =>
+		(["trusted", "unknown", "untrusted"] as const).flatMap((trust) =>
+			["outside", "inside", "unresolvable"].map((target) => ({
+				name,
+				form,
+				trust,
+				target,
+			})),
+		),
+	),
+);
+it.each(wrapperCases)(
+	"r17 wrapper matrix: $name / $form / $trust / $target",
+	({ name, form, trust, target }) => {
 		const project = makeProject();
-		const outside = tempDir("pi-lens-shim-");
-		writeScript(path.join(outside, "pkg", "bin", "srv.js"), "");
-		const projectTarget = path
-			.relative(outside, path.join(project.root, "bin", fileName))
-			.replaceAll(path.sep, "\\");
-		const shim = path.join(outside, "server.cmd");
-		fs.writeFileSync(
-			shim,
-			[
-				"@echo off",
-				`@"%dp0%\\node.exe" "%dp0%\\${projectTarget}" "%dp0%\\pkg\\bin\\srv.js" %*`,
-			].join("\r\n"),
+		const outside = tempDir("pi-lens-wrapper-");
+		const script = path.join(
+			target === "inside" ? project.root : outside,
+			"server.js",
 		);
-		setProjectTrustState("unknown");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-		// The same shim against a project it does not name is admitted: the
-		// resolvable targets are the criterion, not the suffix.
-		expect(commandResolvesIntoProject(shim, makeProject().root)).toBe(false);
+		if (target !== "unresolvable") fs.writeFileSync(script, "");
+		const kind = path.extname(name);
+		const shim = path.join(outside, `tool${kind}`);
+		let spelling = name.startsWith("yarn4-")
+			? script
+			: path.relative(outside, script);
+		spelling = spelling.split(path.sep).join(kind === ".cmd" ? "\\" : "/");
+		let text = fs
+			.readFileSync(path.join(wrapperFixtures, name), "utf8")
+			.replaceAll("__TARGET__", spelling)
+			.replaceAll("__RUNTIME__", process.execPath);
+		if (form === "near-miss") text = text.slice(0, -1) + "^";
+		if (form === "suffix") text += "\necho injected\n";
+		fs.writeFileSync(shim, text);
+		setProjectTrustState(trust);
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(
+			trust !== "trusted" && (form !== "exact" || target !== "outside"),
+		);
 	},
 );
 
-it("refuses a global shim whose only target spelling cannot be resolved (#4566 r15)", () => {
-	// R14-V2: `%exe%` was pushed as "extensionless" and resolved to a literal
-	// path outside the project, so the shim read as an outside target.
+it.each(["cmd", "ps1", "sh"])("r17 unknown wrapper refuses: %s", (kind) => {
 	const project = makeProject();
-	const outside = tempDir("pi-lens-shim-");
-	const shim = path.join(outside, "server.cmd");
-	fs.writeFileSync(shim, '@echo off\n@"%dp0%\\%exe%" %*\n');
+	const shim = path.join(tempDir("pi-lens-wrapper-"), `tool.${kind}`);
+	fs.writeFileSync(shim, "unknown wrapper");
 	setProjectTrustState("unknown");
 	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-	setProjectTrustState("untrusted");
-	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
 });
 
-it("judges the script target of an npm cmd shim (#4566 F3)", () => {
-	const project = makeProject();
-	const outside = tempDir("pi-lens-shim-");
-	const script = path.join(project.root, "server.js");
-	fs.writeFileSync(script, "");
-	const relative = path.relative(outside, script).replaceAll(path.sep, "\\");
-	const shim = path.join(outside, "server.cmd");
-	fs.writeFileSync(
-		shim,
-		`@echo off\n@"%~dp0\\node.exe" "%~dp0\\${relative}" %*\n`,
-	);
-	// cmd-shim v6.0.0, npm/cmd-shim@25724bfea794ebec14432278b1a4d223cc158f83:
-	// lib/index.js emits %dp0% and $basedir with these path spellings.
-	setProjectTrustState("unknown");
-	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-	fs.writeFileSync(
-		shim,
-		fs.readFileSync(shim, "utf8").replaceAll("%~dp0", "%dp0%"),
-	);
-	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-	expect(commandResolvesIntoProject(shim, makeProject().root)).toBe(false);
-	setProjectTrustState("untrusted");
-	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-	fs.writeFileSync(shim, "unrecognised shim");
-	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-	fs.unlinkSync(shim);
-	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-	setProjectTrustState("trusted");
-	expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
-});
-
-/** An outside shim whose lines are built once its own path is known. */
-function writeShim(
-	extension: "cmd" | "ps1",
-	lines: (shim: string) => string[],
-): string {
-	const outside = tempDir("pi-lens-shim-");
-	const shim = path.join(outside, `server.${extension}`);
-	fs.writeFileSync(shim, lines(shim).join("\r\n"));
-	return shim;
-}
-
-/** `file` spelled from the shim's own directory, the way a shim names it. */
-function fromShim(
-	shim: string,
-	file: string,
-	extension: "cmd" | "ps1",
-): string {
-	return path
-		.relative(path.dirname(shim), file)
-		.split(path.sep)
-		.join(extension === "cmd" ? "\\" : "/");
-}
-
-describe("shim target resolution fails closed (#4566 r16)", () => {
-	it("refuses a cmd shim whose project target carries a literal $ (#4566 r16 P1)", () => {
-		// The r15 /[%$]/ skip dropped this spelling, so an outside shim that named
-		// an outside node.exe plus this project script was admitted. `$` is an
-		// ordinary filename character in cmd.exe; it is not an expansion.
+it.each(["unknown", "untrusted", "trusted"] as const)(
+	"r17 bat wrapper refuses: %s",
+	(trust) => {
 		const project = makeProject();
-		const shim = writeShim("cmd", (shimPath) => [
-			"@echo off",
-			`@"%dp0%\\node.exe" "%dp0%\\${fromShim(shimPath, path.join(project.root, "bin", "server$dev.js"), "cmd")}" %*`,
-		]);
+		const shim = path.join(tempDir("pi-lens-wrapper-"), "tool.bat");
+		fs.writeFileSync(
+			shim,
+			fs.readFileSync(path.join(wrapperFixtures, "npm-node.cmd")),
+		);
+		setProjectTrustState(trust);
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(
+			trust !== "trusted",
+		);
+	},
+);
+
+it.each(["node", "node.exe"])(
+	"r17 sibling runtime target refuses: %s",
+	(runtime) => {
+		const project = makeProject();
+		const outside = tempDir("pi-lens-wrapper-");
+		fs.writeFileSync(path.join(outside, "server.js"), "");
+		const inside = path.join(project.root, "runtime");
+		fs.writeFileSync(inside, "");
+		fs.symlinkSync(inside, path.join(outside, runtime));
+		const shim = path.join(outside, "tool.cmd");
+		fs.writeFileSync(
+			shim,
+			fs
+				.readFileSync(path.join(wrapperFixtures, "npm-node.cmd"), "utf8")
+				.replaceAll("__TARGET__", "server.js"),
+		);
 		setProjectTrustState("unknown");
 		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-		// Resolved, not refused-for-looking-odd: the same bytes against another
-		// project name no project target and are admitted.
-		expect(commandResolvesIntoProject(shim, makeProject().root)).toBe(false);
-	});
-
-	it("refuses a cmd shim whose project target carries a literal % (#4566 r16)", () => {
-		const project = makeProject();
-		const shim = writeShim("cmd", (shimPath) => [
-			"@echo off",
-			`@"%dp0%\\node.exe" "%dp0%\\${fromShim(shimPath, path.join(project.root, "bin", "server%dev.js"), "cmd")}" %*`,
-		]);
-		setProjectTrustState("unknown");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-		expect(commandResolvesIntoProject(shim, makeProject().root)).toBe(false);
-	});
-
-	const expansionRows: Array<[string, "cmd" | "ps1", string]> = [
-		["an unexpanded %VAR% in a .cmd target", "cmd", "%DEV%"],
-		["an unexpanded $env: in a .ps1 target", "ps1", "$env:DEV"],
-		["an unexpanded ${} in a .ps1 target", "ps1", "${DEV}"],
-	];
-	it.each(expansionRows)(
-		"refuses a shim whose own-directory target carries %s (#4566 r16)",
-		(_label, extension: "cmd" | "ps1", expansion: string) => {
-			// The spelling is deliberately placed OUTSIDE the project when taken
-			// literally: an expansion the parser cannot evaluate must refuse the
-			// shim, never contribute no path and let its outside neighbour admit it.
-			const project = makeProject();
-			const shim = writeShim(extension, () => [
-				"@echo off",
-				extension === "cmd"
-					? `@"%dp0%\\node.exe" "%dp0%\\pkg\\${expansion}\\cli.js" %*`
-					: `& "$basedir/node.exe" "$basedir/pkg/${expansion}/cli.js" $args`,
-			]);
-			setProjectTrustState("unknown");
-			expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-		},
-	);
-
-	it("refuses a shim whose own-directory targets use unknown wrapper syntax (#4566 r16)", () => {
-		// Nothing this parser can positively resolve: no quoted own-directory
-		// target at all. "Contributes no path" is a refusal, not an admission.
-		const project = makeProject();
-		const shim = writeShim("cmd", () => [
-			"@echo off",
-			'start "" /b cmd /c ..\\project\\bin\\server.js',
-		]);
-		setProjectTrustState("unknown");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-	});
-
-	it("admits a cmd shim whose own-directory targets all resolve outside (#4566 r16)", () => {
-		const project = makeProject();
-		const shim = writeShim("cmd", () => [
-			"@echo off",
-			// The literal `$` and `%` spellings are outside the project: resolving
-			// them must admit the shim, so the rule cannot pass by treating every
-			// unusual character as unresolvable.
-			`@"%dp0%\\node.exe" "%dp0%\\pkg\\cli$dev%tool.js" %*`,
-		]);
-		setProjectTrustState("unknown");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
-	});
-
-	it("admits a ps1 shim whose own-directory targets all resolve outside (#4566 r16)", () => {
-		const project = makeProject();
-		const shim = writeShim("ps1", () => [
-			'& "$basedir/node.exe" "$basedir/../pkg/bin/cli.js" $args',
-		]);
-		setProjectTrustState("unknown");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
-	});
-
-	it("refuses an npm ps1 shim whose target carries an unexpanded $exe (#4566 r16)", () => {
-		// npm's own ps1 wrapper spells the runtime `$basedir/node$exe`. `$exe` is
-		// a PowerShell variable this parser cannot positively resolve, so the
-		// wrapper is refused while the project is untrusted: the accepted cost of
-		// the maintainer's fail-closed rule (see the PR body's
-		// Behavior-equivalence note). The cmd sibling of the same package is
-		// spelled with a concrete node.exe and stays admitted.
-		const project = makeProject();
-		const script = path.join(project.root, "server.js");
-		fs.writeFileSync(script, "");
-		const shim = writeShim("ps1", (shimPath) => [
-			`& "$basedir/node$exe" "$basedir/${fromShim(shimPath, script, "ps1").replaceAll("\\", "/")}" $args`,
-		]);
-		setProjectTrustState("unknown");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-		expect(commandResolvesIntoProject(shim, makeProject().root)).toBe(true);
-		setProjectTrustState("untrusted");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-		setProjectTrustState("trusted");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
-	});
-
-	it("keeps a trusted project's shims unchanged (#4566 r16)", () => {
-		const project = makeProject();
-		const shim = writeShim("cmd", (shimPath) => [
-			"@echo off",
-			`@"%dp0%\\node.exe" "%dp0%\\${fromShim(shimPath, path.join(project.root, "bin", "server.js"), "cmd")}" %*`,
-		]);
-		setProjectTrustState("trusted");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
-	});
-});
+	},
+);
 
 // R16-F2/F3/F4: verifier plants enter the production discovered-command judge.
 it.each([
@@ -1366,4 +1236,46 @@ it.each([
 	);
 	setProjectTrustState("unknown");
 	expect(commandResolvesIntoProject(shim, project)).toBe(true);
+});
+
+it.each(["$name", "%1", "100%%", "team's-project", "a`b", "a!VAR!"])(
+	"r17 literal path admission rejects expansion/quote spellings: %s",
+	(name) => {
+		const project = makeProject();
+		const outside = tempDir("pi-lens-wrapper-");
+		const script = path.join(outside, name);
+		fs.writeFileSync(script, "");
+		const shim = path.join(outside, "tool.cmd");
+		fs.writeFileSync(
+			shim,
+			fs
+				.readFileSync(path.join(wrapperFixtures, "npm-direct.cmd"), "utf8")
+				.replaceAll("__TARGET__", name),
+		);
+		setProjectTrustState("unknown");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+	},
+);
+
+it("r17 wrapper read cap refuses a complete template at the truncated boundary", () => {
+	const project = makeProject();
+	const outside = tempDir("pi-lens-wrapper-");
+	fs.writeFileSync(path.join(outside, "server.js"), "");
+	const template = fs.readFileSync(
+		path.join(wrapperFixtures, "npm-direct.cmd"),
+		"utf8",
+	);
+	const base = template.replaceAll("__TARGET__", "server.js");
+	const extra = 65537 - Buffer.byteLength(base);
+	// A long dot/separator spelling normalizes to the same real file. Without
+	// the cap a complete 65537-byte prefix would hide any later command.
+	const content = template.replaceAll(
+		"__TARGET__",
+		"." + "/".repeat(extra - 1) + "server.js",
+	);
+	expect(Buffer.byteLength(content)).toBe(65537);
+	const shim = path.join(outside, "tool.cmd");
+	fs.writeFileSync(shim, content + "\necho injected\n");
+	setProjectTrustState("unknown");
+	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
 });

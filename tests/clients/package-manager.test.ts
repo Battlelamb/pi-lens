@@ -123,6 +123,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.unstubAllEnvs();
 	resetProjectTrust();
 	if (savedPlatform) {
 		Object.defineProperty(process, "platform", savedPlatform);

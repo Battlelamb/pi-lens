@@ -15,6 +15,8 @@
  */
 
 import * as fs from "node:fs";
+import { GLOBAL_COMMAND_WRAPPERS } from "./global-command-wrappers.js";
+import { escapeRegExp } from "./string-utils.js";
 import { BoundedFifoMap } from "./bounded-cache.js";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -723,62 +725,77 @@ export function commandResolvesIntoProject(
 	const reaches = projectReach(cwd);
 	if (reaches(target)) return true;
 
-	// #4566 F3: npm Windows shims are regular files, not symlinks. Their
-	// script is the executable target; unknown script text cannot vouch for it.
-	// #4566 r16 (shape 69): the shim is admitted only when EVERY own-directory
-	// target it names resolves, without guessing, to a concrete path outside
-	// the project. An enumerated skip list (r15's `/[%$]/`) failed open on the
-	// next spelling: it dropped a literal `$` in a `.cmd` filename, so a project
-	// target beside an outside `node.exe` was never judged. The rule lives in
-	// `resolveShimTarget`; a target it cannot fully resolve refuses the shim.
-	if (!/\.(?:cmd|ps1)$/i.test(commandPath)) return false;
-	const shimKind = /\.ps1$/i.test(commandPath) ? "ps1" : "cmd";
-	const shimDir = path.dirname(commandPath);
+	// #4566 r17: executable wrappers are data, not a shell language to infer.
+	// A whole-file capture binds every variable slot. Unknown formats refuse.
+	const extension = path.extname(commandPath).toLowerCase();
+	if (extension === ".bat") return true;
+	const kind =
+		extension === ".cmd" ? "cmd" : extension === ".ps1" ? "ps1" : "sh";
 	try {
-		const content = fs.readFileSync(commandPath, "utf8");
-		const targets: string[] = [];
-		for (const match of content.matchAll(
-			/["'](?:%~dp0|%dp0%|\$basedir)[/\\]([^"'\r\n]+)["']/gi,
-		)) {
-			const spelling = match[1];
-			if (typeof spelling !== "string") continue;
-			const resolved = resolveShimTarget(spelling, shimKind, shimDir);
-			if (resolved === undefined) return true;
-			targets.push(resolved);
+		// Bound the read before allocating: native files need only their header;
+		// no admitted generator emits a wrapper larger than 64 KiB.
+		const fd = fs.openSync(commandPath, "r");
+		let content: string;
+		try {
+			const buffer = Buffer.alloc(65537);
+			const size = fs.readSync(fd, buffer, 0, buffer.length, 0);
+			content = buffer.toString("utf8", 0, size);
+		} finally {
+			fs.closeSync(fd);
 		}
-		// No positively resolved target: nothing can vouch for the shim.
-		if (targets.length === 0) return true;
-		return targets.some(reaches);
+		// Other executables keep their existing real-target admission. A shell
+		// wrapper (including an extensionless one) must prove its format.
+		if (
+			kind === "sh" &&
+			extension !== ".sh" &&
+			!/^#![^\r\n]*(?:\/|\s)[^\s/]*sh(?:\s|$)/.test(content)
+		)
+			return false;
+		if (Buffer.byteLength(content) > 65536) return true;
+		for (const template of GLOBAL_COMMAND_WRAPPERS) {
+			if (template.kind !== kind) continue;
+			const slots: string[] = [];
+			const parts = template.text.split(/(__TARGET__|__RUNTIME__)/);
+			const pattern = parts
+				.map((part) => {
+					if (part === "__TARGET__" || part === "__RUNTIME__") {
+						const previous = slots.indexOf(part);
+						if (previous >= 0) return `\\${previous + 1}`;
+						slots.push(part);
+						// Positive literal alphabet, shared by all three languages.
+						// No quotes, escapes, substitutions, drive-relative or UNC slots.
+						return kind === "cmd"
+							? "([a-zA-Z0-9_ ./\\\\:@+,-]+)"
+							: "([a-zA-Z0-9_ ./:@+,-]+)";
+					}
+					return escapeRegExp(part);
+				})
+				.join("");
+			const match = new RegExp(`^(?:${pattern})$`).exec(content);
+			// JS $ also matches before a final newline: require byte equality.
+			if (!match || match[0] !== content) continue;
+			const shimDir = path.dirname(commandPath);
+			const targets = match
+				.slice(1)
+				.map((spelling) =>
+					path.resolve(shimDir, spelling.replace(/[/\\]/g, path.sep)),
+				);
+			// A missing slot cannot vouch for anything. realpathSync refuses an
+			// unreadable/broken link too; the surrounding catch records refusal.
+			if (targets.some((file) => reaches(fs.realpathSync(file)))) return true;
+			// Node templates may select a sibling runtime on either OS arm.
+			if (template.id.includes("node") || template.id.includes("preserve")) {
+				for (const runtime of ["node", "node.exe"]) {
+					if (reaches(realpathOrResolve(path.join(shimDir, runtime))))
+						return true;
+				}
+			}
+			return false;
+		}
+		return true;
 	} catch {
 		return true;
 	}
-}
-
-/**
- * One shim's own-directory target, resolved, or `undefined` when the shim's
- * own language expands something this parser cannot evaluate (#4566 r16).
- *
- * The distinction is the language, not a list of filename spellings: cmd.exe
- * expands `%VAR%` and, under delayed expansion, `!VAR!`, so a literal `$` in
- * a `.cmd` is an ordinary filename character; PowerShell expands `$name`,
- * `${name}` and `$(...)`, so a literal `%` in a `.ps1` is ordinary. A target
- * carrying an expansion the parser cannot resolve returns `undefined`, and
- * the caller refuses the shim: "names no path I can judge" is never
- * "allowed".
- */
-function resolveShimTarget(
-	spelling: string,
-	shimKind: "cmd" | "ps1",
-	shimDir: string,
-): string | undefined {
-	const expansion =
-		shimKind === "cmd" ? /%[^%\s]+%|![^!\s]+!/ : /\$(?:[{(_\w?:])/;
-	if (expansion.test(spelling)) return undefined;
-	return normalizeFilePath(
-		realpathOrResolve(
-			path.resolve(shimDir, spelling.replace(/[/\\]/g, path.sep)),
-		),
-	);
 }
 
 /**
@@ -907,7 +924,8 @@ export function setTrustScopedPath(
 	);
 	if (scoped !== "") spellings.add("PATH");
 	for (const key of spellings) {
-		if (scoped === "") delete env[key];
+		// Keep a deletion override through safe-spawn's ambient merge (#4566 F1).
+		if (scoped === "") env[key] = undefined;
 		else env[key] = scoped;
 	}
 	if (scoped !== "" && process.platform === "win32") env.Path = scoped;
