@@ -1122,7 +1122,7 @@ const wrapperNames = fs
 	.readdirSync(wrapperFixtures)
 	.filter((name) => /\.(cmd|ps1|sh)$/.test(name));
 const wrapperCases = wrapperNames.flatMap((name) =>
-	["exact", "near-miss", "suffix"].flatMap((form) =>
+	["exact", "near-miss", "suffix", "prefix"].flatMap((form) =>
 		(["trusted", "unknown", "untrusted"] as const).flatMap((trust) =>
 			["outside", "inside", "unresolvable"].map((target) => ({
 				name,
@@ -1155,6 +1155,8 @@ it.each(wrapperCases)(
 			.replaceAll("__RUNTIME__", process.execPath.replaceAll("\\", "/"));
 		if (form === "near-miss") text = text.slice(0, -1) + "^";
 		if (form === "suffix") text += "\necho injected\n";
+		// A leading command is what the start anchor alone refuses.
+		if (form === "prefix") text = "echo injected\n" + text;
 		fs.writeFileSync(shim, text);
 		setProjectTrustState(trust);
 		expect(commandResolvesIntoProject(shim, project.root)).toBe(
@@ -1302,6 +1304,50 @@ it.each(wrapperNames.filter((name) => name.endsWith(".sh")))(
 		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
 	},
 );
+
+// R17 admission arm: a format that is not shell text keeps the pre-fix
+// real-target admission, and a shell script must still be a captured wrapper.
+// Deleting the shebang arm reads a native binary as unknown wrapper text and
+// drops the arm that keeps plain shell scripts out.
+const formatCells: readonly (readonly [
+	string,
+	string,
+	() => string | Buffer,
+	boolean,
+])[] = [
+	[
+		"native bytes without a shell shebang keeps its real-target admission",
+		"tool",
+		() => Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01]),
+		false,
+	],
+	[
+		"extensionless shell script must prove its format",
+		"tool",
+		() => "#!/bin/sh\nexec /bin/true\n",
+		true,
+	],
+	[
+		".sh shell script must prove its format",
+		"tool.sh",
+		() => "#!/usr/bin/env bash\nexec /bin/true\n",
+		true,
+	],
+	[
+		".sh suffix never borrows the non-shell admission",
+		"tool.sh",
+		() => Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01]),
+		true,
+	],
+];
+it.each(formatCells)("r17 %s", (_name, fileName, body, refused) => {
+	const project = makeProject();
+	const outside = tempDir("pi-lens-wrapper-");
+	const shim = path.join(outside, fileName);
+	fs.writeFileSync(shim, body(), { mode: 0o755 });
+	setProjectTrustState("unknown");
+	expect(commandResolvesIntoProject(shim, project.root)).toBe(refused);
+});
 
 it.each(["cmd", "ps1", "sh"])(
 	"r17 template kind must match launch language: %s",
