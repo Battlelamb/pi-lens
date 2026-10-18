@@ -1161,7 +1161,11 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		// readToolResultPathField; the open-coded input.path cast is gone.
 		// 19 -> 18 (#4576): the tool_result path resolves through
 		// `resolveToolCallFilePath`, dropping the bare `path.*` pair.
-		"clients/runtime-tool-result.ts": 18,
+		// 18 -> 20 (#4504 r1): the recognized set is partitioned by the checkout
+		// the scan ran in, and the held-primary send groups the written set by
+		// the root that holds each file; three `path.resolve` reads where there
+		// were one, no new delivery path.
+		"clients/runtime-tool-result.ts": 20,
 		// 25 -> 27 (#3218): the resolved-blocker filter keys both the current
 		// blocker set and each resolved entry with `path.resolve`.
 		// 27 -> 26 (#2542 ask 3): `deferralEntryKey` moved to

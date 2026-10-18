@@ -173,6 +173,7 @@
 		"jscpd": "5.4.1",
 		"json5": "^2.2.3",
 		"knip": "6.41.0",
+		"oxc-parser": "0.153.0",
 		"oxfmt": "0.72.0",
 		"oxlint": "1.87.0",
 		"oxlint-tsgolint": "7.0.2004",

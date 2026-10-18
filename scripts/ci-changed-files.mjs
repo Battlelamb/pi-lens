@@ -9,9 +9,9 @@
  * three step outputs:
  *
  *   code=true|false    false ONLY for a pull_request whose every changed path
- *                      is on the strict docs allowlist below: the heavy jobs
- *                      (Unit shards, Install tests, Windows advisory, mutation,
- *                      ...) then skip.
+ *                      is on the strict docs allowlist below: the heavy advisory
+ *                      job (CodeQL) then skips. Every test job, the Windows
+ *                      unit leg included, still runs (#4518).
  *   formal=true|false  true when the diff touches the TLA+ models or what runs
  *                      them; `TLA+ models` model-checks only then.
  *   smoke=true|false   true when the diff touches PR_SMOKE_PATHS (RPC, install,

@@ -360,7 +360,7 @@ describe("the floors outside the LSP nightly are measured and wired (#4518)", ()
 
 	it("floors the Windows subset on tests executed, in the step that already reds a failed outcome", () => {
 		const job = loadWorkflow("ci.yml").jobs["unit-tests-windows"];
-		const failStep = step(job, "Fail Windows advisory");
+		const failStep = step(job, "under-executed");
 		expect(failStep["continue-on-error"]).toBeUndefined();
 		expect(failStep.run).toContain('--count "windows-vitest=${executed}"');
 		withinMeasured(

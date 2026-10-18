@@ -135,7 +135,7 @@
 			}
 		},
 		"windows-vitest": {
-			"producer": "ci.yml unit-tests-windows (advisory), step 'Fail Windows advisory when Vitest fails'",
+			"producer": "ci.yml unit-tests-windows, step 'Fail a failed or under-executed Windows Vitest subset'",
 			"evaluated": "tests executed (passed plus failed; skipped excluded)",
 			"healthy": {
 				"run": 38875637520,

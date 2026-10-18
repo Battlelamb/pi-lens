@@ -267,12 +267,15 @@ describe("computeVerdict — the four exit codes (#2539 acceptance criterion)", 
 		expect(verdict.kind).toBe("infra-rerun");
 		expect(verdict.failingRows).toEqual([]);
 	});
-	// #3753: the matcher is a prefix, so it must not swallow the advisory
-	// Windows job (`Unit tests Windows (advisory)`), which a Linux kill's rerun
-	// hold has no business excusing.
-	it("#3753: recognizes the aggregate and shard rows, never the Windows advisory job", () => {
+	// #3753: the matcher is an exact name or the shard prefix, so it must not
+	// swallow the separate Windows lane, which a Linux kill's rerun hold has no
+	// business excusing. #4518: that lane is `Unit tests Windows` now and it
+	// GATES, so the live spelling is pinned beside the retired one -- the old
+	// `(advisory)` spelling alone stopped covering the row CI actually posts.
+	it("#3753: recognizes the aggregate and shard rows, never the Windows unit leg", () => {
 		expect(isUnitTestsJobName("Unit tests")).toBe(true);
 		expect(isUnitTestsJobName("Unit tests (shard 2/3)")).toBe(true);
+		expect(isUnitTestsJobName("Unit tests Windows")).toBe(false);
 		expect(isUnitTestsJobName("Unit tests Windows (advisory)")).toBe(false);
 		expect(isUnitTestsJobName("Lint & type-check")).toBe(false);
 		expect(isUnitTestsShardJobName("Unit tests")).toBe(false);
@@ -1414,7 +1417,6 @@ describe("isAdvisoryCheck — every job name from a PR-triggered workflow is cla
 	const EXTERNAL_ADVISORY_NAMES = ["CodeQL", "SonarCloud Code Analysis"];
 
 	const EXPECTED_ADVISORY = new Set([
-		"Unit tests Windows (advisory)",
 		// #3801: the job that releases the heavy advisory jobs after the required
 		// checks pass; it reports ready=false rather than failing, and must never
 		// gate a merge whatever it concludes.
@@ -1511,6 +1513,9 @@ describe("isAdvisoryCheck — every job name from a PR-triggered workflow is cla
 			"Install test (windows-latest)",
 			"Install test (macos-latest)",
 			"Production install build (--omit=dev, from source)",
+			// #4518: the promoted Windows unit leg. It carries no `(advisory)`
+			// suffix and is not on the allowlist, so ci-verdict gates its rows.
+			"Unit tests Windows",
 			"oxfmt format check",
 			"knip",
 		]) {

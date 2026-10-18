@@ -307,10 +307,34 @@ export function diffFileContent(
 }
 
 /**
+ * The ONE root a prescan record is captured and consumed against: the session's
+ * own working directory, which is where the host runs the bash command and so
+ * the tree its writes land in.
+ *
+ * Both hooks ask this function, because a record written under one root and
+ * looked up under another reports `no-pending-snapshot` for a command that did
+ * write (#4504). `ctx.cwd` is per-session and frozen: it projects the same
+ * `_cwd` field the tools are constructed with and is never reassigned
+ * (`tests/clients/pi-host-contract.test.ts`), so one session's two hooks
+ * resolve the same value. The fallback is the coordinator's `projectRoot`, the
+ * only answer a host that offers no cwd leaves, and it is the same answer at
+ * both hooks. The root that differs between the two hooks in production is a
+ * concurrent secondary session's (#473): it is declined by the #2129 guard, so
+ * the coordinator keeps the live primary's root while `ctx.cwd` is its own.
+ */
+export function opaquePrescanRoot(
+	sessionCwd: string | undefined,
+	/** The coordinator's `projectRoot`, resolved by the caller for its host. */
+	projectRoot: string,
+): string {
+	return sessionCwd ?? projectRoot;
+}
+
+/**
  * The session-stamped slot (`<cwd>:<generation>`) a baseline lives in, derived
  * once for the `tool_call` record and the `tool_result` take (shape 19). The
  * generation keeps a concurrent-secondary session (#473) from consuming another
- * session's baseline.
+ * session's baseline; the root half is {@link opaquePrescanRoot}.
  */
 export function opaqueBaselineSlot(
 	scanRoot: string,

@@ -182,6 +182,9 @@ export const TREE_SCANNING_GOVERNANCE_TESTS = [
 // tests. Measured locally at ~17-23 s alone, inside the 120 s budget.
 export const TEST_TREE_GOVERNANCE_TESTS = [
 	"tests/clients/flake-shape-ratchet.test.ts",
+	// #4591: reads tests/support/vitest-setup.ts to pin the harness's
+	// fixture-home drain and teardown wiring.
+	"tests/clients/fixture-home-teardown.test.ts",
 	// #2891: real-pi harness suites own their child-process and timeout census;
 	// keep every admitted real-harness file armed when the tests tree changes.
 	"tests/real-harness/bridge-reload-ts.test.ts",
@@ -200,11 +203,20 @@ export const TEST_TREE_GOVERNANCE_TESTS = [
 	"tests/config/handler-verdict-sweep.test.ts",
 	// #4381: walks tests/ for log-sink reads with no drain of that sink first.
 	"tests/config/sink-read-drain-sweep.test.ts",
+	// #4589: walks tests/ for env writes with no restore in the same file.
+	"tests/config/test-env-restore-sweep.test.ts",
 	// #3472: the tests-tree scanners the census finds through tests/support.
 	"tests/config/module-instance-coverage.test.ts",
 	"tests/config/tmp-fixture-hygiene.test.ts",
+	// #4591: reads tests/support/vitest-setup.ts to pin the leak-origin
+	// record's write-before-remove wiring.
+	"tests/config/tmp-hygiene-leak-origin.test.ts",
 	"tests/config/vacuous-skip-coverage.test.ts",
 	"tests/support/host-event-shape-scan.test.ts",
+	// #4522: walks both captured-fixture trees (and asks git which inputs are
+	// ignored), so a fixture change must arm it; neither pass above selects it
+	// because it imports no changed module.
+	"tests/clients/dispatch/smoke-fixture-coverage.test.ts",
 ];
 
 export function changesTestTreeFile(file) {

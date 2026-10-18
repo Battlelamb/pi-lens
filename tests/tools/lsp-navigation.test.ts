@@ -4,7 +4,8 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	pinTestHome,
+	TEST_FIXTURE_ROOT_MARKER,
+	pinFixtureHome,
 	removeTempDirSync,
 	setupTestEnvironment,
 } from "../clients/test-utils.js";
@@ -1784,10 +1785,18 @@ describe("lsp_navigation tool", () => {
 		};
 
 		it("expands a ~ destination to $HOME and rewrites the importer there, never a ~ directory under the cwd", async () => {
-			const env = setupTestEnvironment("pi-lens-lsp-nav-4578-home-");
-			const oldPath = path.join(env.tmpDir, "old.ts");
-			const importPath = path.join(env.tmpDir, "import.ts");
-			const renamedPath = path.join(env.tmpDir, "renamed.ts");
+			// #4591: this cell needs HOME to CONTAIN the workspace, because a
+			// `~/…` destination has to land inside it. Both live under the pinned
+			// fixture home, which is outside every root the harness deletes, so a
+			// straggler child writing to its inherited HOME cannot re-create one.
+			const { home, restore } = pinFixtureHome("lsp-nav-4578-home");
+			const workspace = path.join(home, "workspace");
+			fs.mkdirSync(path.join(workspace, TEST_FIXTURE_ROOT_MARKER), {
+				recursive: true,
+			});
+			const oldPath = path.join(workspace, "old.ts");
+			const importPath = path.join(workspace, "import.ts");
+			const renamedPath = path.join(workspace, "renamed.ts");
 			fs.writeFileSync(oldPath, "export const value = 1;\n");
 			fs.writeFileSync(importPath, "import { value } from './old';\n");
 			// #3601: an importer no language client has open is refused when its
@@ -1797,7 +1806,7 @@ describe("lsp_navigation tool", () => {
 			fs.utimesSync(importPath, past, past);
 
 			const harness = makeRenameHarness();
-			const client = makeRenameClient(env.tmpDir, {
+			const client = makeRenameClient(workspace, {
 				changes: {
 					[pathToFileURL(importPath).href]: [
 						{
@@ -1810,27 +1819,25 @@ describe("lsp_navigation tool", () => {
 					],
 				},
 			});
-			addRenameClient(harness.realService, "typescript", env.tmpDir, client);
-			// Pin the host homes at the fixture and prove the pin TOOK: the rename
-			// writes at the resolved destination, so a pin that silently fell through
-			// would put a test file in the developer's real home.
-			const restoreHome = pinTestHome(env.tmpDir);
-			expect(os.homedir(), "the fixture HOME did not take effect").toBe(
-				env.tmpDir,
-			);
+			addRenameClient(harness.realService, "typescript", workspace, client);
+			// Prove the pin TOOK: the rename writes at the resolved destination, so
+			// a pin that silently fell through would put a test file in the
+			// developer's real home.
+			expect(os.homedir(), "the fixture HOME did not take effect").toBe(home);
 
 			try {
 				const result = await renameThroughTool(
 					harness,
-					env.tmpDir,
+					workspace,
 					"rename-file-tilde-home",
 					oldPath,
-					"~/renamed.ts",
+					"~/workspace/renamed.ts",
 				);
 
 				expect(result.isError).toBeUndefined();
-				// The defect: `~/renamed.ts` joined onto the cwd as `<cwd>/~/renamed.ts`.
-				expect(fs.existsSync(path.join(env.tmpDir, "~"))).toBe(false);
+				// The defect: the destination joined onto the cwd as
+				// `<cwd>/~/workspace/renamed.ts`.
+				expect(fs.existsSync(path.join(workspace, "~"))).toBe(false);
 				expect(fs.readFileSync(renamedPath, "utf-8")).toBe(
 					"export const value = 1;\n",
 				);
@@ -1848,22 +1855,18 @@ describe("lsp_navigation tool", () => {
 				expectNoServerStarted(harness, ["typescript"]);
 				expect(harness.touchFile).toHaveBeenCalled();
 			} finally {
-				restoreHome();
+				restore();
 				await harness.stop();
-				env.cleanup();
 			}
 		});
 
 		it("expands a ~ destination outside the workspace and refuses it without creating a ~ directory", async () => {
-			const home = setupTestEnvironment("pi-lens-lsp-nav-4578-home-outside-");
+			const { home, restore } = pinFixtureHome("lsp-nav-4578-home-outside");
 			const project = setupTestEnvironment("pi-lens-lsp-nav-4578-project-");
 			const oldPath = path.join(project.tmpDir, "old.ts");
 			fs.writeFileSync(oldPath, "export const value = 1;\n");
 			const harness = makeRenameHarness();
-			const restoreHome = pinTestHome(home.tmpDir);
-			expect(os.homedir(), "the fixture HOME did not take effect").toBe(
-				home.tmpDir,
-			);
+			expect(os.homedir(), "the fixture HOME did not take effect").toBe(home);
 
 			try {
 				const result = await renameThroughTool(
@@ -1879,18 +1882,17 @@ describe("lsp_navigation tool", () => {
 				// refusal is about `$HOME/renamed.ts`, not about a `~` under the cwd.
 				expect(result.isError).toBe(true);
 				expect(String(result.content[0]?.text)).toContain(
-					`workspace edit path escapes workspace: ${pathToFileURL(path.join(home.tmpDir, "renamed.ts")).href}`,
+					`workspace edit path escapes workspace: ${pathToFileURL(path.join(home, "renamed.ts")).href}`,
 				);
 				expect(result.details?.failureKind).toBe("lsp_error");
 				expect(fs.existsSync(oldPath)).toBe(true);
 				expect(fs.existsSync(path.join(project.tmpDir, "~"))).toBe(false);
-				expect(fs.existsSync(path.join(home.tmpDir, "renamed.ts"))).toBe(false);
+				expect(fs.existsSync(path.join(home, "renamed.ts"))).toBe(false);
 				expectNoServerStarted(harness, []);
 			} finally {
-				restoreHome();
+				restore();
 				await harness.stop();
 				project.cleanup();
-				home.cleanup();
 			}
 		});
 
@@ -2167,12 +2169,10 @@ describe("lsp_navigation workspaceDiagnostics delivery gate (#1634)", () => {
  */
 describe("lsp_navigation path resolution (#4577 M2)", () => {
 	it("resolves a ~ path to $HOME, not under the cwd", async () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-lens-nav-tilde-"));
-		const home = path.join(root, "home");
+		const { home, restore } = pinFixtureHome("nav-tilde");
 		const filePath = path.join(home, "proj", "refs.ts");
 		fs.mkdirSync(path.dirname(filePath), { recursive: true });
 		fs.writeFileSync(filePath, "const a = normalizeMapKey('x');\n");
-		const restoreHome = pinTestHome(home);
 		try {
 			expect(os.homedir()).toBe(home);
 			const tool = createLspNavigationTool((flag) => flag === "lens-lsp");
@@ -2193,8 +2193,7 @@ describe("lsp_navigation path resolution (#4577 M2)", () => {
 			).references;
 			expect(references.mock.calls[0]?.[0]).toBe(filePath);
 		} finally {
-			restoreHome();
-			removeTempDirSync(root);
+			restore();
 		}
 	});
 });

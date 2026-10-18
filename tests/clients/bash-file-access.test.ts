@@ -15,7 +15,7 @@ import {
 import { toPosix } from "../../clients/path-utils.js";
 import { ReadGuard } from "../../clients/read-guard.js";
 import { registerSearchReads } from "../../clients/search-read-registration.js";
-import { pinTestHome, removeTempDirSync } from "./test-utils.js";
+import { pinFixtureHome, removeTempDirSync } from "./test-utils.js";
 
 let tmp: string;
 
@@ -504,17 +504,15 @@ describe("extractGrepSearchReadsFromOutput", () => {
 	])(
 		"binds quoting to the filename token: %s (#4577 R4)",
 		(_label, command, selected) => {
-			const home = path.join(tmp, "home");
+			// The fixture HOME is outside the deleted root (#4591), so the file
+			// bash's bare `~` names is created under the pin, not under `tmp`.
+			const { home, restore } = pinFixtureHome("bfa-quote-token");
 			fs.mkdirSync(path.join(tmp, ".git"));
-			for (const dir of ["home", "~"]) {
-				const file = touchLines(path.join(dir, "proj", "x.ts"));
-				fs.writeFileSync(file, "~/proj/x.ts\n");
-			}
-			fs.writeFileSync(
-				path.join(tmp, "~", "proj", "x.ts"),
-				`${home}/proj/x.ts\n`,
-			);
-			const restoreHome = pinTestHome(home);
+			const homeFile = path.join(home, "proj", "x.ts");
+			fs.mkdirSync(path.dirname(homeFile), { recursive: true });
+			fs.writeFileSync(homeFile, "~/proj/x.ts\n");
+			const literalFile = touchLines(path.join("~", "proj", "x.ts"));
+			fs.writeFileSync(literalFile, `${home}/proj/x.ts\n`);
 			try {
 				const guard = new ReadGuard("r4-collision");
 				// Real bash probe's single-file output. In the mirror, bash expands
@@ -531,17 +529,22 @@ describe("extractGrepSearchReadsFromOutput", () => {
 					turnIndex: 1,
 					writeIndex: 0,
 				});
-				const expected = path.join(tmp, selected, "proj", "x.ts");
-				const unseen = path.join(
-					tmp,
-					selected === "home" ? "~" : "home",
-					"proj",
-					"x.ts",
-				);
-				expect(guard.getReadHistory(expected)).toHaveLength(1);
+				const expected = selected === "home" ? homeFile : literalFile;
+				const unseen = selected === "home" ? literalFile : homeFile;
+				// The binding itself: the bare operand resolves to $HOME, the quoted
+				// one to the literal `<cwd>/~/…` file.
+				expect(locations.map((loc) => loc.file)).toEqual([expected]);
+				// `registerSearchReads` credits project-internal files only, and
+				// #4591 puts the fixture HOME outside the project, so the credit is
+				// observable on the in-project branch and the exclusion on the other.
+				// Coverage this cell gives up (named in the PR body): a `~` that expands
+				// to a project-INTERNAL home being credited. The pin cannot place HOME
+				// inside a swept root any more, and no cell pins a raw in-project HOME.
+				if (expected === literalFile)
+					expect(guard.getReadHistory(literalFile)).toHaveLength(1);
 				expect(guard.getReadHistory(unseen)).toHaveLength(0);
 			} finally {
-				restoreHome();
+				restore();
 			}
 		},
 	);
@@ -549,10 +552,11 @@ describe("extractGrepSearchReadsFromOutput", () => {
 	it.each(["cat", "touch", "rm"])(
 		"keeps identical %s operands distinct by quoting (#4577 R4)",
 		(verb) => {
-			const home = path.join(tmp, "home");
-			const homeFile = touchLines(path.join("home", "proj", "x.ts"));
+			const { home, restore } = pinFixtureHome("bfa-quote-distinct");
+			const homeFile = path.join(home, "proj", "x.ts");
+			fs.mkdirSync(path.dirname(homeFile), { recursive: true });
+			fs.writeFileSync(homeFile, "line1\n");
 			const literalFile = touchLines(path.join("~", "proj", "x.ts"));
-			const restoreHome = pinTestHome(home);
 			try {
 				const command = `${verb} '~/proj/x.ts' ~/proj/x.ts`;
 				const actual =
@@ -565,7 +569,7 @@ describe("extractGrepSearchReadsFromOutput", () => {
 							: extractDeletedPathsFromCommand(command, tmp);
 				expect(actual).toEqual([literalFile, homeFile]);
 			} finally {
-				restoreHome();
+				restore();
 			}
 		},
 	);
@@ -577,11 +581,10 @@ describe("extractGrepSearchReadsFromOutput", () => {
 	// `<cwd>/~/…`). `$HOME` and the literal file both exist with different bytes,
 	// so a wrong resolver answer is distinguishable from a missing file.
 	it("credits a quoted ~ operand to the literal file, not the home file (#4577 R2-1)", () => {
-		const home = path.join(tmp, "home");
+		const { home, restore } = pinFixtureHome("bfa-grep-quoted");
 		fs.mkdirSync(path.join(home, "proj"), { recursive: true });
 		fs.writeFileSync(path.join(home, "proj", "x.ts"), "home line\n");
 		const literalFile = touchLines(path.join("~", "proj", "x.ts"), 40);
-		const restoreHome = pinTestHome(home);
 		try {
 			expect(os.homedir()).toBe(home);
 			// Single-operand spelling: grep prints `line:text`, so the credited
@@ -594,16 +597,15 @@ describe("extractGrepSearchReadsFromOutput", () => {
 				).map((loc) => loc.file),
 			).toEqual([literalFile]);
 		} finally {
-			restoreHome();
+			restore();
 		}
 	});
 
 	it("credits a multi-file hit's quoted ~ operand to the literal file (#4577 R2-1)", () => {
-		const home = path.join(tmp, "home");
+		const { home, restore } = pinFixtureHome("bfa-grep-quoted-multi");
 		fs.mkdirSync(path.join(home, "proj"), { recursive: true });
 		fs.writeFileSync(path.join(home, "proj", "x.ts"), "home line\n");
 		const literalFile = touchLines(path.join("~", "proj", "x.ts"), 40);
-		const restoreHome = pinTestHome(home);
 		try {
 			expect(os.homedir()).toBe(home);
 			// Multi-file spelling: grep prefixes each hit with the file it printed,
@@ -617,7 +619,7 @@ describe("extractGrepSearchReadsFromOutput", () => {
 				).map((loc) => loc.file),
 			).toEqual([literalFile]);
 		} finally {
-			restoreHome();
+			restore();
 		}
 	});
 });
@@ -753,9 +755,8 @@ describe("extractWrittenPathsFromCommand — bash writes", () => {
 	// conversion, unicode-space fold) applies to a shell word, because the shell
 	// opened the literal file name. Each row below pins one of those rules.
 	it("expands a bare ~ operand to $HOME instead of pinning it under the cwd (#4576)", () => {
-		const home = path.join(tmp, "home");
+		const { home, restore } = pinFixtureHome("bfa-bare-tilde");
 		fs.mkdirSync(path.join(home, "proj"), { recursive: true });
-		const restoreHome = pinTestHome(home);
 		try {
 			expect(os.homedir()).toBe(home);
 			expect(
@@ -771,7 +772,7 @@ describe("extractWrittenPathsFromCommand — bash writes", () => {
 				extractWrittenPathsFromCommand("echo x > ~user/proj/a.ts", tmp),
 			).toEqual([path.join(tmp, "~user", "proj", "a.ts")]);
 		} finally {
-			restoreHome();
+			restore();
 		}
 	});
 
@@ -786,34 +787,32 @@ describe("extractWrittenPathsFromCommand — bash writes", () => {
 	])(
 		"keeps a %s ~ operand literal under the cwd (#4577)",
 		(_label, command) => {
-			const home = path.join(tmp, "home");
+			const { home, restore } = pinFixtureHome("bfa-quoted-tilde");
 			fs.mkdirSync(path.join(home, "proj"), { recursive: true });
 			const literalFile = touchLines(path.join("~", "proj", "a.ts"));
 			fs.writeFileSync(path.join(home, "proj", "a.ts"), "home line\n");
-			const restoreHome = pinTestHome(home);
 			try {
 				expect(os.homedir()).toBe(home);
 				expect(
 					extractReadPathsFromCommand(command, tmp).map((s) => s.filePath),
 				).toEqual([literalFile]);
 			} finally {
-				restoreHome();
+				restore();
 			}
 		},
 	);
 
 	it("keeps a quoted redirect target's ~ literal under the cwd (#4577)", () => {
-		const home = path.join(tmp, "home");
+		const { home, restore } = pinFixtureHome("bfa-quoted-redirect");
 		fs.mkdirSync(path.join(home, "proj"), { recursive: true });
 		const literalFile = touchLines(path.join("~", "proj", "n.ts"));
-		const restoreHome = pinTestHome(home);
 		try {
 			expect(os.homedir()).toBe(home);
 			expect(
 				extractWrittenPathsFromCommand("echo x > '~/proj/n.ts'", tmp),
 			).toEqual([literalFile]);
 		} finally {
-			restoreHome();
+			restore();
 		}
 	});
 

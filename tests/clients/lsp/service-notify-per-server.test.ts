@@ -16,6 +16,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { hashDiagnosticContent } from "../../../clients/lsp/diagnostic-binding.js";
 
 const getServersForFileWithConfig = vi.fn();
 const createLSPClient = vi.fn();
@@ -82,9 +83,15 @@ function makeClient(
 	stallWrite: boolean,
 	diags: ReturnType<typeof makeDiagnostic>[] = [],
 ) {
+	// #4532 gap 9: the double answers the touch gate the way a real client does.
+	// A write that never settles records nothing, exactly like the real queue;
+	// the double holds no queue of its own, so nothing is ever in flight.
+	const sent = new Map<string, { hash: string }>();
 	return {
 		isAlive: () => true,
 		shutdown: vi.fn(async () => {}),
+		getSentContent: (filePath: string) => sent.get(filePath),
+		hasNotifyInFlight: () => false,
 		getWorkspaceDiagnosticsSupport: () => ({
 			advertised: false,
 			mode: "push-only" as const,
@@ -95,9 +102,11 @@ function makeClient(
 		getDiagnostics: vi.fn(() => diags),
 		notify: {
 			announceCreated: () => undefined,
-			open: vi.fn(() =>
-				stallWrite ? new Promise<void>(() => {}) : Promise.resolve(),
-			),
+			open: vi.fn((filePath: string, content: string) => {
+				if (stallWrite) return new Promise<void>(() => {});
+				sent.set(filePath, { hash: hashDiagnosticContent(content) });
+				return Promise.resolve();
+			}),
 			change: vi.fn(async () => {}),
 			close: vi.fn(async () => {}),
 		},

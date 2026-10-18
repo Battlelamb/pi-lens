@@ -14,11 +14,19 @@
  *
  * Usage:
  *   node scripts/capture-runner-fixtures.mjs [runnerId ...] [--bin-dir DIR]
+ *   node scripts/capture-runner-fixtures.mjs --records-only [runnerId ...]
  *
  * Binaries are resolved as, in order: `<bin-dir>/<tool>[.exe|.bat]`, pi-lens's
  * own managed tool dirs, then bare `<tool>` on PATH. A tool that resolves
  * nowhere is REPORTED AND SKIPPED, never silently omitted: a capture run that
  * found no binaries must not look like a successful refresh.
+ *
+ * `--records-only` is the retrofit for fixtures captured before #4473 and
+ * #4522: it re-runs only the availability probe and the clean run against the
+ * real binary and merges those records into the existing envelopes, leaving the
+ * recorded work bytes byte-identical. Re-capturing the work bytes from a newer
+ * build would silently retarget the parser evidence a version-specific fixture
+ * (fish 3.3.1's `~`-prefixed argv header) exists to hold.
  */
 
 import { execFileSync } from "node:child_process";
@@ -26,6 +34,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveBin } from "./capture-runner-output.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -42,6 +51,56 @@ const GOLANGCI_OTHER_FORMATS_OFF = [
 	"teamcity",
 	"sarif",
 ].map((format) => `--output.${format}.path=`);
+
+/**
+ * The availability probes a runner's checker sends, when they are not the
+ * default `[<tool> --version]`. The capture runs each one against the real
+ * binary and records the answer, so the replay never has to guess whether the
+ * tool accepted its own probe (#4473).
+ */
+const PROBE_OVERRIDES = {
+	"cue-vet": [{ command: "cue", argv: ["version"] }],
+	"go-vet": [{ command: "go", argv: ["version"] }],
+	"zig-check": [{ command: "zig", argv: ["version"] }],
+	"rust-clippy": [
+		// The runner resolves the PATH candidate by spawning `cargo --version`
+		// before it asks clippy anything (clients/rust-client.ts), and a host
+		// without a Rust toolchain reds the replay when that probe is unrecorded
+		// (#4522 F7). Both probes are recorded, each answered by its own command.
+		{ command: "cargo", argv: ["--version"] },
+		{ command: "cargo", argv: ["clippy", "--version"] },
+	],
+	"helm-lint": [{ command: "helm", argv: ["version", "--short"] }],
+	markdownlint: [{ command: "markdownlint-cli2", argv: ["--no-globs", "-"] }],
+	// fish-indent probes the formatter for every case, and `fish` itself for the
+	// syntax cases its `fish --no-execute` lane drives.
+	"fish-indent": [
+		{ command: "fish_indent", argv: ["--version"] },
+		{ command: "fish", argv: ["--version"] },
+	],
+	// biome explains one rule before it lints (a second probe, and not a
+	// version one).
+	"biome-check-json": [
+		{ command: "biome", argv: ["--version"] },
+		{ command: "biome", argv: ["explain", "noUnusedVariables"] },
+	],
+	// cpp-check probes its compiler candidates in order until one answers, so
+	// the record carries each candidate's real answer on the capture host.
+	"cpp-check": [
+		{ command: "clang++", argv: ["--version"] },
+		{ command: "g++", argv: ["--version"] },
+		{ command: "clang", argv: ["--version"] },
+		{ command: "gcc", argv: ["--version"] },
+		{ command: "cc", argv: ["--version"] },
+		{ command: "c++", argv: ["--version"] },
+		{ command: "cl", argv: ["--version"] },
+	],
+};
+
+/** Where a runner's clean capture workspace lives. */
+export function cleanWorkspaceFor(runner) {
+	return `tests/fixtures/runner-output-clean/${runner}`;
+}
 
 /**
  * One capture. `argv` mirrors the runner's own invocation; `file` is the
@@ -163,7 +222,9 @@ export const CAPTURES = [
 		// leads with the Erlang banner, so the version comes from Elixir itself.
 		runner: "elixir-check",
 		tool: "mix",
-		versionArgs: "run --no-compile --no-start -e IO.puts(System.version())",
+		// Mix's own banner. The former probe ran a project expression and needed a
+		// compiled project; a capture host with only a bare Mix could not record it.
+		versionArgs: "--version",
 		workspace: smoke("elixir-mix"),
 		file: "lib/bad.ex",
 		argv: ["compile", "--warnings-as-errors"],
@@ -293,6 +354,10 @@ export const CAPTURES = [
 		// The static build: the dynamic `swiftlint` needs libxml2 and SourceKit.
 		runner: "swiftlint",
 		tool: "swiftlint",
+		// A clean run exists: the binary lints a formatted file and reports `[]`,
+		// warning only that one SourceKit-gated rule was skipped (#4522 F8
+		// measured it; the earlier `cleanUnavailable` fact claimed it aborts on
+		// any file, which its own dirty capture contradicts).
 		workspace: smoke("swiftlint"),
 		file: "bad.swift",
 		argv: ["--reporter", "json", "bad.swift"],
@@ -460,6 +525,27 @@ export const CAPTURES = [
 		argv: ["hcl", "validate", "--json", "--non-interactive"],
 	},
 	{
+		runner: "trivy-config",
+		tool: "trivy",
+		workspace: smoke("trivy-config"),
+		file: "bad.yaml",
+		// The floor `resolveSeverityFloor` defaults to (HIGH, never stricter), so
+		// the capture and the runner ask trivy the same question.
+		argv: [
+			"config",
+			"--quiet",
+			"--format",
+			"json",
+			"--severity",
+			"HIGH,CRITICAL",
+			"bad.yaml",
+		],
+		// A clean run exists: a manifest with no kubernetes resources gives the
+		// ruleset nothing to check, and trivy exits 0 with no results (#4522 F8
+		// measured it; the earlier `cleanUnavailable` fact claimed no clean
+		// manifest exists at all).
+	},
+	{
 		runner: "tflint",
 		tool: "tflint",
 		workspace: smoke("terraform"),
@@ -490,33 +576,14 @@ export const CAPTURES = [
 	},
 ];
 
-/** Directories searched for a tool binary, in order. */
-function candidateDirs(binDir) {
-	const home = os.homedir();
-	return [
-		binDir,
-		path.join(home, ".pi-lens", "bin"),
-		path.join(home, ".pi-lens", "tools", "node_modules", ".bin"),
-	].filter(Boolean);
-}
-
-/** Absolute path to `name`'s binary, or the bare name to fall back to PATH. */
-export function resolveBin(name, binDir) {
-	for (const dir of candidateDirs(binDir)) {
-		for (const suffix of [".exe", ".bat", ".cmd", ""]) {
-			const candidate = path.join(dir, `${name}${suffix}`);
-			if (fs.existsSync(candidate)) return candidate;
-		}
-	}
-	return name;
-}
-
 function main() {
 	const argv = process.argv.slice(2);
 	let binDir = null;
+	let recordsOnly = false;
 	const only = [];
 	for (let i = 0; i < argv.length; i++) {
 		if (argv[i] === "--bin-dir") binDir = argv[++i];
+		else if (argv[i] === "--records-only") recordsOnly = true;
 		else only.push(argv[i]);
 	}
 
@@ -530,46 +597,130 @@ function main() {
 
 	let captured = 0;
 	const skipped = [];
-	for (const entry of selected) {
-		const bin = resolveBin(entry.bin ?? entry.tool, binDir);
-		const source = path.join(repoRoot, entry.workspace);
-		const workspace = fs.mkdtempSync(
-			path.join(os.tmpdir(), "pi-lens-capture-"),
-		);
-		try {
-			fs.cpSync(source, workspace, { recursive: true });
-			execFileSync(
-				process.execPath,
-				[
-					path.join(__dirname, "capture-runner-output.mjs"),
-					"--runner",
+	const scratch = [];
+	const tempWorkspace = (source, label) => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-lens-capture-"));
+		scratch.push(dir);
+		fs.cpSync(path.join(repoRoot, source), dir, { recursive: true });
+		return { dir, label };
+	};
+
+	try {
+		for (const entry of selected) {
+			const bin = resolveBin(entry.bin ?? entry.tool, binDir);
+			const probes = entry.probe ??
+				PROBE_OVERRIDES[entry.runner] ?? [
+					{ command: entry.tool, argv: ["--version"] },
+				];
+			const cleanWorkspace = entry.clean ?? cleanWorkspaceFor(entry.runner);
+
+			// The records a fixture cannot be replayed without (#4473, #4522).
+			const recordArgs = [
+				...(entry.versionArgs ? ["--version-args", entry.versionArgs] : []),
+				...(entry.shell ? ["--shell", entry.shell] : []),
+				...(binDir ? ["--bin-dir", binDir] : []),
+				...probes.flatMap((probe) => [
+					"--probe",
+					JSON.stringify({ command: probe.command, argv: probe.argv }),
+				]),
+			];
+
+			if (recordsOnly) {
+				// Key on the entry's OWN case. Iterating the directory instead merged
+				// one entry's clean run into every fixture of its runner, so
+				// fish-indent's formatter fixture replayed an entry that ran
+				// `fish --no-execute`, and the clean half of six fixtures was
+				// evidence about an invocation they never send (#4522 F3).
+				const caseName = entry.case ?? "real";
+				const dest = path.join(
+					repoRoot,
+					"tests/fixtures/runner-output",
 					entry.runner,
-					"--tool",
-					entry.tool,
-					"--bin",
-					bin,
-					"--cwd",
-					workspace,
-					"--workspace",
-					entry.workspace,
-					"--file",
-					entry.file,
-					"--case",
-					entry.case ?? "real",
-					...(entry.versionArgs ? ["--version-args", entry.versionArgs] : []),
-					...(entry.note ? ["--note", entry.note] : []),
-					...(entry.shell ? ["--shell", entry.shell] : []),
-					"--",
-					...entry.argv,
-				],
-				{ stdio: "inherit" },
-			);
-			captured++;
-		} catch (err) {
-			skipped.push(`${entry.runner}: ${err?.message ?? err}`);
-		} finally {
-			fs.rmSync(workspace, { recursive: true, force: true });
+					`${caseName}.captured.json`,
+				);
+				if (!fs.existsSync(dest)) {
+					skipped.push(`${entry.runner}/${caseName}: no fixture to merge into`);
+					continue;
+				}
+				const workspace = tempWorkspace(entry.workspace, "dirty").dir;
+				const clean = tempWorkspace(cleanWorkspace, "clean").dir;
+				try {
+					execFileSync(
+						process.execPath,
+						[
+							path.join(__dirname, "capture-runner-output.mjs"),
+							"--runner",
+							entry.runner,
+							"--tool",
+							entry.tool,
+							"--bin",
+							bin,
+							"--cwd",
+							workspace,
+							"--file",
+							entry.file,
+							"--merge-into",
+							dest,
+							"--clean-cwd",
+							clean,
+							"--clean-workspace",
+							cleanWorkspace,
+							"--clean-file",
+							entry.file,
+							...recordArgs,
+							"--",
+							...entry.argv,
+						],
+						{ stdio: "inherit" },
+					);
+					captured++;
+				} catch (err) {
+					skipped.push(`${entry.runner}/${caseName}: ${err?.message ?? err}`);
+				}
+				continue;
+			}
+
+			const workspace = tempWorkspace(entry.workspace, "dirty").dir;
+			const clean = tempWorkspace(cleanWorkspace, "clean").dir;
+			try {
+				execFileSync(
+					process.execPath,
+					[
+						path.join(__dirname, "capture-runner-output.mjs"),
+						"--runner",
+						entry.runner,
+						"--tool",
+						entry.tool,
+						"--bin",
+						bin,
+						"--cwd",
+						workspace,
+						"--workspace",
+						entry.workspace,
+						"--file",
+						entry.file,
+						"--case",
+						entry.case ?? "real",
+						...(entry.note ? ["--note", entry.note] : []),
+						"--clean-cwd",
+						clean,
+						"--clean-workspace",
+						cleanWorkspace,
+						"--clean-file",
+						entry.file,
+						...recordArgs,
+						"--",
+						...entry.argv,
+					],
+					{ stdio: "inherit" },
+				);
+				captured++;
+			} catch (err) {
+				skipped.push(`${entry.runner}: ${err?.message ?? err}`);
+			}
 		}
+	} finally {
+		for (const dir of scratch) fs.rmSync(dir, { recursive: true, force: true });
 	}
 
 	console.log(`\n${captured} captured, ${skipped.length} skipped`);

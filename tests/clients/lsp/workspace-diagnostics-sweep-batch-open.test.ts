@@ -46,6 +46,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { hashDiagnosticContent } from "../../../clients/lsp/diagnostic-binding.js";
 import { WatchedFilesQueue } from "../../../clients/lsp/watch-queue.js";
 import { removeTempDirSync } from "../test-utils.js";
 
@@ -107,6 +108,12 @@ describe("runWorkspaceDiagnostics — batch-open restores #271 coalescing for a 
 			notifiedUriCount += changes.length;
 		});
 
+		// #4532 gap 9: the double answers the touch gate the way a real client
+		// does, with the record of the payloads its own `notify.open` took, and
+		// holds no queue of its own, so nothing is ever in flight. Without the
+		// record the gate fails closed and every touch pushes, which is not the
+		// coalescing seam this case pins.
+		const sent = new Map<string, { hash: string }>();
 		const client = {
 			isAlive: () => true,
 			shutdown: async () => {},
@@ -117,13 +124,16 @@ describe("runWorkspaceDiagnostics — batch-open restores #271 coalescing for a 
 			}),
 			getOperationSupport: () => ({}),
 			serverId: "typescript",
+			getSentContent: (filePath: string) => sent.get(filePath),
+			hasNotifyInFlight: () => false,
 			notify: {
 				announceCreated: () => undefined,
 				// Mirrors `handleNotifyOpen`'s real branch structure closely enough
 				// to reproduce the bug/fix: first open of a path enqueues a
 				// watched-files change; a later call for an already-open path is
 				// just a didChange (no further enqueue).
-				open: vi.fn(async (filePath: string) => {
+				open: vi.fn(async (filePath: string, content: string) => {
+					sent.set(filePath, { hash: hashDiagnosticContent(content) });
 					if (openDocuments.has(filePath)) return;
 					openDocuments.add(filePath);
 					watchQueue.enqueue(`file://${filePath}`, 2);

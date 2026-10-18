@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { hashDiagnosticContent } from "../../../clients/lsp/diagnostic-binding.js";
 
 const getServersForFileWithConfig = vi.fn();
 const createLSPClient = vi.fn();
@@ -230,6 +231,11 @@ describe("LSPService.touchFile collectDiagnostics", () => {
 		const service = new LSPService();
 		const diagnostic = makeDiagnostic("collected error");
 		const attributedDiagnostic = { ...diagnostic, serverId: "python" };
+		// #4532 gap 9: the double answers the touch gate the way a real client
+		// does — with the record of the payloads its own `notify.open` took — and
+		// queues nothing, so no send is ever in flight. Without the record the
+		// gate fails closed and pushes, which is not the seam this case pins.
+		const sent = new Map<string, { hash: string }>();
 		const client = {
 			isAlive: () => true,
 			shutdown: async () => {},
@@ -239,9 +245,13 @@ describe("LSPService.touchFile collectDiagnostics", () => {
 				diagnosticProviderKind: "none",
 			}),
 			getOperationSupport: () => ({}),
+			getSentContent: (filePath: string) => sent.get(filePath),
+			hasNotifyInFlight: () => false,
 			notify: {
 				announceCreated: () => undefined,
-				open: vi.fn().mockResolvedValue(undefined),
+				open: vi.fn(async (filePath: string, content: string) => {
+					sent.set(filePath, { hash: hashDiagnosticContent(content) });
+				}),
 			},
 			waitForDiagnostics: vi.fn().mockResolvedValue(undefined),
 			getDiagnostics: vi.fn(() => [diagnostic]),

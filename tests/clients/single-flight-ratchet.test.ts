@@ -344,6 +344,22 @@ describe("singleFlight ratchet — the scan itself", () => {
 		expect(scan).toEqual({ declarations: [], unclassified: [] });
 	});
 
+	it("classifies a method signature as a name, not state (#4532)", () => {
+		// `hasNotifyInFlight?(filePath: string): boolean` on `LSPClient` is a
+		// question the touch gate asks the queue. Reading it as state would put a
+		// method on the burn-down list and hide the real fields beside it.
+		const scan = classifyInFlightSpellings(
+			"fake.ts",
+			[
+				"interface Client {",
+				"\tgetSentContent?(filePath: string): { hash: string } | undefined;",
+				"\thasNotifyInFlight?(filePath: string): boolean;",
+				"}",
+			].join("\n"),
+		);
+		expect(scan).toEqual({ declarations: [], unclassified: [] });
+	});
+
 	it("classifies parameters and function locals as locals, not state (#4429)", () => {
 		// `lsp/client-registry.ts`'s `onSpawnInFlight` parameter was a regex
 		// false positive with an exemption; a parameter holds no module state.

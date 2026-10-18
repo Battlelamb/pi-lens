@@ -17,7 +17,7 @@ import {
 import { createLensDiagnosticMarkTool } from "../../tools/lens-diagnostic-mark.js";
 import {
 	createCaseAliasFixture,
-	pinTestHome,
+	pinFixtureHome,
 	removeTempDirSync,
 } from "../clients/test-utils.js";
 
@@ -519,11 +519,11 @@ describe("lens_diagnostic_mark's suppress record names its call (#4187 R4-1)", (
  */
 describe("lens_diagnostic_mark path resolution (#4577 M2)", () => {
 	it("resolves a ~ path to $HOME, not under the cwd", async () => {
-		const home = path.join(tmpDir, "home");
+		// #4591: the fixture HOME is outside the fixture root this file deletes.
+		const { home, restore } = pinFixtureHome("diagnostic-mark-tilde");
 		const homeFile = path.join(home, "proj", "tilde.ts");
 		fs.mkdirSync(path.dirname(homeFile), { recursive: true });
 		fs.writeFileSync(homeFile, "const a = 1;\nconst target = bad();\n");
-		const restoreHome = pinTestHome(home);
 		try {
 			expect(os.homedir()).toBe(home);
 			const result = await run({
@@ -543,7 +543,7 @@ describe("lens_diagnostic_mark path resolution (#4577 M2)", () => {
 			);
 			expect(fs.existsSync(path.join(tmpDir, "~"))).toBe(false);
 		} finally {
-			restoreHome();
+			restore();
 		}
 	});
 });

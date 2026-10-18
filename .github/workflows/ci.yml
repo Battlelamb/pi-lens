@@ -22,7 +22,7 @@ jobs:
   # #3801: classify the diff once. `code` is false ONLY for a pull_request whose
   # every changed path is on the strict docs allowlist (root *.md, docs/**,
   # .changelog/**; scripts/ci-changed-files.mjs), and then the HEAVY ADVISORY
-  # jobs (CodeQL, the Windows run) do not start. The Unit shards, the Install
+  # job (CodeQL) does not start. The Unit shards, the Install
   # tests and every other test job still run for a docs-only diff: a docs edit
   # can red tests/clients and tests/scripts (docs/public-api-stability.md,
   # docs/*_rules_catalog.md are read by them), so the suite is never skipped.
@@ -701,8 +701,8 @@ jobs:
             exit 1
           fi
 
-  # #3801: the heavy ADVISORY jobs (CodeQL, the Windows Vitest subset) start
-  # only after every required check passed on this head. A runner-slot pool
+  # #3801: the heavy ADVISORY jobs (CodeQL) start only after every required
+  # check passed on this head. A runner-slot pool
   # shared by 10+ PRs made them compete with the required jobs for slots
   # (about 40 jobs per push against about 20 concurrent slots), and on a head
   # whose required checks are red they were pure waste.
@@ -717,7 +717,9 @@ jobs:
   # check, the gate step reports `ready=false` and FAILS, so the row is red and a
   # run that was deferred for that reason is visible and distinguishable from a
   # dropped one (ci-verdict reads it). The job name ends in `(advisory)` so
-  # ci-verdict never gates on it, red or not.
+  # ci-verdict never gates on it, red or not. The Windows Vitest subset was
+  # released here until #4518's promotion: it gates now, so it must start on
+  # every event, including the docs-only diff this gate skips.
   heavy-gate:
     name: Heavy advisory gate (advisory)
     needs:
@@ -727,7 +729,8 @@ jobs:
       - unit-tests
       - install-test
     # #3801: only a code diff starts the heavy jobs: a docs-only pull request
-    # runs every test job but not CodeQL or the Windows run. Every
+    # runs every test job but not CodeQL, the one heavy job left behind this
+    # gate (#4518 promoted the Windows unit leg out of it). Every
     # needed job must have succeeded (the implicit `success()`), so a red or
     # skipped one skips the gate.
     if: needs.changes.outputs.code == 'true'
@@ -756,13 +759,15 @@ jobs:
           HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: node scripts/ci-heavy-gate.mjs --repo "$GITHUB_REPOSITORY" --sha "$HEAD_SHA" --context knip --context "oxfmt format check"
 
-  # Windows coverage starts as advisory because the repository has no prior Windows Vitest signal.
-  # Promote this job to gating once the Run Windows Vitest subset step outcome has been success
-  # on 7 consecutive master/PR runs.
+  # GATING since #4518 (maintainer decision, 2026-10-17): the Windows unit leg
+  # runs the real `win32` gates, and advisory reds were waved through (#4566
+  # r14's `.cmd` branch, #4551). It therefore starts on every event like the
+  # Unit shards -- never behind `heavy-gate`, whose docs-only skip would leave a
+  # required row absent -- and it is not named `(advisory)` any more, so
+  # ci-verdict gates it. Branch protection must still list `Unit tests Windows`
+  # as a required status check; until it does, ci-verdict is the enforcement.
   unit-tests-windows:
-    name: Unit tests Windows (advisory)
-    needs: heavy-gate
-    if: needs.heavy-gate.outputs.ready == 'true'
+    name: Unit tests Windows
     runs-on: windows-latest
     outputs:
       windows_vitest: ${{ steps.windows-vitest.outcome }}
@@ -771,13 +776,11 @@ jobs:
       contents: read
 
     steps:
-      # #3926: this checkout starts only after `heavy-gate` releases the heavy
-      # advisory jobs, which is after the required checks pass -- and therefore
-      # after auto-merge may have deleted the mutable `refs/pull/<n>/merge` that
-      # `github.ref` names. Leave `ref` unset: the pinned action then fetches the
-      # captured commit (`github.sha`, the validated test-merge tree) exactly as
-      # the sibling gated job `codeql` does; the commit survives
-      # the ref's deletion. Do not restore `ref: ${{ github.ref }}`.
+      # #3926: leave `ref` unset. The pinned action then fetches the captured
+      # commit (`github.sha`, the validated test-merge tree) exactly as the
+      # gated sibling `codeql` does, so this checkout survives a merge that
+      # deletes the mutable `refs/pull/<n>/merge` while the lane is queued.
+      # Do not restore `ref: ${{ github.ref }}`.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
@@ -812,7 +815,6 @@ jobs:
 
       - name: Run Windows Vitest subset
         id: windows-vitest
-        continue-on-error: true
         shell: bash
         env:
           PI_LENS_TEST_TIMEOUT_SCALE: '3'
@@ -846,13 +848,13 @@ jobs:
             echo "windows_vitest=$outcome"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Fail Windows advisory when Vitest fails
+      - name: Fail a failed or under-executed Windows Vitest subset
         if: always()
         shell: bash
         run: |
           if [[ "${{ steps.windows-vitest.outcome }}" == "failure" ]]; then
             failures="$(node scripts/lib/windows-vitest-failure-count.mjs "$RUNNER_TEMP/windows-vitest.log")"
-            echo "::error title=Windows advisory::${failures:-unknown} Vitest tests failed"
+            echo "::error title=Windows Vitest subset::${failures:-unknown} Vitest tests failed"
             exit 1
           fi
           # #4518: a subset whose files all skip (or whose log has no summary) is
@@ -1091,10 +1093,10 @@ jobs:
       # above already ran `prepare`, so devDependencies and the 12 core grammars
       # are present; the vitest globalSetup fetches the other grammars once
       # before the files run (#4342).
-      # ADVISORY for now (`continue-on-error`), like the Windows Vitest subset
-      # above: this job's install/pack/smoke steps gate, and a macOS-only unit
-      # flake must not block an unrelated PR on its first outings. Promotion to
-      # gating is a separate decision after several green legs (#3159 round 3).
+      # ADVISORY for now (`continue-on-error`) while this job's install/pack/
+      # smoke steps gate: a macOS-only unit flake must not block an unrelated PR
+      # on its first outings. Promotion to gating is a separate decision after
+      # several green legs (#3159 round 3).
       - name: POSIX case-insensitive anchors (APFS)
         if: matrix.os == 'macos-latest'
         continue-on-error: true

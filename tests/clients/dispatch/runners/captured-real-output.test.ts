@@ -13,17 +13,38 @@
  * temp dir, feeds the captured stdout/stderr/exit code to the runner through the
  * `safeSpawnAsync` seam, and asserts the runner turns them into findings.
  *
+ * The availability checker is real, not mocked (#4473). The capture records the
+ * answer each runner's probe gets from the real tool, in
+ * `fixture.availability`, and this suite answers that exact spawn with those
+ * bytes. A tool that REJECTS its probe — helm 4 rejects `--version` — therefore
+ * reaches the replay layer instead of being mocked into "installed". Only the
+ * process boundary is replaced, plus the measured-presence seam: each probing
+ * command gets a stub on a PATH of this suite's own, because presence is a
+ * filesystem fact the capture cannot carry, and `verifyOrInstallCommand`
+ * short-circuits on it.
+ *
  * A parser regression against a real binary now reds here.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterAll,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 import { FactStore } from "../../../../clients/dispatch/fact-store.js";
 import {
 	listCapturedOutputs,
 	materialize,
+	materializeClean,
+	probeAnswer,
+	probeCommandNames,
 	WORKSPACE_TOKEN,
 } from "../../../helpers/captured-runner-output.js";
 import { setupTestEnvironment } from "../../test-utils.js";
@@ -68,27 +89,6 @@ vi.mock("../../../../clients/tool-policy.js", async (importOriginal) => ({
 	}),
 }));
 
-vi.mock(
-	"../../../../clients/dispatch/runners/utils/runner-helpers.js",
-	async (importOriginal) => ({
-		...(await importOriginal<Record<string, unknown>>()),
-		createAvailabilityChecker: (command: string) => ({
-			isAvailable: () => true,
-			isAvailableAsync: async () => true,
-			getCommand: () => command,
-		}),
-		resolveToolCommandWithInstallFallback: async (
-			_cwd: string,
-			toolId: string,
-		) => toolId,
-		resolveAvailableOrInstall: async (_cwd: string, toolId: string) => toolId,
-		// taplo and oxlint skip the CLI when the language's LSP primary already
-		// covers the file. This suite exercises the CLI parser, so keep that
-		// short-circuit closed.
-		lspPrimaryCoversFile: () => false,
-	}),
-);
-
 /**
  * How to drive one runner: its module basename and the dispatch `kind` its
  * `appliesTo` declares. Keyed by registered runner id.
@@ -131,6 +131,7 @@ const RUNNER_DESCRIPTORS: Record<string, { module: string; kind: string }> = {
 	swiftlint: { module: "swiftlint", kind: "swift" },
 	taplo: { module: "taplo", kind: "toml" },
 	terragrunt: { module: "terragrunt", kind: "terragrunt" },
+	"trivy-config": { module: "trivy-config", kind: "yaml" },
 	tflint: { module: "tflint", kind: "terraform" },
 	vale: { module: "vale", kind: "markdown" },
 	yamllint: { module: "yamllint", kind: "yaml" },
@@ -313,13 +314,11 @@ const REPLAY_EXPECTATIONS: Record<string, ReplayExpectation> = {
 	},
 };
 
-/** Version probes the toolchain clients run before the invocation under test. */
-const AVAILABILITY_PROBE_ARGV: readonly (readonly string[])[] = [
-	["version"],
-	["--version"],
-	["clippy", "--version"],
-];
-
+/**
+ * Version probes are no longer a hand-written list: each fixture records the
+ * argv its own checker sends (`availability`), and the replay answers that exact
+ * spawn (#4473).
+ */
 /**
  * True when every token of `needle` appears in `haystack` in the same relative
  * order. Membership alone is not enough: sqlfluff's #1937 argv bug reordered
@@ -341,7 +340,11 @@ function createCtx(kind: string, filePath: string, cwd: string) {
 		filePath,
 		cwd,
 		kind,
-		pi: { getFlag: () => false },
+		// `no-lsp` is the user kill switch: taplo and oxlint skip the CLI when the
+		// language's LSP primary covers the file, and this suite exercises the CLI
+		// parser. Production reads the same flag (`lspPrimaryCoversFile`), so the
+		// short-circuit closes through the real seam, not a replaced rule.
+		pi: { getFlag: (flag: string) => flag === "no-lsp" },
 		autofix: false,
 		deltaMode: true,
 		facts: new FactStore(),
@@ -388,6 +391,250 @@ describe("captured real-binary output", () => {
 		).toEqual([]);
 	});
 
+	// #4522 review, "Windows Rust tests fail": rust-clippy resolves cargo
+	// through `findCargoPathAsync`, which on Windows answers an absolute
+	// `…\cargo.exe`, while the capture records the bare `cargo`. The lookup is
+	// by BINARY identity — basename, case-folded, without the platform's own
+	// executable suffix — so the same record answers on both lanes; the
+	// arguments stay exact, which is what keeps a neighbour's probe out.
+	it("matches a probe by binary identity across the platform's exe spelling", () => {
+		const rust = FIXTURES.find((f) => f.provenance.runner === "rust-clippy");
+		expect(rust, "rust-clippy's captured fixture is missing").toBeTruthy();
+		const argv = ["clippy", "--version"];
+		for (const spelling of [
+			"cargo",
+			"CARGO.EXE",
+			"C:\\Users\\dev\\.cargo\\bin\\cargo.exe",
+			"/home/dev/.cargo/bin/cargo",
+		]) {
+			expect(
+				probeAnswer(rust as never, spelling, argv),
+				`${spelling} names the binary the record was captured from`,
+			).toBeTruthy();
+		}
+		// A different binary that merely ends in ".exe" is not this record's.
+		expect(
+			probeAnswer(
+				rust as never,
+				"C:\\Users\\dev\\.cargo\\bin\\cargo-nextest.exe",
+				argv,
+			),
+		).toBeUndefined();
+		// The arguments are still exact: identity never widens the probe. This
+		// argv is nobody's recorded probe (the fixture holds `--version` and
+		// `clippy --version`), so a match here would mean the tie had loosened.
+		expect(
+			probeAnswer(rust as never, "C:\\Users\\dev\\.cargo\\bin\\cargo.exe", [
+				"--version",
+				"--short",
+			]),
+		).toBeUndefined();
+	});
+
+	/**
+	 * Commands the runners resolve by PRESENCE before they spawn anything
+	 * (`verifyOrInstallCommand` → `isSpawnableCommand`, a PATH walk). The capture
+	 * cannot carry a filesystem fact about the replay host, so each command the
+	 * fixtures name gets a non-empty stub on a PATH of this suite's own; the stub
+	 * is never executed because `safeSpawnAsync` is the mocked seam.
+	 *
+	 * Prepended, so the answer is the same on a host that has the tool and on one
+	 * that does not: a cell models presence through its spawn answers alone, and
+	 * both replay suites resolve it the same way (`probeCommandNames`, #4522 F12).
+	 */
+	const presenceStub = setupTestEnvironment("pi-lens-captured-bin-");
+	const originalPath = process.env.PATH;
+
+	beforeAll(() => {
+		for (const name of probeCommandNames(FIXTURES)) {
+			fs.writeFileSync(path.join(presenceStub.tmpDir, name), "#!/bin/sh\n", {
+				mode: 0o755,
+			});
+		}
+		process.env.PATH = `${presenceStub.tmpDir}${path.delimiter}${originalPath ?? ""}`;
+	});
+
+	afterAll(() => {
+		if (originalPath === undefined) delete process.env.PATH;
+		else process.env.PATH = originalPath;
+		presenceStub.cleanup();
+	});
+
+	/** File tokens the work-spawn tie drops, in every spelling the runner sends. */
+	function fileTokens(file: string): Set<string> {
+		return new Set([
+			file,
+			path.basename(file),
+			file.replace(/\\/g, "/"),
+			path.relative(".", file).replace(/\\/g, "/"),
+		]);
+	}
+
+	/**
+	 * A spawn is the runner's WORK when it names the analysed file or carries the
+	 * recorded invocation in order; everything else must be a recorded probe.
+	 * Same tie the matrix uses, so the two suites cannot disagree about which
+	 * spawn the captured bytes answer.
+	 */
+	function isWorkSpawn(
+		args: readonly string[],
+		tokens: Set<string>,
+		recorded: readonly string[],
+	): boolean {
+		if (
+			args.some(
+				(token) =>
+					tokens.has(token) ||
+					tokens.has(path.basename(token)) ||
+					tokens.has(path.relative(".", token).replace(/\\/g, "/")),
+			)
+		) {
+			return true;
+		}
+		if (recorded.length === 0) return false;
+		let cursor = 0;
+		for (const token of args) {
+			if (cursor < recorded.length && token === recorded[cursor]) cursor++;
+		}
+		return cursor === recorded.length;
+	}
+
+	/**
+	 * The recorded invocation with the analysed file's tokens dropped, so the
+	 * tie can ignore the replay's own temp path.
+	 */
+	function recordedInvocation(
+		argv: readonly string[],
+		tokens: Set<string>,
+		workspace: string,
+	): string[] {
+		return argv
+			.filter(
+				(token) => !tokens.has(token) && !tokens.has(path.basename(token)),
+			)
+			.map((token) =>
+				token.split(WORKSPACE_TOKEN).join(path.resolve(workspace)),
+			);
+	}
+
+	interface Replay {
+		/** Captured bytes to answer the work spawn with. */
+		captured: { stdout: string; stderr: string; status: number | null };
+		/** The argv tie for that work spawn. */
+		recorded: string[];
+		/** Workspace-relative path the runner is pointed at. */
+		file: string;
+		relPath: string;
+	}
+
+	/**
+	 * Answer every spawn for one replay, and COLLECT any probe the capture did
+	 * not record. The availability checker is real here, so an unrecorded probe
+	 * means the runner's probe argv drifted from the manifest, and answering it
+	 * from the work bytes would hide exactly the class #4473 names.
+	 *
+	 * The report is collected, not thrown: a runner wraps its spawns in try/catch
+	 * (they must never be host-fatal), so a throw here would be swallowed and read
+	 * as "tool missing". The case asserts the report is empty.
+	 */
+	function answerSpawns(
+		fixture: {
+			availability: ReadonlyArray<{ command: string; argv: string[] }>;
+		},
+		replay: Replay,
+	): { spawned: Array<string[]>; unrecorded: string[] } {
+		const tokens = fileTokens(replay.file);
+		const spawned: Array<string[]> = [];
+		const unrecorded: string[] = [];
+		safeSpawnAsync.mockImplementation(
+			async (cmd: string, args: string[] = []) => {
+				spawned.push([cmd, ...args]);
+				if (isWorkSpawn(args, tokens, replay.recorded)) return replay.captured;
+				const record = probeAnswer(
+					{ availability: fixture.availability } as never,
+					cmd,
+					args,
+				);
+				if (!record) {
+					unrecorded.push(`${cmd} ${JSON.stringify(args)}`);
+					return {
+						error: new Error(`no recorded availability answer for ${cmd}`),
+						status: null,
+						stdout: "",
+						stderr: "",
+						failure: "spawn",
+					};
+				}
+				return {
+					error: null,
+					status: record.exitCode,
+					stdout: record.stdout,
+					stderr: record.stderr,
+				};
+			},
+		);
+		return { spawned, unrecorded };
+	}
+
+	/**
+	 * Drive one runner over one captured payload. Returns the runner's result and
+	 * every spawn it made, so each case can assert its own tie and verdict.
+	 */
+	async function replayPayload(options: {
+		runnerId: string;
+		module: string;
+		kind: string;
+		fixture: {
+			provenance: { workspace: string; argv: string[] };
+			availability: ReadonlyArray<{ command: string; argv: string[] }>;
+			relPath: string;
+		};
+		relPath: string;
+		file: string;
+		argv: readonly string[];
+		payload: (workspace: string) => {
+			stdout: string;
+			stderr: string;
+			status: number | null;
+		};
+		/** Extra bytes to write into the copied workspace before the run. */
+		plant?: (cwd: string) => void;
+	}) {
+		vi.resetModules();
+		const env = setupTestEnvironment(`pi-lens-captured-${options.runnerId}-`);
+		const workerHome = process.env.PI_LENS_HOME;
+		// Keep every module graph's delayed probe-cache flush inside this case: a
+		// durable `probe-cache.json` left by another graph would answer the
+		// availability probe the record exists to answer.
+		process.env.PI_LENS_HOME = path.join(env.tmpDir, "probe-home");
+		try {
+			const source = path.join(repoRoot, options.fixture.provenance.workspace);
+			fs.cpSync(source, env.tmpDir, { recursive: true });
+			options.plant?.(env.tmpDir);
+			const filePath = path.join(env.tmpDir, options.file);
+			const tokens = fileTokens(options.file);
+			const replay: Replay = {
+				captured: options.payload(env.tmpDir),
+				recorded: recordedInvocation(options.argv, tokens, env.tmpDir),
+				file: options.file,
+				relPath: options.relPath,
+			};
+			const answers = answerSpawns(options.fixture, replay);
+			const runner = (
+				await import(
+					`../../../../clients/dispatch/runners/${options.module}.js`
+				)
+			).default;
+			const result = await runner.run(
+				createCtx(options.kind, filePath, env.tmpDir) as never,
+			);
+			return { result, ...answers, env, filePath };
+		} finally {
+			if (workerHome === undefined) delete process.env.PI_LENS_HOME;
+			else process.env.PI_LENS_HOME = workerHome;
+		}
+	}
+
 	for (const fixture of FIXTURES) {
 		const runnerId = fixture.provenance.runner;
 		const descriptor = RUNNER_DESCRIPTORS[runnerId];
@@ -406,80 +653,45 @@ describe("captured real-binary output", () => {
 				timeout: 30000,
 			},
 			async () => {
-				const env = setupTestEnvironment(`pi-lens-captured-${runnerId}-`);
+				const { result, spawned, unrecorded, env } = await replayPayload({
+					runnerId,
+					module: descriptor.module,
+					kind: descriptor.kind,
+					fixture,
+					relPath: fixture.relPath,
+					file: fixture.file,
+					argv: fixture.provenance.argv ?? [],
+					payload: (workspace) => materialize(fixture, workspace),
+				});
 				try {
-					// The provenance names the repo workspace the bytes came from, so
-					// the replay runs against the same planted violation the capture did.
-					const source = path.join(repoRoot, fixture.provenance.workspace);
-					fs.cpSync(source, env.tmpDir, { recursive: true });
-					const filePath = path.join(env.tmpDir, fixture.file);
 					expect(
-						fs.existsSync(filePath),
+						unrecorded,
+						`${runnerId} (${fixture.caseName}) spawned probe(s) the capture did not record: ${unrecorded.join("; ")}. The availability checker is real here, so an unrecorded probe is answered as a failure. Re-capture with the argv the runner now sends (scripts/capture-runner-fixtures.mjs PROBE_OVERRIDES).`,
+					).toEqual([]);
+					expect(
+						fs.existsSync(path.join(env.tmpDir, fixture.file)),
 						`${fixture.relPath}: ${fixture.provenance.workspace}/${fixture.file} is missing`,
 					).toBe(true);
 
-					// Everything except an availability probe answers with the captured
-					// bytes. go-vet and rust-clippy find their toolchain through
-					// goClient/rustClient, which run `<tool> version|--version` and
-					// `cargo clippy --version` before the real invocation. Those are
-					// different invocations whose own output nobody captured here, so
-					// they report "installed" and the run under test reaches its parse
-					// step; the process boundary (safeSpawnAsync) is the only thing
-					// mocked.
-					const captured = materialize(fixture, env.tmpDir);
-					safeSpawnAsync.mockImplementation(
-						async (_cmd: string, args: string[]) =>
-							AVAILABILITY_PROBE_ARGV.some(
-								(probe) =>
-									probe.length === args.length &&
-									probe.every((token, at) => token === args[at]),
-							)
-								? { error: null, status: 0, stdout: "probe ok", stderr: "" }
-								: captured,
-					);
-
-					const runner = (
-						await import(
-							`../../../../clients/dispatch/runners/${descriptor.module}.js`
-						)
-					).default;
-					const result = await runner.run(
-						createCtx(descriptor.kind, filePath, env.tmpDir) as never,
-					);
-
 					// Argv tie. Captured bytes are evidence about THIS runner only
 					// while the runner still asks the tool for them the same way.
-					// The mock answers whatever the runner spawns, so without this
-					// a flag the tool would reject — the taplo bug exactly —
-					// replays green forever.
-					//
 					// Order matters, not just membership: sqlfluff's #1937 bug put
 					// `--dialect` BETWEEN `--format` and its value, and every token
-					// was still present. So the recorded argv must appear as an
-					// ordered subsequence. File paths are dropped, because the
-					// runner resolves them to absolute and the capture did not.
-					const fileTokens = new Set([
-						fixture.file,
-						path.basename(fixture.file),
-						fixture.file.replace(/\\/g, "/"),
-					]);
-					// A token the capture spawned with the workspace's absolute path
-					// (helm lint `<chart root>`) maps to this replay's own workspace.
-					const recorded = (fixture.provenance.argv ?? [])
-						.filter((token) => !fileTokens.has(token))
-						.map((token) =>
-							token.split(WORKSPACE_TOKEN).join(path.resolve(env.tmpDir)),
-						);
-					const spawnedArgvs = safeSpawnAsync.mock.calls.map(
-						(call) => (call[1] ?? []) as string[],
+					// was still present. File paths are dropped, because the runner
+					// resolves them to absolute and the capture did not.
+					const tokens = fileTokens(fixture.file);
+					const recorded = recordedInvocation(
+						fixture.provenance.argv ?? [],
+						tokens,
+						env.tmpDir,
 					);
 					expect(
-						spawnedArgvs.length,
+						spawned.length,
 						`${runnerId} never spawned anything, so the captured bytes prove nothing`,
 					).toBeGreaterThan(0);
 					expect(
-						spawnedArgvs.some((argv) => isOrderedSubsequence(recorded, argv)),
-						`${runnerId} spawned none of ${JSON.stringify(spawnedArgvs)} carrying its fixture's argv ${JSON.stringify(recorded)} in order. Either the runner's invocation drifted from \`${fixture.provenance.command}\`, or the fixture and the scripts/capture-runner-fixtures.mjs manifest need updating to the new argv.`,
+						spawned.some(([, ...argv]) => isOrderedSubsequence(recorded, argv)),
+						`${runnerId} spawned none of ${JSON.stringify(spawned)} carrying its fixture's argv ${JSON.stringify(recorded)} in order. Either the runner's invocation drifted from \`${fixture.provenance.command}\`, or the fixture and the scripts/capture-runner-fixtures.mjs manifest need updating to the new argv.`,
 					).toBe(true);
 
 					expect(
@@ -524,6 +736,77 @@ describe("captured real-binary output", () => {
 							`${runnerId} emitted a non-positive line number: ${String(diagnostic.line)}`,
 						).toBe(true);
 					}
+				} finally {
+					env.cleanup();
+				}
+			},
+		);
+
+		// The clean half (#4522): the same invocation on an input the real tool
+		// reports nothing for must parse to nothing. This is the second direction
+		// the matrix's clean cell needs — a parser that invents a finding out of a
+		// clean report reads an unchecked clean run as dirty, the mirror of K4.
+		const clean = fixture.clean;
+		if (!clean) continue;
+		it(
+			`${runnerId} (${fixture.caseName}) parses no findings out of its real clean run`,
+			{ timeout: 30000 },
+			async () => {
+				const { result, spawned, unrecorded, env } = await replayPayload({
+					runnerId,
+					module: descriptor.module,
+					kind: descriptor.kind,
+					fixture: {
+						...fixture,
+						provenance: { ...fixture.provenance, workspace: clean.workspace },
+					},
+					relPath: `${fixture.relPath} clean`,
+					file: clean.file,
+					argv: clean.argv,
+					// The clean bytes' own paths must name the workspace they replay in,
+					// or the runner attributes a finding to a path that does not exist,
+					// drops it, and this case passes whatever the bytes say (#4522 F4).
+					payload: (workspace) => materializeClean(fixture, workspace),
+				});
+				try {
+					// The clean bytes must name the workspace they replay in. An
+					// unresolved `__WORKSPACE__/bad.js` is a path no parser can
+					// attribute, so a clean run that DID report something would read
+					// clean (#4522 F4). Pinned on the helper, because the fixture
+					// below is the only other place the token is spent.
+					const spelled = materializeClean(fixture, "/clean-probe");
+					expect(
+						`${spelled.stdout}${spelled.stderr}`,
+						`${fixture.relPath}: the clean run's bytes still carry ${WORKSPACE_TOKEN}, so its paths name no file on the replay host`,
+					).not.toContain(WORKSPACE_TOKEN);
+					expect(
+						unrecorded,
+						`${runnerId} (${fixture.caseName}) clean replay spawned probe(s) the capture did not record: ${unrecorded.join("; ")}`,
+					).toEqual([]);
+					// The clean input is the whole point of the run: without it the
+					// captured bytes are a report about nothing, and no parser can be
+					// wrong about them (#4522 F4).
+					expect(
+						fs.existsSync(path.join(env.tmpDir, clean.file)),
+						`${fixture.relPath}: the clean workspace ${clean.workspace} holds no ${clean.file}, so the clean run analysed nothing`,
+					).toBe(true);
+					const tokens = fileTokens(clean.file);
+					const recorded = recordedInvocation(clean.argv, tokens, env.tmpDir);
+					expect(
+						spawned.some(([, ...argv]) => isOrderedSubsequence(recorded, argv)),
+						`${runnerId} clean: the runner (${result.status}${result.skipReason ? `/${result.skipReason}` : ""}) spawned none of ${JSON.stringify(spawned)} carrying the captured clean argv ${JSON.stringify(recorded)} in order`,
+					).toBe(true);
+					expect(
+						(result.diagnostics as Array<Record<string, unknown>>).map(
+							(diagnostic) => ({
+								rule: diagnostic.rule,
+								message: diagnostic.message,
+								line: diagnostic.line,
+							}),
+						),
+						`${runnerId} turned a real clean ${fixture.provenance.tool} ${clean.version} run (exit ${clean.exitCode}) into findings. The clean cell of the tool-state matrix reads this run as clean, so a parser that invents a finding here contradicts it.`,
+					).toEqual([]);
+					expect(result.status).not.toBe("failed");
 				} finally {
 					env.cleanup();
 				}

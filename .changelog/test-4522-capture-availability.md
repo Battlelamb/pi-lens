@@ -1,0 +1,5 @@
+---
+section: Changed
+audience: internal
+---
+- **Runner captures now record the availability probe and a real clean run, and one gate decides whether a record is evidence.** Fixtures under `tests/fixtures/runner-output/` carry the argv, binary, and exit status their runner's availability checker receives, plus the bytes of a clean run of the fixture's own invocation in `tests/fixtures/runner-output-clean/`; the replay stops mocking the checker, so a tool that rejects its own probe reaches it, and the tool-state matrix's clean cell replays captured bytes instead of `""`. `recordProblems` (`scripts/capture-runner-output.mjs`) refuses a probe whose recorded version its own answer never printed, and a clean run whose argv is not this fixture's invocation: the capture calls it before writing, and the fixture census calls it over every committed fixture. `scripts/capture-runner-fixtures.mjs --records-only` retrofits the records onto an existing fixture without re-recording its work bytes, keyed on the fixture's own case, and there is no prose escape for a missing clean run.

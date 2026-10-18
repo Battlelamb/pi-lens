@@ -15,6 +15,7 @@ import {
 	headRecordKey,
 	isGitWorktree,
 	opaqueBaselineSlot,
+	opaquePrescanRoot,
 	shouldRunOpaqueRecovery,
 	type PendingOpaqueBaseline,
 } from "./opaque-mutation-scan.js";
@@ -580,7 +581,10 @@ async function handleToolCallImpl(deps: ToolCallDeps): Promise<ToolCallResult> {
 	// starts from, without which the first move of a session would read as a
 	// first sight at its tool_result. Reading HEAD is a file read; the bound
 	// ends the wait, and a cut look writes a `hook-await-exceeded` row.
-	const headRoot = ctx.cwd ?? runtime.projectRoot;
+	// #4504 r1: the head-move record resolves its root through the same owner as
+	// the opaque baseline slot, so a concurrent secondary's (#473) `tool_result`
+	// take finds the look this hook recorded.
+	const headRoot = opaquePrescanRoot(ctx.cwd, runtime.projectRoot);
 	if (headRoot)
 		await bounded(
 			resyncHeadMove({
@@ -619,7 +623,10 @@ async function handleToolCallImpl(deps: ToolCallDeps): Promise<ToolCallResult> {
 			))
 				runtime.readGuard?.retireChangedAuthorship?.(target);
 		if (typeof commandInput?.command === "string" && commandInput.command) {
-			const scanRoot = ctx.cwd ?? runtime.projectRoot;
+			// #4504: the record and the take resolve their root through one
+			// owner, so a session whose cwd is not the coordinator's project root
+			// (a concurrent secondary, #473) cannot key the two lookups apart.
+			const scanRoot = opaquePrescanRoot(ctx.cwd, runtime.projectRoot);
 			if (scanRoot && shouldRunOpaqueRecovery(toolName, scanRoot)) {
 				const started = Date.now();
 				const baselineSlot = opaqueBaselineSlot(

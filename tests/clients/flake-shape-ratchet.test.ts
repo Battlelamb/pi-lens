@@ -353,6 +353,16 @@ const ADMITTED_AFTER_BASELINE: Readonly<
 			reason:
 				"the language-server process is the boundary; the capability adapter is where every host witness stands in for it",
 		},
+	// 2026-10-17 (#4504): the witness runs the real session_start / tool_call /
+	// tool_result handlers and only the per-file dispatch is stood in for, so
+	// the run observes what the opaque prescan recorded and recovered, not a
+	// linter's verdict.
+	"in-process-mock:index-4504-opaque-prescan-root-witness.test.ts::clients/pipeline":
+		{
+			detector: "in-process-mock",
+			reason:
+				"the synthetic dispatch of a recovered opaque write is not the subject; a resolved pipeline verdict keeps a linter child out of a witness about the prescan's own record",
+		},
 	// 2026-10-17 (#4554): the assertion is on the module-level
 	// `resetLSPService` CALL the shared teardown makes, and the shared service
 	// double does not expose that call as a spy; no server process is spawned.
@@ -454,6 +464,14 @@ const ADMITTED_AFTER_BASELINE: Readonly<
 		detector: "real-process-spawn",
 		reason:
 			"a real ast-grep child applies ignore rules through its own file matcher",
+	},
+	// #4522: the census must know which fixture inputs git hides; its
+	// collectUntrackedIgnoredIds call spawns the real `git ls-files` that
+	// decides, and no stub reproduces git's own index state.
+	"real-process-spawn:clients/dispatch/smoke-fixture-coverage.test.ts": {
+		detector: "real-process-spawn",
+		reason:
+			"the fixture-input census needs git's own tracked-versus-ignored decision through collectUntrackedIgnoredIds; no stub reproduces the index state that decides whether a fixture survives a fresh checkout",
 	},
 	"real-process-spawn:clients/format-service-tab-width-real-biome.test.ts": {
 		detector: "real-process-spawn",
@@ -600,6 +618,17 @@ const ADMITTED_AFTER_BASELINE: Readonly<
 		detector: "real-process-spawn",
 		reason:
 			"real git emits control bytes from its index, which a hand-built output cannot certify",
+	},
+	// 2026-10-17 (#4504): the first host-level witness admitted for a real
+	// spawn. The production state it reproduces is a concurrent secondary
+	// session whose cwd is a LINKED WORKTREE — a `.git` file, a shared object
+	// store, a worktree-local toplevel — and `git worktree add` is the only way
+	// to make one. The prescan's own recovery is git's `status --porcelain`, so
+	// a stubbed git would answer neither question.
+	"real-process-spawn:index-4504-opaque-prescan-root-witness.test.ts": {
+		detector: "real-process-spawn",
+		reason:
+			"a linked worktree exists only when real git creates one, and the opaque prescan under test recovers through git's own status; a stub proves only that the stub answers",
 	},
 	// 2026-09-03: the published-manifest guard must run the real `npm pack`
 	// (prepack/postpack are npm lifecycle hooks); header on the file states why.
@@ -1890,6 +1919,27 @@ describe("flake-shape scan — real-process-spawn", () => {
 			"gitFixtureSpawnAsync( support spawn helper",
 			"safeSpawnAsync( support spawn helper",
 		]);
+	});
+
+	it("flags the collectUntrackedIgnoredIds production seam, and its mocked-module escape", () => {
+		const source = [
+			'import { collectUntrackedIgnoredIds } from "../../clients/git-tracked-ignore.js";',
+			'it("census", async () => {',
+			"	await collectUntrackedIgnoredIds(root);",
+			"});",
+		].join("\n");
+		expect(
+			scanRealProcessSpawn("fixture.test.ts", source).map((h) => h.reason),
+		).toEqual(["collectUntrackedIgnoredIds( support spawn helper"]);
+
+		// Mocking the helper's own module closes the spawn, so the call is not
+		// counted — the same escape the support helpers get (#4598).
+		const mocked = [
+			'import { collectUntrackedIgnoredIds } from "../../clients/git-tracked-ignore.js";',
+			'vi.mock("../../clients/git-tracked-ignore.js");',
+			"await collectUntrackedIgnoredIds(root);",
+		].join("\n");
+		expect(scanRealProcessSpawn("fixture.test.ts", mocked)).toEqual([]);
 	});
 
 	it("does not count a helper whose module is mocked", () => {

@@ -9,7 +9,12 @@ import { afterAll, afterEach, beforeEach, expect, vi } from "vitest";
 import { installGitFixtureEnv } from "./git-fixture-env.js";
 import { installKillGuard, killGuardReport } from "./kill-guard.js";
 import { reportPeakRss } from "./worker-peak-rss.js";
-import { removeTempDirSync } from "../clients/test-utils.js";
+import {
+	fixtureHomeRoot,
+	fixtureHomeRootIn,
+	removeTempDirSync,
+	restorePinnedFixtureHomes,
+} from "../clients/test-utils.js";
 import {
 	formatTmpRootCreators,
 	formatTmpRootSweep,
@@ -404,6 +409,15 @@ const tmpRootIo = {
 const tmpRootExists = tmpRootIo.exists;
 afterEach(() => sampleTmpRoots(tmpRootRegistry, tmpRootExists));
 
+/**
+ * #4591: a case that throws between `pinFixtureHome` and its own fixture work
+ * never reaches the call site's `finally`, and HOME would stay pointed at that
+ * case's fixture directory for every case after it in this worker. The pin
+ * registers its undo with the harness seam, so this hook closes the window
+ * whether the case passed, failed, or threw during setup.
+ */
+afterEach(() => restorePinnedFixtureHomes());
+
 function sweepOwnTmpRoots(via: "afterAll" | "SIGTERM"): void {
 	// #2912 (2026-10-10): publish the creators record at every teardown, before
 	// the registry is gone with the fork, so the serialized owner can name the
@@ -547,6 +561,24 @@ try {
 	}
 }
 process.env.PI_LENS_HOME = TMP_HYGIENE_WORKER_HOME;
+// #4591: `pinFixtureHome` places a pinned fixture HOME beside this worker's own
+// home, and needs the run-shared home to name that place. Published before any
+// test module loads, so every call site reads one value, and the resolved root
+// is published beside it: the teardown below then removes the directory the
+// cases actually used, not one re-derived from an environment a test may have
+// changed in-process (the census suite mutates the run id on purpose).
+//
+// The published value is derived from THIS worker's identity, never read back
+// through `fixtureHomeRoot()` (#4591 V1): a nested Vitest child inherits this
+// whole environment, so reading the inherited value would make the child
+// publish its parent's root and remove it at its own teardown, with the home directories
+// a case had pinned inside it. Both derivations share `fixtureHomeRootIn`.
+process.env.PI_LENS_TMP_HYGIENE_HOME = tmpHygieneHome;
+process.env.PI_LENS_TMP_HYGIENE_FIXTURE_HOME = fixtureHomeRootIn(
+	tmpHygieneHome,
+	process.env.PI_LENS_TMP_HYGIENE_RUN_ID ?? "local",
+	process.pid,
+);
 // #2651: scripts/warm-loader-cache.mjs appends to PI_LENS_INSTALL_LOG before
 // it falls back to PI_LENS_HOME/install.log, so an ambient value (a
 // developer's shell pointing it at the real ~/.pi-lens/install.log) would
@@ -1357,6 +1389,12 @@ export async function tmpHygieneWaitForOwnerDrain(
 	return scan;
 }
 
+/** Which verdict a hygiene run's census reached: the three assertions ran, or
+ *  the win32 quarantine declined them (#4591, named where the guard lives). The
+ *  value carries no issue id: it is a log field, bounded and greppable, and the
+ *  issue identity belongs to the guard and its pin. */
+export type TmpHygieneCensusVerdict = "asserted" | "declined";
+
 /** ONE record per hygiene run (not one per marker): the owner-marker census the
  *  hygiene owner acted on, so a suppressed or attributed entry is explicable
  *  from the run's own output. */
@@ -1374,13 +1412,19 @@ export function formatTmpHygieneOwnerSummary(
 		judged: 0,
 		observed: 0,
 	},
+	/** #4592 review F4: WHICH verdict this run reached. A lane that declines the
+	 *  census must not print a line indistinguishable from an asserting lane's,
+	 *  or a skipped verdict reads as a clean one (shapes 10 and 31). Required, so
+	 *  a caller that forgets to state it is a compile error rather than a silent
+	 *  `asserted`. */
+	verdict: TmpHygieneCensusVerdict,
 ): string {
 	const { counts } = scan;
 	const tmpRootWriteCount =
 		tmpRootWrites === "unknown"
 			? "unknown"
 			: `${tmpRootWrites.judged}/${tmpRootWrites.observed}`;
-	return `[tmp-hygiene-owners] live=${counts.live} orphaned=${counts.orphaned} malformed=${counts.malformed} foreign=${counts.foreign} self=${counts.self} otherInvocationEntries=${otherInvocationEntries} reaped=${reaped} tmpRootWrites=${tmpRootWriteCount}`;
+	return `[tmp-hygiene-owners] live=${counts.live} orphaned=${counts.orphaned} malformed=${counts.malformed} foreign=${counts.foreign} self=${counts.self} otherInvocationEntries=${otherInvocationEntries} reaped=${reaped} tmpRootWrites=${tmpRootWriteCount} verdict=${verdict}`;
 }
 
 /** Reclaim abandoned owner records at the serialized census. A run id is the
@@ -1462,6 +1506,77 @@ export function tmpHygieneExcludeLiveOwnerEntries(
 		const owner = ownerFor(entry);
 		return owner === undefined || !liveOwners.has(owner);
 	});
+}
+
+/** How many first-level children a leak-origin line names. Bounded: a leaked
+ *  root can hold a whole npm cache, and one record per entry is the contract. */
+const TMP_HYGIENE_ORIGIN_CHILD_LIMIT = 4;
+
+/** What one census entry reports about itself; an `undefined` field is the
+ *  unreadable arm. */
+export interface TmpHygieneLeakOriginFacts {
+	birthtimeMs?: number;
+	children?: string[];
+}
+
+/** The shipped reader. The parameter exists so a test can drive the arm this
+ *  host's filesystems never produce — a stat that succeeds with a zero birth
+ *  time — instead of leaving it unproven; `unadmittedRootBackstopEntries` and
+ *  `removeRunBackstopDirs` take their inputs the same way. */
+function readTmpHygieneLeakOrigin(dir: string): TmpHygieneLeakOriginFacts {
+	let birthtimeMs: number | undefined;
+	let children: string[] | undefined;
+	try {
+		birthtimeMs = fs.statSync(dir).birthtimeMs;
+	} catch {
+		birthtimeMs = undefined;
+	}
+	try {
+		// Sorted so one directory always produces one line: `readdir` order is
+		// filesystem-dependent, and two runs of the same leak must compare.
+		children = fs.readdirSync(dir).sort();
+	} catch {
+		children = undefined;
+	}
+	return { birthtimeMs, children };
+}
+
+/**
+ * #4591: what a leaked census entry holds and when it was created, one line per
+ * leaked entry, printed by the destructive owner BEFORE it removes the entry.
+ *
+ * The census reds on a leaked root but says nothing about its origin, so the
+ * `pi-lens-4577-resolver-*` root that reappeared after its file's sweep could
+ * not be attributed: a birth time after the owning file's
+ * `[tmp-hygiene-sweep]` line with a `home/…` child is an out-of-process HOME
+ * writer, `workspace/…` is a `cwd` writer, and a birth BEFORE that line means
+ * the sweep removed a different root and this one was invisible to it. NTFS
+ * keeps a real creation time; a filesystem that reports none says so instead of
+ * printing a fabricated zero.
+ */
+export function formatTmpHygieneLeakOrigin(
+	dir: string,
+	now: number = Date.now(),
+	facts: TmpHygieneLeakOriginFacts = readTmpHygieneLeakOrigin(dir),
+): string {
+	const name = path.basename(dir);
+	const { birthtimeMs, children } = facts;
+	const listed =
+		children === undefined
+			? "first-level children unavailable"
+			: children.length === 0
+				? "first-level children: none"
+				: `first-level children: ${children
+						.slice(0, TMP_HYGIENE_ORIGIN_CHILD_LIMIT)
+						.join(",")}${
+						children.length > TMP_HYGIENE_ORIGIN_CHILD_LIMIT
+							? ` (+${children.length - TMP_HYGIENE_ORIGIN_CHILD_LIMIT} more)`
+							: ""
+					}`;
+	if (birthtimeMs === undefined || !(birthtimeMs > 0))
+		return `[tmp-hygiene-origin] ${name} birth time unavailable (${listed})\n`;
+	const ageMs = Math.max(0, Math.round(now - birthtimeMs));
+	return `[tmp-hygiene-origin] ${name} born ${ageMs}ms before this line (created at ${new Date(birthtimeMs).toISOString()}; ${listed})\n`;
 }
 
 export function writeTmpHygieneLeakNotice(
@@ -1604,6 +1719,9 @@ afterAll(async () => {
 		} finally {
 			tmpHygieneAfterAllProbeForTests = undefined;
 			removeTmpHygieneOwnerMarker();
+			// #4591: the pinned fixture HOME directories are this worker's scratch,
+			// beside its own home, so they go when it does.
+			removeTempDirSync(fixtureHomeRoot());
 			removeTempDirSync(TMP_HYGIENE_WORKER_HOME);
 		}
 	}
@@ -1640,7 +1758,11 @@ export function cleanupTmpHygiene(
 		tmpHygieneBefore,
 		spare,
 	)) {
-		removeTempDirSync(path.join(tmpHygieneRealTmp, name));
+		const entryDir = path.join(tmpHygieneRealTmp, name);
+		// #4591: record the origin before the entry is gone, so a leak that
+		// reappeared after its file's own sweep can be attributed to HOME or cwd.
+		process.stderr.write(formatTmpHygieneLeakOrigin(entryDir));
+		removeTempDirSync(entryDir);
 	}
 	removeRunBackstopDirs();
 	const reaped = reapStaleTmpHygieneRecords();

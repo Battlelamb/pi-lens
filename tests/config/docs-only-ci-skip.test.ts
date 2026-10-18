@@ -230,13 +230,16 @@ const DOCS_ONLY = [
 	"README.md",
 	".changelog/3801-x.md",
 ];
-// The jobs behind `heavy-gate`: advisory, and the only jobs a docs-only diff skips.
-const HEAVY_ADVISORY = ["heavy-gate", "unit-tests-windows", "codeql"];
+// The jobs behind `heavy-gate`: advisory, and the only jobs a docs-only diff
+// skips. #4518 promoted the Windows Vitest subset to a gating check, so it left
+// this list: a required row that a docs-only diff skips is absent, not passing.
+const HEAVY_ADVISORY = ["heavy-gate", "codeql"];
 // Every test-running job: a docs edit can red these (review r1 F2), so a
 // docs-only diff runs ALL of them.
 const TEST_JOBS = [
 	"test",
 	"unit-tests",
+	"unit-tests-windows",
 	"install-test",
 	"prod-install-build",
 	"targeted-tests-advisory",
@@ -331,7 +334,6 @@ describe("#3801 docs-only pull requests skip only the heavy advisory jobs", () =
 			for (const id of [
 				...TEST_JOBS.filter((id) => id !== "targeted-tests-advisory"),
 				"heavy-gate",
-				"unit-tests-windows",
 			]) {
 				expect(results[id], id).toBe("success");
 			}

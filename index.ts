@@ -3069,6 +3069,11 @@ function activateExtension(hostPi: ExtensionAPI) {
 						ownedSessionRole === "concurrent-secondary"
 							? "secondary"
 							: "primary",
+					// #4504: the same per-session cwd the `tool_call` hook hands the
+					// opaque prescan. A concurrent secondary's ctx carries ITS root while
+					// the shared coordinator keeps the primary's, and the prescan's two
+					// lookups must agree on one root.
+					cwd: ctx?.cwd,
 				}),
 				{
 					ms: editClass

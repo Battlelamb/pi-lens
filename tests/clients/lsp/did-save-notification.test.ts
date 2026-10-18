@@ -39,9 +39,11 @@ import {
 	handleNotifyChange,
 	handleNotifyOpen,
 	handleNotifySave,
+	sentContentFor,
 	type LSPClientState,
 } from "../../../clients/lsp/client.js";
 import { stopLSP } from "../../../clients/lsp/launch.js";
+import { normalizeMapKey } from "../../../clients/path-utils.js";
 import {
 	negotiateSaveOptions,
 	TEXT_DOCUMENT_SYNC_KIND_INCREMENTAL,
@@ -459,6 +461,33 @@ describe("a save with no content push (#3405 r1)", () => {
 		});
 	});
 
+	// R7: an unsuccessful open leaves no landed-content record to mark. A
+	// later explicit save retains its boolean outcome without inventing content.
+	it("does not forge content evidence after an unsuccessful open", async () => {
+		vi.mocked(state.connection.sendNotification).mockRejectedValueOnce(
+			new Error("stream write failed"),
+		);
+		await expect(openUnsaved()).resolves.toBe(false);
+		await expect(handleNotifySave(state, TEST_FILE)).resolves.toBe(true);
+		expect(sentContentFor(state, TEST_FILE)).toBeUndefined();
+	});
+
+	// R7: debt-only duplicate suppression must never consume an explicit save.
+	it.each(["owed-first", "explicit-first"])(
+		"keeps an explicit save when coalescing %s",
+		async (order) => {
+			await openUnsaved();
+			await handleNotifySave(state, TEST_FILE);
+			vi.mocked(state.connection.sendNotification).mockClear();
+			const debt = order === "owed-first";
+			await Promise.all([
+				handleNotifySave(state, TEST_FILE, debt),
+				handleNotifySave(state, TEST_FILE, !debt),
+			]);
+			expect(sentMethods(state)).toEqual(["textDocument/didSave"]);
+		},
+	);
+
 	it("hands its save to an unsent push instead of replacing it", async () => {
 		await openUnsaved();
 		vi.mocked(state.connection.sendNotification).mockClear();
@@ -489,6 +518,33 @@ describe("a save with no content push (#3405 r1)", () => {
 	it("sends nothing for a document the server does not hold", async () => {
 		await expect(handleNotifySave(state, TEST_FILE)).resolves.toBe(false);
 		expect(sentMethods(state)).toEqual([]);
+	});
+
+	// #4532 gap 9 round 5: a save that never left gives its rescan expectation
+	// back. The client now retries such a save (`saveDebouncedPush`), and the
+	// retry raises its OWN expectation, so keeping the failed attempt's binds the
+	// path to one more publication than arrives — the #3482 surplus, which
+	// withholds the rescan the retry does produce. Only a `rescansOnSave` server
+	// raises one at all, so the case is an opengrep-shaped state.
+	it("gives back the rescan expectation of a save that failed to leave", async () => {
+		const rescanner = createMockState({ serverId: "opengrep" });
+		rescanner.saveOptions = { includeText: false };
+		await handleNotifyOpen(
+			rescanner,
+			TEST_FILE,
+			"const x = 1;\n",
+			"typescript",
+			false,
+			true,
+		);
+		const key = normalizeMapKey(TEST_FILE);
+		expect(rescanner.expectedPublicationsBeyondSends.get(key) ?? 0).toBe(0);
+
+		vi.mocked(rescanner.connection.sendNotification).mockRejectedValue(
+			new Error("stream write failed"),
+		);
+		await expect(handleNotifySave(rescanner, TEST_FILE)).resolves.toBe(false);
+		expect(rescanner.expectedPublicationsBeyondSends.get(key) ?? 0).toBe(0);
 	});
 });
 

@@ -11,10 +11,38 @@
 		],
 		"workspace": "tests/fixtures/tool-smoke/java",
 		"platform": "linux-x64",
-		"capturedAt": "2026-10-14"
+		"capturedAt": "2026-10-14",
+		"versionArgv": [
+			"-version"
+		]
 	},
 	"file": "Bad.java",
 	"exitCode": 1,
 	"stdout": "",
-	"stderr": "Bad.java:4: error: incompatible types: String cannot be converted to int\n        int x = \"not a number\";\n                ^\n1 error\n"
+	"stderr": "Bad.java:4: error: incompatible types: String cannot be converted to int\n        int x = \"not a number\";\n                ^\n1 error\n",
+	"availability": [
+		{
+			"command": "javac",
+			"argv": [
+				"--version"
+			],
+			"version": "21.0.12",
+			"exitCode": 0,
+			"stdout": "javac 21.0.12.1\n",
+			"stderr": ""
+		}
+	],
+	"clean": {
+		"workspace": "tests/fixtures/runner-output-clean/javac",
+		"file": "Bad.java",
+		"argv": [
+			"-Xlint:none",
+			"-proc:none",
+			"Bad.java"
+		],
+		"version": "21.0.12",
+		"exitCode": 0,
+		"stdout": "",
+		"stderr": ""
+	}
 }

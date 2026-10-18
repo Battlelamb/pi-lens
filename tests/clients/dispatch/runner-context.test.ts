@@ -12,7 +12,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveRunnerPath } from "../../../clients/dispatch/runner-context.js";
 import { normalizeMapKey } from "../../../clients/path-utils.js";
-import { pinTestHome, removeTempDirSync } from "../test-utils.js";
+import { pinFixtureHome, removeTempDirSync } from "../test-utils.js";
 
 let tmp: string;
 let cwd: string;
@@ -22,10 +22,11 @@ let restoreHome: () => void;
 beforeEach(() => {
 	tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-lens-runner-context-4576-"));
 	cwd = path.join(tmp, "workspace");
-	home = path.join(tmp, "home");
+	// #4591: the fixture HOME is outside the fixture root, which this file
+	// deletes, so no straggler write can re-create it.
+	({ home, restore: restoreHome } = pinFixtureHome("runner-context-4576"));
 	fs.mkdirSync(cwd, { recursive: true });
 	fs.mkdirSync(path.join(home, "proj"), { recursive: true });
-	restoreHome = pinTestHome(home);
 });
 
 afterEach(() => {

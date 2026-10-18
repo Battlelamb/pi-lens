@@ -14,12 +14,17 @@ import {
 	listGitHeadDelta,
 	observeGitHead,
 	opaqueBaselineSlot,
+	opaquePrescanRoot,
 	readGitHead,
 	recoverOpaqueChangesViaGit,
 	serializeHeadLook,
 	shouldRunOpaqueRecovery,
 } from "./opaque-mutation-scan.js";
-import { normalizeMapKey, resolveToolCallFilePath } from "./path-utils.js";
+import {
+	isUnderDir,
+	normalizeMapKey,
+	resolveToolCallFilePath,
+} from "./path-utils.js";
 import { detectFileKind } from "./file-kinds.js";
 import {
 	extractReadPathsFromCommand,
@@ -469,6 +474,16 @@ interface ToolResultDeps {
 	sessionId?: string;
 	/** Role of the activation that owns this write. */
 	sessionRole?: "primary" | "secondary";
+	/**
+	 * The host ctx's `cwd` for THIS tool_result — the same per-session field the
+	 * `tool_call` hook reads. The opaque prescan resolves its root through
+	 * `opaquePrescanRoot(deps.cwd, …)` (#4504): a session whose cwd is not the
+	 * coordinator's `projectRoot` (a concurrent secondary in a linked worktree,
+	 * #473/#2129) otherwise wrote its baseline under one root and looked it up
+	 * under another. Absent means the host offered none, and the prescan falls
+	 * back to the same `projectRoot` the `tool_call` side falls back to.
+	 */
+	cwd?: string;
 	/**
 	 * Internal: set when the debounce timer fires to skip re-scheduling.
 	 * Do not pass from external callers.
@@ -1914,8 +1929,12 @@ export async function handleToolResult(deps: ToolResultDeps): Promise<{
 		// with zero telemetry; git-first recovery is cheap enough (~60ms) to
 		// close that gap, subtracting already-recognized paths so nothing
 		// double-dispatches.
+		// #4504: one root for the record and the take. The coordinator's
+		// `projectRoot` is the LIVE PRIMARY's for a concurrent secondary (#473),
+		// so this side has to ask the host's own cwd, exactly as the `tool_call`
+		// side does — never the root it happens to be dispatching against.
+		const scanRoot = opaquePrescanRoot(deps.cwd, workspaceRoot);
 		if (shouldRunOpaqueRecovery(event.toolName, workspaceRoot)) {
-			const scanRoot = workspaceRoot;
 			const started = Date.now();
 			const pending = getOpaqueBaselineStore().take(
 				opaqueBaselineSlot(scanRoot, runtime.sessionGeneration),
@@ -2003,10 +2022,23 @@ export async function handleToolResult(deps: ToolResultDeps): Promise<{
 			}
 			hadOpaqueRecovery = opaquePaths.length > 0;
 			if (observedChangedKeys) {
-				recognizedAuthored = recognizedWritten.filter((file) =>
+				// The scan speaks only for the checkout it ran in (#4504 r1). A
+				// recognized write OUTSIDE `scanRoot` — a secondary session naming a
+				// path in the primary's checkout — is neither observed nor disproven
+				// by it, so it stays a dispatched write (shape 54: a scan may not drop
+				// the only fresh answer it cannot see) and earns no authorship it
+				// cannot confirm (shape 65).
+				const scanned: string[] = [];
+				const unscanned: string[] = [];
+				for (const file of recognizedWritten)
+					(isUnderDir(path.resolve(file), scanRoot) ? scanned : unscanned).push(
+						file,
+					);
+				recognizedAuthored = scanned.filter((file) =>
 					observedChangedKeys!.has(normalizeMapKey(path.resolve(file))),
 				);
-				if (recognizedAuthored.length === 0) recognizedWritten = [];
+				if (recognizedAuthored.length === 0 && unscanned.length === 0)
+					recognizedWritten = [];
 			} else if (unknownReason) {
 				recognizedAuthored = [];
 				// The bounded opaque_mutation_coverage_unknown record below remains
@@ -2036,13 +2068,17 @@ export async function handleToolResult(deps: ToolResultDeps): Promise<{
 		// below, so their diagnostics read the new dependencies. It has the edit
 		// budget, as the bash-write primary phase does: a move is a write, and
 		// the 500 ms read-only bound cut a slow primary mid-send (#4528 r4).
-		if (workspaceRoot) {
+		// #4504 r1: the head-move record and take resolve their root through the
+		// same owner as the baseline slot, so a concurrent secondary (#473) joins
+		// the look its own `tool_call` recorded, not the live primary's.
+		const headScanRoot = opaquePrescanRoot(deps.cwd, workspaceRoot);
+		if (headScanRoot) {
 			const headMoveSignal = deps.signal ?? undefined;
 			await bounded(
 				resyncHeadMove({
-					root: workspaceRoot,
+					root: headScanRoot,
 					key: headRecordKey(
-						opaqueBaselineSlot(workspaceRoot, runtime.sessionGeneration),
+						opaqueBaselineSlot(headScanRoot, runtime.sessionGeneration),
 						deps.sessionId,
 					),
 					trigger: "tool_result",
@@ -2078,11 +2114,38 @@ export async function handleToolResult(deps: ToolResultDeps): Promise<{
 			const primaryStarted = Date.now();
 			// The servers must also have READ the sends before a dispatch reads a
 			// check (#4528 r1 F1): resyncHeldPrimaries' drain barrier.
-			const primaryPhase = sendToHeldPrimaries(
-				workspaceRoot,
-				written,
-				HOOK_WALL_BUDGET_MS.tool_result_edit,
-			);
+			//
+			// #4504 r1: a server answers for the checkout that roots it, so the
+			// phase runs one send per root `written` spans. A concurrent
+			// secondary's recovered files belong to its own checkout; looking them
+			// up under the coordinator's root found no holder, so the awaited send
+			// skipped every document and a dispatch could read the stale bytes.
+			const sendsByRoot = new Map<string, string[]>();
+			for (const file of written) {
+				const owner = isUnderDir(path.resolve(file), scanRoot)
+					? scanRoot
+					: workspaceRoot;
+				const bucket = sendsByRoot.get(owner);
+				if (bucket) bucket.push(file);
+				else sendsByRoot.set(owner, [file]);
+			}
+			const primaryPhase = Promise.all(
+				[...sendsByRoot].map(([root, files]) =>
+					sendToHeldPrimaries(
+						root,
+						files,
+						HOOK_WALL_BUDGET_MS.tool_result_edit,
+					),
+				),
+			).then((outcomes) => ({
+				targets: outcomes.flatMap((outcome) => outcome.targets),
+				primary: outcomes.reduce(
+					(count, outcome) => count + outcome.primary,
+					0,
+				),
+				failed: outcomes.some((outcome) => outcome.failed),
+				drained: outcomes.every((outcome) => outcome.drained),
+			}));
 			if (opaquePaths.length > 0)
 				void primaryPhase
 					.then(() => resyncGitChangedFiles(opaquePaths))

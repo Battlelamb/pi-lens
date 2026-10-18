@@ -23,7 +23,7 @@ import {
 	resetOncePerSessionPhases,
 } from "../../clients/latency-logger.js";
 import { resetProjectLensConfigCache } from "../../clients/project-lens-config.js";
-import { pinTestHome, removeTempDirSync } from "../clients/test-utils.js";
+import { pinFixtureHome, removeTempDirSync } from "../clients/test-utils.js";
 import { makeLspServiceDouble } from "../support/lsp-service-double.js";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 
@@ -4686,11 +4686,11 @@ describe("lens_diagnostics paths", () => {
 		const cwd = fs.mkdtempSync(
 			path.join(os.tmpdir(), "pi-lens-diag-tilde-4576-"),
 		);
-		const home = path.join(cwd, "home");
+		// #4591: the fixture HOME is outside the fixture root this case deletes.
+		const { home, restore } = pinFixtureHome("diag-tilde-4576");
 		const realFile = path.join(home, "proj", "src", "tilde.ts");
 		fs.mkdirSync(path.dirname(realFile), { recursive: true });
 		fs.writeFileSync(realFile, "export const a = 1;\n");
-		const restoreHome = pinTestHome(home);
 		try {
 			expect(os.homedir()).toBe(home);
 			const lspService = {
@@ -4729,7 +4729,7 @@ describe("lens_diagnostics paths", () => {
 				projectDiagnosticsMocks.scanProjectDiagnostics,
 			).toHaveBeenCalledWith(expect.objectContaining({ files: [realFile] }));
 		} finally {
-			restoreHome();
+			restore();
 			removeTempDirSync(cwd);
 		}
 	});
@@ -5858,11 +5858,10 @@ describe("lens_diagnostics scalar path resolution (#4577 M2)", () => {
 		const cwd = fs.mkdtempSync(
 			path.join(os.tmpdir(), "pi-lens-diag-scalar-tilde-"),
 		);
-		const home = path.join(cwd, "home");
+		const { home, restore } = pinFixtureHome("diag-scalar-tilde");
 		const realFile = path.join(home, "proj", "tilde.ts");
 		fs.mkdirSync(path.dirname(realFile), { recursive: true });
 		fs.writeFileSync(realFile, "export const a = 1;\n");
-		const restoreHome = pinTestHome(home);
 		// No `touchFile` answer, so the route falls through to `getDiagnostics`;
 		// the path the tool touched is what proves which file it resolved.
 		const touchFile = vi.fn(async (_filePath: string) => undefined);
@@ -5882,7 +5881,7 @@ describe("lens_diagnostics scalar path resolution (#4577 M2)", () => {
 			expect(touchFile.mock.calls[0]?.[0]).toBe(realFile);
 			expect(getDiagnostics.mock.calls[0]?.[0]).toBe(realFile);
 		} finally {
-			restoreHome();
+			restore();
 			removeTempDirSync(cwd);
 		}
 	});
@@ -5894,11 +5893,10 @@ describe("lens_diagnostics scalar path resolution (#4577 M2)", () => {
 		const cwd = fs.mkdtempSync(
 			path.join(os.tmpdir(), "pi-lens-diag-batch-tilde-"),
 		);
-		const home = path.join(cwd, "home");
+		const { home, restore } = pinFixtureHome("diag-batch-tilde");
 		const realFile = path.join(home, "proj", "tilde.ts");
 		fs.mkdirSync(path.dirname(realFile), { recursive: true });
 		fs.writeFileSync(realFile, "export const a = 1;\n");
-		const restoreHome = pinTestHome(home);
 		// No `touchFile` answer, so the route falls through to `getDiagnostics`;
 		// the path the tool touched is what proves which file it resolved.
 		const touchFile = vi.fn(async (_filePath: string) => undefined);
@@ -5919,7 +5917,7 @@ describe("lens_diagnostics scalar path resolution (#4577 M2)", () => {
 				),
 			).toContain(realFile);
 		} finally {
-			restoreHome();
+			restore();
 			removeTempDirSync(cwd);
 		}
 	});

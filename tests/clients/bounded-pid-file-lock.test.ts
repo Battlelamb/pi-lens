@@ -20,6 +20,7 @@ import {
 	releaseGeneration,
 	tryAcquireGeneration,
 } from "../../clients/generation-lock.js";
+import { scaledTestTimeout } from "../support/test-timeout-scale.js";
 
 const tempDirs: string[] = [];
 
@@ -33,18 +34,13 @@ afterEach(() => {
 	resetDegradationLedger();
 });
 
-const testTimeoutScale = (() => {
-	const parsed = Number(process.env.PI_LENS_TEST_TIMEOUT_SCALE ?? "1");
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
-})();
-
 const lockModuleUrl = pathToFileURL(
 	path.resolve("clients/bounded-pid-file-lock.js"),
 ).href;
 
 function waitForFileSync(file: string): boolean {
 	const pause = new Int32Array(new SharedArrayBuffer(4));
-	const until = Date.now() + 10_000 * testTimeoutScale;
+	const until = Date.now() + scaledTestTimeout(10_000);
 	while (!fs.existsSync(file)) {
 		if (Date.now() > until) return false;
 		Atomics.wait(pause, 0, 0, 5);
@@ -217,7 +213,7 @@ describe("pid-file locks: generation takeover (#3476)", () => {
 							const inside = path.join(dir, "p4.inside");
 							const gaveUp = path.join(dir, "p4.gaveup");
 							const pause = new Int32Array(new SharedArrayBuffer(4));
-							const until = Date.now() + 10_000 * testTimeoutScale;
+							const until = Date.now() + scaledTestTimeout(10_000);
 							while (!fs.existsSync(inside) && !fs.existsSync(gaveUp)) {
 								if (Date.now() > until) break;
 								Atomics.wait(pause, 0, 0, 5);

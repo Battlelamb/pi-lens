@@ -1,3 +1,6 @@
+// flake-shape: real-process-spawn — the git-ignored census needs git's own
+// tracked-versus-ignored decision through collectUntrackedIgnoredIds; no stub
+// reproduces the index state that decides whether a fixture survives checkout.
 /**
  * Smoke-fixture coverage drift guard (#209 requirement 4, #1937).
  *
@@ -37,6 +40,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { RunnerRegistry } from "../../../clients/dispatch/dispatcher.js";
+// The production "untracked AND ignored" seam (#679), not a private git call:
+// one rule for what git hides, and no second child-process path in a census.
+import {
+	_resetUntrackedIgnoredCacheForTests,
+	collectUntrackedIgnoredIds,
+} from "../../../clients/git-tracked-ignore.js";
+import { normalizeMapKey } from "../../../clients/path-utils.js";
 import { registerDefaultRunners } from "../../../clients/dispatch/runners/index.js";
 // Typed via scripts/smoke-tools.d.mts (the harness itself is plain ESM JS).
 import {
@@ -44,11 +54,20 @@ import {
 	passFloorBreach,
 	tier1Fixtures,
 } from "../../../scripts/smoke-tools.mjs";
+// Typed via scripts/capture-runner-output.d.mts: the capture gate and this
+// census share one rule for what makes a record evidence.
+import { recordProblems } from "../../../scripts/capture-runner-output.mjs";
 import {
+	availabilityProblems,
 	CAPTURED_OUTPUT_DIR,
+	cleanProblems,
 	listCapturedOutputs,
 	provenanceProblems,
 } from "../../helpers/captured-runner-output.js";
+// This file is sweep-shaped by construction (a walk plus an emptiness
+// assertion), so its population carries a floor: 112 fixture files today, and a
+// sweep over nothing must fail rather than read as clean.
+import { assertNonEmptyScan } from "../../support/sweep-kit.js";
 
 const repoRoot = path.resolve(CAPTURED_OUTPUT_DIR, "../../..");
 
@@ -154,10 +173,6 @@ const EXEMPT = new Map<string, string>([
 	[
 		"psscriptanalyzer",
 		"pending: #1937 ubuntu-latest ships PowerShell 7 and the module installs from the PowerShell Gallery; the runner writes a per-pid temp script into its argv, which the replay argv tie does not model",
-	],
-	[
-		"trivy-config",
-		"opt-in: trivy.enabled is off by default, and running it needs trivy plus an explicit opt-in",
 	],
 	[
 		"helm-render",
@@ -572,6 +587,109 @@ describe("captured real-bytes fixture provenance", () => {
 		expect(
 			problems,
 			`captured fixture(s) with an incomplete provenance header. Re-capture with scripts/capture-runner-output.mjs rather than editing the header by hand:\n${problems.join("\n")}`,
+		).toEqual([]);
+	});
+
+	// #4473: the replay answers the availability checker's own spawn from this
+	// record. Without one it must mock the checker, and a mocked checker cannot
+	// see a tool that rejects its probe (helm 4 rejects `--version`).
+	it("every captured fixture records the availability probe its runner sends", () => {
+		const problems = captured.flatMap(availabilityProblems);
+		expect(
+			problems,
+			`captured fixture(s) with no complete availability record. The replay runs the REAL checker against this record, so a fixture without one cannot be replayed honestly:\n${problems.join("\n")}`,
+		).toEqual([]);
+	});
+
+	// #4522: the tool-state matrix's clean cell replays this run. A fixture with
+	// no clean record leaves that cell modelling bytes the tool never printed.
+	it("every captured fixture records a real clean run", () => {
+		const problems = captured.flatMap(cleanProblems);
+		expect(
+			problems,
+			`captured fixture(s) whose clean cell would model invented bytes. Re-capture with scripts/capture-runner-fixtures.mjs --records-only:\n${problems.join("\n")}`,
+		).toEqual([]);
+	});
+
+	// The one gate the capture refuses to write past, re-read over every fixture
+	// on disk (#4522 F2, F3, F10): a probe record must carry a version its own
+	// answer printed, and its clean run must be the fixture's own invocation.
+	it("every captured record is evidence about this binary and this invocation", () => {
+		const problems = captured.flatMap((fixture) => recordProblems(fixture));
+		expect(
+			problems,
+			`captured record(s) that name a binary which never answered, or a clean run this fixture never sends. Re-capture with scripts/capture-runner-fixtures.mjs --records-only:\n${problems.join("\n")}`,
+		).toEqual([]);
+	});
+
+	it("every captured clean run's workspace still exists", () => {
+		const missing = captured
+			.filter(
+				(fixture) =>
+					fixture.clean &&
+					!fs.existsSync(path.join(repoRoot, fixture.clean.workspace)),
+			)
+			.map((fixture) => `${fixture.relPath} → ${fixture.clean?.workspace}`);
+		expect(
+			missing,
+			`captured clean workspace(s) that no longer exist — the clean run cannot be reproduced: ${missing.join(", ")}`,
+		).toEqual([]);
+	});
+
+	it("every captured clean run's input exists in its workspace", () => {
+		const missing = captured
+			.filter(
+				(fixture) =>
+					fixture.clean &&
+					fs.existsSync(path.join(repoRoot, fixture.clean.workspace)) &&
+					!fs.existsSync(
+						path.join(repoRoot, fixture.clean.workspace, fixture.clean.file),
+					),
+			)
+			.map((fixture) => `${fixture.relPath} → ${fixture.clean?.file}`);
+		expect(
+			missing,
+			`captured clean run(s) whose analysed input is gone — the bytes are a report about nothing: ${missing.join(", ")}`,
+		).toEqual([]);
+	});
+
+	// #4522 F1: `.gitignore` ignores `*.js` and `*.md` globally, so a clean
+	// workspace whose inputs are JavaScript or Markdown was captured, replayed
+	// from the working tree, and never committed: five fixtures named workspaces
+	// no fresh checkout has. The population is every fixture input on disk, not a
+	// list of the extensions that broke, and git itself decides — a spelling list
+	// here would pass the next input shape.
+	it("no captured fixture input is hidden by .gitignore", async () => {
+		const roots = [
+			path.join(repoRoot, "tests/fixtures/runner-output"),
+			path.join(repoRoot, "tests/fixtures/runner-output-clean"),
+		];
+		const inputs: string[] = [];
+		const walk = (dir: string): void => {
+			for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+				const full = path.join(dir, entry.name);
+				if (entry.isDirectory()) walk(full);
+				else inputs.push(full);
+			}
+		};
+		for (const root of roots) walk(root);
+		assertNonEmptyScan("captured fixture inputs", inputs.length, 60);
+		_resetUntrackedIgnoredCacheForTests();
+		const hiddenIds = await collectUntrackedIgnoredIds(repoRoot);
+		// Fail closed: no git answer is not an empty population. A census that
+		// reads "unavailable" as "clean" is how the inputs went missing.
+		expect(
+			hiddenIds,
+			`git could not enumerate the ignored files under ${repoRoot}, so this census cannot say whether the fixtures survive a fresh checkout`,
+		).toBeDefined();
+		const hidden = inputs
+			.map((file) => path.relative(repoRoot, file).replace(/\\/g, "/"))
+			.filter((file) =>
+				hiddenIds?.has(normalizeMapKey(path.join(repoRoot, file))),
+			);
+		expect(
+			hidden,
+			`captured fixture input(s) .gitignore hides, so a fresh checkout cannot replay them: ${hidden.join(", ")}`,
 		).toEqual([]);
 	});
 

@@ -124,6 +124,10 @@ const NAME_PARENTS = new Set([
 	"generator_function_declaration",
 	"interface_declaration",
 	"method_definition",
+	// A method SIGNATURE declares a callable, like `method_definition`, not a
+	// field of at-a-time state: `hasNotifyInFlight?(filePath): boolean`
+	// (`LSPClient`, #4532 gap 9 round 3) asks the queue a question.
+	"method_signature",
 	"type_alias_declaration",
 ]);
 

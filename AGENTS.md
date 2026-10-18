@@ -421,6 +421,13 @@ file-scoped worklist and receives no project-wide scanner output.
     a test reads a record back, and a reason is judged by the reviewer
     (#3875; recurrence #3873: the S2/S3 fixes could not be shown to fire live).
 
+75. **Swallowed failure recorded as a different event:** a `catch` that drops a
+    failure and lets the normal path continue makes the log report success or
+    an event that never happened (an unreadable subtree counted as deleted, a
+    rejected save counted as sent). A catch on a runtime path records the
+    failure under its own kind, or says `none: <reason>`. Screen: force the
+    failure through the real entry point and read the record it wrote.
+
 43. **Prose mistaken for executable structure:** define lexical states and
     reachability before scanning shell, workflow, or source text.
 
@@ -1014,9 +1021,25 @@ file-scoped worklist and receives no project-wide scanner output.
   the touch a save — the post-write sync, the explicit `lsp_diagnostics` query
   and the MCP analysis's first touch (`analyzeFile`, the MCP hosts' post-write
   route), never a sweep warm-up, cascade or sweep touch. The touch debounce
-  never drops a save: a saved touch whose push it skipped sends the save alone
-  (`notify.save`). Its key is (path, server): the client scope never re-pushes
-  bytes a server holds.
+  reads one rule: skip only when the bytes the server will hold once the path's
+  notify queue drains are this touch's content. The evidence is the client's
+  own sent-content record (`getSentContent`) AND `hasNotifyInFlight`, because
+  that record reports what landed and a send still running lands after a skip.
+  `hasNotifyInFlight` counts a content send only: a save-only send
+  (`sendDidSaveForHeldDocument`) cannot change the bytes or remove the document,
+  so it leaves the record final, while a didClose always counts. A client that
+  cannot answer either question is pushed, never skipped: the elapsed window
+  that used to decide there is gone (`formal/lsp-server-content`
+  `GateWindowReopen` is why). Its key is (path, server): the client scope never
+  re-pushes bytes a server holds. The debounce never drops a save: a saved touch
+  whose push it skipped sends the save alone (`notify.save`), and the save mark
+  names the content a `didSave` LANDED for, owned by the client's document
+  record and written only by the send continuation. Every rebuild of that
+  record carries the mark with the rest of the binding: Incremental's
+  text-budget eviction strips the payload, never the save evidence. A failed
+  carried save leaves the save owed; a failed standalone save gets one bounded
+  retry (`GateSaveRetry`, `MutGateSaveNoRetry`) and a retry that lands for
+  other bytes cannot suppress the save the next saved touch owes.
 - `touchFile` freezes content-bound auxiliary coverage at merge time. A later
   publication cannot undo a finding drop. Auxiliary gaps narrow coverage and
   never turn a primary answer inconclusive. When a primary touch is
@@ -1050,6 +1073,17 @@ file-scoped worklist and receives no project-wide scanner output.
   pi-lens writes and before LSP or dispatch awaits. `fileModified` also covers
   side-effect files, so `postWriteStateHash` is the ownership discriminator;
   an absent hash must not stamp the target with later disk bytes (#2499).
+- The opaque prescan resolves its root once, through `opaquePrescanRoot`
+  (`clients/opaque-mutation-scan.ts`), and every consumer of that session root
+  asks the same owner: the baseline record and take, the head-move record and
+  take, and the root each held-primary send is scoped by. A
+  session whose cwd is not the coordinator's `projectRoot` — a concurrent
+  secondary session, which the host's session-start guard declines before any
+  `session_start` body runs — otherwise records its baseline and its HEAD under
+  one root and takes them under another, reporting `no-pending-snapshot` for a
+  command that did write. Scan evidence is scoped to the checkout it ran in: a
+  recognized write outside that root is kept (never cleared by a scan that
+  could not see it) and earns no authorship the scan cannot confirm.
 - `RUNNERS` declarations include file kinds. Runner selection is gated by file
   kind and anchored at the file's language root, not by dispatch-root config or
   declaration order. Runner children use `resolveToolCwd` with launcher markers.
@@ -1123,6 +1157,23 @@ file-scoped worklist and receives no project-wide scanner output.
 - `clients/dispatch/runners/runner-spawn-cwd-sweep.test.ts` is the population
   guard for child cwd derivation. Add a reasoned migration row instead of a
   pin-only update.
+- Each real-bytes fixture under `tests/fixtures/runner-output/` records the
+  availability probe its runner sends (`availability`: the argv, the binary
+  that answered from its own banner, and the real exit status) and a real clean
+  run (`clean`; there is no prose alternative). The clean record is the
+  fixture's own invocation run in `tests/fixtures/runner-output-clean/<runner>`,
+  whose inputs are un-ignored by `.gitignore` on purpose. One gate,
+  `recordProblems` in `scripts/capture-runner-output.mjs`, refuses a record whose
+  version its own answer never printed, and a clean run whose argv is not this
+  fixture's; the capture and the census both call it.
+  `captured-real-output.test.ts` runs the REAL checker against that record
+  instead of mocking it, so a tool that rejects its own probe — helm 4 rejects
+  `--version` — reaches the replay; the clean bytes are what the matrix's clean
+  cell replays, in the clean workspace. `scripts/capture-runner-fixtures.mjs
+  --records-only` retrofits those records onto an existing fixture without
+  touching its work bytes, keyed on the fixture's own case.
+  Enforced by `tests/clients/dispatch/smoke-fixture-coverage.test.ts` and
+  `tests/clients/dispatch/tool-state-matrix.test.ts`.
 - Every `parseToolRun` runner documents its nonzero-exit table; the documented
   `ran` codes are pinned exactly so adding or removing one does not pass
   silently, and each documented code needs an executable status fixture in the
@@ -1392,8 +1443,8 @@ node scripts/guard-bash-probe.mjs <matrix.jsonl> [--head <ref|file>] [--base <re
                                         prints only the rows that changed head vs base
 ```
 
-CI cost gates (#3801). The heavy advisory jobs (`CodeQL (<language>) (advisory)`,
-`Unit tests Windows (advisory)`) start only after every required check passed on the
+CI cost gates (#3801). The heavy advisory jobs (`CodeQL (<language>) (advisory)`)
+start only after every required check passed on the
 head (`heavy-gate` in ci.yml; it is red when a lint.yml required check was red
 or unfinished at its deadline). ci-verdict lists them with their real state
 (PENDING, or NOT RUN with the gate's reason) before and after the verdict turns
@@ -1405,6 +1456,26 @@ other test job always run, because a docs edit can red tests outside tests/confi
 model-checks only when `formal/` (or its checker or ci.yml) changed. A REQUIRED
 job never skips at job level: ci-verdict and the merge train demand a literal
 `success`, so `TLA+ models` starts and skips its steps.
+
+The Windows unit leg (`Unit tests Windows`, job key `unit-tests-windows`) GATES
+by maintainer decision on 2026-10-17: it runs the real `win32` gates, and
+advisory reds were waved through (the incidents are in `HISTORY.md`). It
+therefore starts on every event like the Unit shards and is never behind
+`heavy-gate`, whose docs-only skip would leave a required row absent. Its name
+carries no `(advisory)` suffix, so a row it reports with a failing conclusion
+gates. A row it does not report, or reports `skipped`, does not: until the
+maintainer adds `Unit tests Windows` to master's required status checks,
+ci-verdict is the only enforcement, and it judges only the rows that are
+posted, so an absent or job-skipped Windows row reads green (shape 11). Its
+population is every
+`tests/config/*` file, every `process.platform` Windows gate, and the
+shrink-only `WINDOWS_LANE_ADMISSIONS` rows
+(`scripts/lib/win32-gate-population.mjs`); a failed or under-executed subset
+reds the job, and no step of it is `continue-on-error`. A declined verdict
+still leaves a record: the tmp-fixture hygiene census is quarantined on
+`win32`, and its teardown prints `verdict=declined` where every other lane
+prints `verdict=asserted` (the issue that retires it is in `HISTORY.md`).
+
 The same script's `smoke` output (`PR_SMOKE_PATHS`: RPC, install, LSP launch,
 trust) makes `install-smoke.yml` run all four pi-load cells and an advisory LSP
 handshake job on a pull request; any other PR that reaches that workflow keeps
@@ -1512,6 +1583,18 @@ New user-facing fragments begin with a bold lead of at most 100 characters
   owner's own `afterAll`: a sibling a file leaves after that boundary is out of
   scope for the census (the next run's baseline absorbs it), so fix the producer
   rather than reading the line as clean.
+- A test that pins `HOME`/`USERPROFILE` uses `pinFixtureHome`
+  (`tests/clients/test-utils.ts`): the home lives in the worker's scratch root
+  beside its worker home, never inside a fixture root the harness deletes and
+  never under `PI_LENS_HOME`, which production treats as its own housekeeping. A
+  child the test never awaits writes to its inherited HOME after teardown, and a
+  home inside the deleted root re-creates it after the file's sweep; no sweep
+  can remove that (`tests/clients/fixture-home-teardown.test.ts`). A
+  raw `process.env.HOME = …` pin in new test code is that shape. The pin
+  registers its undo with the harness, and the setup restores whatever is left
+  at the end of the case (`restorePinnedFixtureHomes` in its `afterEach`), so a
+  setup step that throws before the call site's `finally` cannot hand the next
+  case a fixture directory.
 
 Every logic change has relevant tests. New tests use fake clocks and
 `tests/clients/interleaving-kit.ts` before real time, raw sleeps, or real child

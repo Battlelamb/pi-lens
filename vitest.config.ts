@@ -348,6 +348,10 @@ const lspSpawnHeavyInclude = [
 	// #4248: the unknown-trust project-local binary witness resolves a real
 	// PATH entry through launchLSP; keep that child-spawn boundary phased here.
 	"tests/clients/lsp/service-project-trust.test.ts",
+	// #4532 gap 9: the server's own view of what it was sent only exists on a
+	// real stdio wire to a real fake-server child; the initialize handshake is
+	// the same #1022/#2332 shape as its lane siblings.
+	"tests/clients/lsp/touch-debounce-content-gate.test.ts",
 	// #4299: real wrapper compiler-resolution security witness.
 	"tests/clients/lsp/tsserver-project-trust-wire.test.ts",
 	// #4320: the watched-files wire frames only exist on a real stdio connection
@@ -495,6 +499,9 @@ export const wallClockBudgetInclude = [
 	"tests/clients/config-diagnostic-codes.test.ts",
 	"tests/clients/dispatch/runners/ast-grep-playground-verify.test.ts",
 	"tests/clients/dispatch/runners/ast-grep-rule-ignores.test.ts",
+	// #4522: the git-ignored census reads git's own tracked-versus-ignored
+	// answer through a real `git ls-files` child (flake-shape admission).
+	"tests/clients/dispatch/smoke-fixture-coverage.test.ts",
 	// #4321: the real Biome binary's 80-column wrapping is the subject (flake-shape admission).
 	"tests/clients/format-service-tab-width-real-biome.test.ts",
 	"tests/clients/git-tracked-ignore.test.ts",
@@ -615,6 +622,10 @@ export const wallClockBudgetInclude = [
 	"tests/config/strictness-ratchet.test.ts",
 	"tests/config/tracked-control-bytes.test.ts",
 	"tests/config/workflow-writers-governance.test.ts",
+	// #4504: a real linked worktree (`git worktree add`) and the real
+	// tool_call/tool_result seams that key the opaque prescan (flake-shape
+	// admission); the git children ride along in the serialized lane.
+	"tests/index-4504-opaque-prescan-root-witness.test.ts",
 	"tests/mcp/session-end.smoke.test.ts",
 	// published-manifest guard runs the real `npm pack` (flake-shape admission).
 	"tests/packaging-pack-manifest.test.ts",

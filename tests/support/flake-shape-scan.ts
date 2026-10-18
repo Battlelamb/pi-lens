@@ -10,8 +10,9 @@
  * {@link SUPPORT_POPULATION_DETECTORS}):
  *
  * 1. {@link scanRealProcessSpawn} — a real child process: a `child_process`
- *    import, a call-shaped `execFileSync`/`spawnSync`/`execSync`, a support
- *    spawn-helper call, or a spawn whose argv mentions `vitest` (a test file
+ *    import, a call-shaped `execFileSync`/`spawnSync`/`execSync`, a spawn-helper
+ *    call (a support helper, or the `collectUntrackedIgnoredIds` production
+ *    seam), or a spawn whose argv mentions `vitest` (a test file
  *    re-launching the
  *    suite inside itself).
  * 2. {@link scanElapsedTimeAssertion} — a DELTA of two clock reads flowing
@@ -61,11 +62,12 @@
  *   not create or truncate call sites. It separately uses `codeMatches` for
  *   helper calls and mock declarations, while `strings: "keep"` remains only
  *   for the intentional `"vitest"` argv evidence.
- * - Detector 1 recognizes known support-module helper names at their test call
- *   sites and ignores calls whose helper module is mocked in that file. It
- *   still cannot resolve arbitrary aliases, so aliases remain conservative
- *   false positives. Quoted and commented helper names are excluded by
- *   `codeMatches`.
+ * - Detector 1 recognizes known spawn-helper names at their test call sites —
+ *   the support-module helpers plus the one production seam that wraps the
+ *   child, `collectUntrackedIgnoredIds` (#4598) — and ignores calls whose
+ *   helper module is mocked in that file. It still cannot resolve arbitrary
+ *   aliases, so aliases remain conservative false positives. Quoted and
+ *   commented helper names are excluded by `codeMatches`.
  * - Detector 6 reads the callee through `isViMockCall`: `vi` or `vitest`
  *   written directly (parentheses and casts allowed). A callee reached
  *   through a value (an alias, a destructure, a helper's parameter) is not
@@ -240,8 +242,11 @@ const VITEST_IN_ARGV = /\bvitest\b/i;
 // These helpers are the test-side routes to real child processes. Keep this
 // list beside the support-module census: matching the CALL in a test catches
 // a helper that hides `node:child_process` behind another module boundary.
+// `collectUntrackedIgnoredIds` (#4598) is one such boundary: the census reads
+// it as a production seam, and its call site spawns the real `git ls-files`
+// child that decides which fixture inputs survive a fresh checkout.
 const SUPPORT_SPAWN_HELPER_CALL =
-	/\b(gitFixtureSpawnAsync|gitExecFileSync|gitExecSync|execFileSync|execSync|spawnWedgedChild|safeSpawnAsync|withRealPi)\s*\(/g;
+	/\b(gitFixtureSpawnAsync|gitExecFileSync|gitExecSync|execFileSync|execSync|spawnWedgedChild|safeSpawnAsync|collectUntrackedIgnoredIds|withRealPi)\s*\(/g;
 const MOCK_CALL = /\bvi\.(?:mock|doMock|hoisted)\s*\(\s*["']([^"']+)["']/g;
 const HELPER_MODULE_SUFFIXES: Record<string, readonly string[]> = {
 	gitFixtureSpawnAsync: ["/git-fixture-env", "/git-fixture-env.js"],
@@ -249,6 +254,7 @@ const HELPER_MODULE_SUFFIXES: Record<string, readonly string[]> = {
 	gitExecSync: ["/git-fixture-env", "/git-fixture-env.js"],
 	spawnWedgedChild: ["/fault-injection", "/fault-injection.ts"],
 	safeSpawnAsync: ["/safe-spawn", "/safe-spawn.js"],
+	collectUntrackedIgnoredIds: ["/git-tracked-ignore", "/git-tracked-ignore.js"],
 	withRealPi: [
 		"/real-pi-harness",
 		"/real-pi-harness.js",

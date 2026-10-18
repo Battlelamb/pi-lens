@@ -1,5 +1,63 @@
 # HISTORY
 
+## 2026-10-18 — swallowed failure recorded as a different event (shape 75)
+
+Shape 75 ("Swallowed failure recorded as a different event") entered the catalog
+here.
+
+The user asked whether the week's bug fixes were observable. An audit of the 53
+`fix` PRs merged from 2026-10-11 to 2026-10-18 drove each production entry point
+with pinned homes and read the real `latency.log`. Four runtime failure paths
+ended in a silent `catch`. In two the log did worse than miss the failure: the
+out-of-band change scan from #4528 caught an unreadable directory with
+`continue` and then reported `deleted: 1` for a file that still existed, and
+#4527's didSave path reported a rejected save the same way as a sent one. Shape
+31 asks for a record on new behavior; it did not catch these, because each path
+did write a record, just the wrong one. #4596 tracks the four fixes and the
+planned guard. The #4575 round 7 verify found a third member: `lsp_touch_file`
+answers `failureKind: "success"` after a rejected didSave.
+
+The same retro gave three orchestrator mistakes a guard in the orchestrator's
+own tooling rather than a rule: a watcher left down after a context compaction,
+a resumed round that lost its `gh` passthrough (plegma #762), and a push onto a
+PR branch while a fix round was queued against the old head (plegma #723). A
+fourth, resumed reviews whose inherited deliverable name did not match the
+brief, stays a screen in the merge-policy table. Shape 69 recurred on five PRs
+despite its screen; #4602 plans a `check-pr-body` row for it instead of a
+reworded screen.
+
+The compliance pass on this change found a fault in the history governance
+test itself: its heading detector read a prose line opening with `#4527` as a
+heading, and let "shape" and its number sit on two lines, so shape 31 counted
+as covered. The detector now needs a real heading on one line, and shape 31
+stays in the no-history baseline.
+
+## 2026-10-18 — the Windows unit leg becomes a gate
+
+The maintainer decided on 2026-10-17 that `Unit tests Windows` gates. The lane
+had run as `Unit tests Windows (advisory)` since #2833, behind `heavy-gate` and
+with `continue-on-error` on its Vitest step, so its reds were reported and
+waivable: #4566 r14's `.cmd` branch and #4551 were both waved through on a
+head whose Linux legs were green. The promotion (#4518, PR #4592) drops the
+suffix, the deferral and the `continue-on-error`, so the job starts on every
+event and a failing conclusion gates everywhere ci-verdict reads rows.
+
+Two tests kept the lane from being green on master, and the promotion had to
+answer for both rather than wave them through as it had the earlier reds. The
+10,000-path opaque-ownership population (#4373) took more than its fixed 60 s
+budget on a loaded Windows runner while running 36.8 s green on one head, so
+it takes the lane's own `PI_LENS_TEST_TIMEOUT_SCALE` (180 s on the Windows leg)
+through one shared parse. The tmp-fixture hygiene census reds about one
+Windows run in ten on a root its own file's teardown had already removed, so
+its verdict is declined on `win32` only, pinned to #4591: the suite still runs
+and its `cleanupTmpHygiene` sweep still reaps, because a suite-level skip was
+measured to run no hook at all.
+
+Enforcement is the row a run posts. Until the maintainer adds the name to
+master's required status checks, an absent or job-skipped Windows row reads
+green (shape 11), which is why the wording in `AGENTS.md` says so and why the
+class sweep covers both spellings of the name.
+
 ## 2026-10-17 — split host-path resolution (shape 74)
 
 Shape 74 ("Split host-path resolution") entered the catalog here.

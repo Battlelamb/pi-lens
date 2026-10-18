@@ -50,7 +50,8 @@ import {
 	cleanupTestEnvironmentsDrained,
 	setupTestEnvironment,
 } from "../clients/test-utils.js";
-import { McpHarness, testTimeoutScale } from "../mcp/harness.js";
+import { McpHarness } from "../mcp/harness.js";
+import { scaledTestTimeout } from "../support/test-timeout-scale.js";
 import { makeSessionStartEvent } from "../support/host-event-factory.js";
 import { createPiMock, makeCtx } from "../support/pi-mock.js";
 import {
@@ -894,7 +895,7 @@ async function runMcpCell(fx: Fixture): Promise<Cell> {
 					waitMs: 3000,
 				},
 			},
-			60_000 * testTimeoutScale,
+			scaledTestTimeout(60_000),
 		);
 		const result = response.result as { content: Array<{ text: string }> };
 		const text = result.content[0]?.text ?? "";
@@ -1714,7 +1715,7 @@ describe("navigation operations on a file no primary answers for (#4403 N4, V5)"
 				"hover ok=false status=no_server: No LSP server available for notes.unserved. Check that the language server is installed.",
 			]);
 		},
-		120_000 * testTimeoutScale,
+		scaledTestTimeout(120_000),
 	);
 
 	const CASES: ReadonlyArray<[ColumnId, string[]]> = [
@@ -1729,7 +1730,7 @@ describe("navigation operations on a file no primary answers for (#4403 N4, V5)"
 			async () => {
 				expect(await navOps(columnId)).toEqual(expected);
 			},
-			120_000 * testTimeoutScale,
+			scaledTestTimeout(120_000),
 		);
 	}
 
@@ -1743,7 +1744,7 @@ describe("navigation operations on a file no primary answers for (#4403 N4, V5)"
 				"findSymbol ok=true status=empty: No results for findSymbol at a.json:1:2",
 			]);
 		},
-		120_000 * testTimeoutScale,
+		scaledTestTimeout(120_000),
 	);
 });
 
@@ -1764,7 +1765,7 @@ describe("every diagnostics route under every server-selecting switch (#4403)", 
 
 				expect(observed).toEqual(expectedRow(column));
 			},
-			180_000 * testTimeoutScale,
+			scaledTestTimeout(180_000),
 		);
 	}
 

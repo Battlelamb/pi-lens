@@ -727,6 +727,28 @@ export type DegradationKind =
 	| "lsp-diagnostics-timeout"
 	| "lsp-diagnostics-unsupported"
 	/**
+	 * #4532 gap 9 round 6 F4 (shape 31): the bounded recovery of a standalone
+	 * `didSave` is spent — the save a debounced saved touch owed, the failure,
+	 * and its ONE retry all resolved without a save leaving the process. The
+	 * next saved touch of those bytes owes one again (the mark is withdrawn),
+	 * but nothing else would tell the server before then, so a reader chasing a
+	 * save-triggered server's silence needs this row. Subject is the server id
+	 * (one row per server per session, like `lsp-did-save-text-omitted`), with
+	 * the file in `metadata`; the failed ATTEMPT is
+	 * `lsp-did-save-send-failed` in `clients/lsp/client.ts`.
+	 */
+	| "lsp-did-save-recovery-exhausted"
+	/**
+	 * #4532 gap 9 round 6 F4: one `textDocument/didSave` notification did not
+	 * leave the process (a stream error, or a write that resolved false).
+	 * `lsp_touch_file` is written before the save finishes, so without this row
+	 * "the save was queued" and "the save never landed" read the same. Subject
+	 * is the server id and the file rides `metadata`, one row per server per
+	 * session: a save-triggered project can fail one save per edit, and a
+	 * per-save row would be one row per edit.
+	 */
+	| "lsp-did-save-send-failed"
+	/**
 	 * #3405: a `textDocument/didSave` was sent WITHOUT its `text` to a server
 	 * that negotiated `includeText: true`, because the document exceeded the
 	 * shared `exceedsLspSyncLimits` bound. The save itself still went out (the

@@ -19,6 +19,7 @@ import {
 } from "../../clients/mcp/ipc.js";
 import { removeTempDirSync } from "../clients/test-utils.js";
 import { killProcessTree } from "../support/process-tree.js";
+import { scaledTestTimeout } from "../support/test-timeout-scale.js";
 
 export const repoRoot = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
@@ -28,11 +29,9 @@ const serverJs = path.join(repoRoot, "mcp", "server.js");
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 // Spawn-heavy MCP smokes keep a tight local deadline, while CI can compensate
-// for a loaded runner without changing the production server's budgets.
-export const testTimeoutScale = (() => {
-	const parsed = Number(process.env.PI_LENS_TEST_TIMEOUT_SCALE ?? "1");
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
-})();
+// for a loaded runner without changing the production server's budgets. The
+// factor and its guard live in `../support/test-timeout-scale.js` (#4592
+// review F5 fold): this module only reads it for its own default.
 
 export interface McpHarnessOptions {
 	/** Project root the server operates on (--cwd). Defaults to the repo root. */
@@ -62,7 +61,7 @@ export class McpHarness {
 
 	constructor(options: McpHarnessOptions = {}) {
 		this.defaultTimeoutMs =
-			options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS * testTimeoutScale;
+			options.defaultTimeoutMs ?? scaledTestTimeout(DEFAULT_TIMEOUT_MS);
 		// Never let a spawn smoke bind the developer's real workspace endpoint or
 		// write project/global pi-lens state. Explicit cwd values in these tests are
 		// already temp fixtures; the default gets one too.

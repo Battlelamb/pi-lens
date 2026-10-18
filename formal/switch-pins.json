@@ -1215,21 +1215,87 @@
 					"value": "TRUE",
 					"test": "tests/clients/head-move-resync-4493.test.ts",
 					"title": "records undrained when %s replies overtake queued changes"
+				},
+				"ContentGate": {
+					"value": "\"sent\"",
+					"test": "tests/clients/lsp/touch-debounce-content-gate.test.ts",
+					"title": "leaves the server's bytes alone when only the elapsed window has passed",
+					"also": [
+						{
+							"test": "tests/clients/lsp/touch-debounce-content-gate.test.ts",
+							"title": "pushes a document again after it was closed and reopened"
+						}
+					],
+					"narrowedBy": {
+						"\"window\"": {
+							"configs": [
+								"GateWindowRepush"
+							],
+							"reason": "GateWindowRepush and GateWindowReopen run the pre-#4532 gate. The code reads it nowhere: since round 3 a client that cannot report the record is PUSHED (fail closed), because GateWindowReopen shows the window gate can leave a server holding no document at all for a file on disk. These two configs therefore pin what the old rule does, not what any path runs."
+						}
+					}
+				},
+				"SkipNeedsIdle": {
+					"value": "TRUE",
+					"test": "tests/clients/lsp/touch-debounce-fingerprint.test.ts",
+					"title": "pushes a touch while a send of other bytes is still in flight",
+					"also": [
+						{
+							"test": "tests/clients/lsp/touch-debounce-fingerprint.test.ts",
+							"title": "pushes when a client can report its record but not its queue"
+						}
+					]
+				},
+				"SaveBoundToContent": {
+					"value": "TRUE",
+					"test": "tests/clients/lsp/touch-debounce-content-gate.test.ts",
+					"title": "sends the save a skipped touch still owes after another writer advanced the record"
+				},
+				"SaveRetryOnFailure": {
+					"value": "TRUE",
+					"test": "tests/clients/lsp/touch-debounce-fingerprint.test.ts",
+					"title": "retries a standalone save whose notification failed",
+					"also": [
+						{
+							"test": "tests/clients/lsp/touch-debounce-fingerprint.test.ts",
+							"title": "owes the save again after the retry failed too"
+						}
+					]
+				},
+				"SaveMarkOnLanding": {
+					"value": "TRUE",
+					"test": "tests/clients/lsp/touch-debounce-fingerprint.test.ts",
+					"title": "saves the bytes skipped by a coalesced saved content push",
+					"also": [
+						{
+							"test": "tests/clients/lsp/touch-debounce-content-gate.test.ts",
+							"title": "sends the save a skipped touch still owes after another writer advanced the record"
+						},
+						{
+							"test": "tests/clients/lsp/service-did-save-option.test.ts",
+							"title": "sends one save for two saved touches over one unsaved push"
+						}
+					]
 				}
 			},
 			"notCodeChoice": [
 				{
 					"reason": "Scenario bound or actor set: it sizes the state space or picks which actors, inputs and steps TLC explores; no code branch reads it.",
 					"constants": [
-						"Writes",
 						"Cascade",
 						"EqualLength",
+						"InitRec",
 						"LossyFp",
-						"RecentA",
-						"MidSweeps",
-						"PriorInFlight",
 						"MaxMoves",
-						"InitRec"
+						"MidClose",
+						"MidSweeps",
+						"OpenFilePushes",
+						"PriorInFlight",
+						"RecentA",
+						"Revert",
+						"SavedTouches",
+						"SaveSendFails",
+						"Writes"
 					]
 				},
 				{
@@ -1265,6 +1331,13 @@
 			]
 		},
 		"opaque-baseline-slot": {
+			"pins": {
+				"Root": {
+					"value": "\"one\"",
+					"test": "tests/index-4504-opaque-prescan-root-witness.test.ts",
+					"title": "recovers the linked-worktree session's own opaque write at its tool_result"
+				}
+			},
 			"notCodeChoice": [
 				{
 					"reason": "Scenario bound or actor set: it sizes the state space or picks which actors, inputs and steps TLC explores; no code branch reads it.",

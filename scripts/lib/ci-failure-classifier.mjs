@@ -766,8 +766,10 @@ async function fetchRunAndFailedJob({ fetcher, owner, repo, runId, jobName }) {
 	const failedJob = failedJobs[0];
 	if (!failedJob) {
 		// #3801 (verify r2 V3): a CI run that failed ONLY on advisory jobs (a
-		// not-ready `Heavy advisory gate`, the Windows run) is not a `real`
+		// not-ready `Heavy advisory gate`, a CodeQL language leg) is not a `real`
 		// failure of the change; the caller must not label the PR `ci:real`.
+		// #4518: `Unit tests Windows` is not on that list any more -- it gates, so
+		// a red Windows row is a blocking failure like any other.
 		// Every job with a BLOCKING conclusion (failure, timed_out, cancelled, ...)
 		// must be advisory: a required job that timed out beside a red gate is
 		// not "only advisory" (verify r3 V6).
