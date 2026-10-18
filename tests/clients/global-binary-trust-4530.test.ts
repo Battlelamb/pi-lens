@@ -1152,7 +1152,7 @@ it.each(wrapperCases)(
 		let text = fs
 			.readFileSync(path.join(wrapperFixtures, name), "utf8")
 			.replaceAll("__TARGET__", spelling)
-			.replaceAll("__RUNTIME__", process.execPath);
+			.replaceAll("__RUNTIME__", process.execPath.replaceAll("\\", "/"));
 		if (form === "near-miss") text = text.slice(0, -1) + "^";
 		if (form === "suffix") text += "\necho injected\n";
 		fs.writeFileSync(shim, text);
@@ -1290,8 +1290,11 @@ it.each(wrapperNames.filter((name) => name.endsWith(".sh")))(
 		const shim = path.join(outside, "tool");
 		const text = fs
 			.readFileSync(path.join(wrapperFixtures, name), "utf8")
-			.replaceAll("__TARGET__", script)
-			.replaceAll("__RUNTIME__", process.execPath);
+			.replaceAll(
+				"__TARGET__",
+				name.startsWith("yarn4-") ? script.replaceAll("\\", "/") : "server.js",
+			)
+			.replaceAll("__RUNTIME__", process.execPath.replaceAll("\\", "/"));
 		fs.writeFileSync(shim, text);
 		setProjectTrustState("unknown");
 		expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
@@ -1348,7 +1351,7 @@ it("r17 Yarn's absolute runtime does not consult a sibling node", () => {
 		fs
 			.readFileSync(path.join(wrapperFixtures, "yarn4-node.cmd"), "utf8")
 			.replaceAll("__TARGET__", script)
-			.replaceAll("__RUNTIME__", process.execPath),
+			.replaceAll("__RUNTIME__", process.execPath.replaceAll("\\", "/")),
 	);
 	setProjectTrustState("unknown");
 	expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
