@@ -484,7 +484,7 @@ describe("PATH candidate verification (#3311)", () => {
 		try {
 			const result = await getToolPath("rust-analyzer");
 
-			expect(result).toBe("rust-analyzer");
+			expect(result).toBe(path.join(dir, `rust-analyzer${EXE}`));
 		} finally {
 			restorePath();
 		}
@@ -500,7 +500,7 @@ describe("PATH candidate verification (#3311)", () => {
 		try {
 			const result = await getToolPath("intelephense");
 
-			expect(result).toBe("intelephense");
+			expect(result).toBe(path.join(dir, `intelephense${EXE}`));
 			expect(spawnCalls).toEqual([]);
 		} finally {
 			restorePath();

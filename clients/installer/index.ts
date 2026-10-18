@@ -3437,27 +3437,29 @@ async function getToolPathResolved(
 	// drift (#589) is about pi-lens's own managed installs, and feeding a
 	// system-installed version into it would turn every PATH tool at another
 	// version into a forced reinstall.
-	if (
-		await isCommandAvailable(
-			tool.checkCommand,
-			undefined,
-			installerSearchPath(),
-		)
-	) {
+	const pathCandidate = resolveTrustScopedCommand(
+		tool.checkCommand,
+		process.cwd(),
+		installerSearchPath(),
+		false,
+	);
+	if (pathCandidate) {
+		const selectedCommand =
+			getProjectTrustState() === "trusted" ? tool.checkCommand : pathCandidate;
 		// A `verification: "package-entry"` entry (#2722) is verified from the
 		// installed tree BESIDE its shim — `verifyNpmPackageEntry` derives the
 		// package dir from `<…>/node_modules/.bin/<shim>`. A bare PATH name has no
 		// such tree to read, so that evidence is unavailable here and its absence
 		// says nothing about the command: this rung keeps the pre-#3311 behaviour
 		// for those entries rather than inventing a verdict from a failed lookup.
-		if (packageEntryVerification(tool) !== undefined) return tool.checkCommand;
+		if (packageEntryVerification(tool) !== undefined) return selectedCommand;
 		// #3400: a `tree-manifest` launcher answers any argument by starting a JVM,
 		// so `checkArgs` is no verdict here either — a nonzero exit from that probe
 		// would drop a working PATH install for a managed one.
-		if (tool.verification === "tree-manifest") return tool.checkCommand;
+		if (tool.verification === "tree-manifest") return selectedCommand;
 		let probeStalled = false;
 		const verified = await verifyToolBinary(
-			tool.checkCommand,
+			pathCandidate,
 			undefined,
 			() => {
 				probeStalled = true;
@@ -3470,7 +3472,7 @@ async function getToolPathResolved(
 				probeStalled = true;
 			},
 		);
-		if (verified || probeStalled) return tool.checkCommand;
+		if (verified || probeStalled) return selectedCommand;
 		// One record per tool per session: the rejected candidate and the check
 		// that rejected it. verifyToolBinary already logged the kind/exit code.
 		recordDegradationOnce({

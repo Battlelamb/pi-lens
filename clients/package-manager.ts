@@ -470,7 +470,12 @@ async function probeGlobalBinDirs(
 	// trust-scoped PATH and runs from HOME, so project configuration cannot
 	// redirect a global lookup.
 	const env = trustScopedSpawnEnv(cwd);
-	const res = await safeSpawnAsync(pmBinary(pm), query, {
+	const executable =
+		getProjectTrustState() === "trusted"
+			? pmBinary(pm)
+			: resolveTrustScopedCommand(pmBinary(pm), cwd);
+	if (!executable) return [];
+	const res = await safeSpawnAsync(executable, query, {
 		timeout: 5000,
 		...(env && { env, cwd: os.homedir() }),
 	});

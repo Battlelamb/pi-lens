@@ -61,6 +61,7 @@ import {
 } from "../../clients/project-trust.js";
 import {
 	isCommandAvailableAsync,
+	isAcceptedCommandFile,
 	findCommandAsync,
 } from "../../clients/safe-spawn.js";
 import { trustScopedSpawnEnv } from "../../clients/package-manager.js";
@@ -258,6 +259,17 @@ describe.skipIf(process.platform === "win32")(
 			await findGlobalBinary(FIXTURE_TOOL);
 
 			expect(project.ran()).toBe("");
+			const outside = tempDir("pi-lens-global-");
+			for (const manager of ["npm", "pnpm", "yarn"]) {
+				fs.symlinkSync(
+					path.join(project.bin, manager),
+					path.join(outside, manager),
+				);
+			}
+			process.env.PATH = [outside, savedEnv["PATH"]].join(path.delimiter);
+			_resetPackageManagerCache();
+			await findGlobalBinary(FIXTURE_TOOL);
+			expect(project.ran()).toBe("");
 		});
 
 		it("resolves the package manager's own runtime outside a project bin dir", async () => {
@@ -316,7 +328,9 @@ describe.skipIf(process.platform === "win32")(
 			process.chdir(project.root);
 			setProjectTrustState("unknown");
 
-			expect(await getToolPath("stylelint")).toBe("stylelint");
+			expect(await getToolPath("stylelint")).toBe(
+				path.join(outside, "stylelint"),
+			);
 			expect(project.ran()).toBe("");
 		});
 
@@ -1130,6 +1144,12 @@ it.each(["unknown", "untrusted", "trusted"] as const)(
 		expect(await isCommandAvailable("stylelint")).toBe(trust === "trusted");
 		expect(await verifyToolBinary(command)).toBe(trust === "trusted");
 		expect(Boolean(project.ran())).toBe(trust === "trusted");
+		const fallback = tempDir("pi-lens-global-");
+		const admitted = plant(path.join(fallback, "stylelint"), project.marker);
+		process.env.PATH = [outside, fallback].join(path.delimiter);
+		expect(await getToolPath("stylelint")).toBe(
+			trust === "trusted" ? "stylelint" : admitted,
+		);
 	},
 );
 it.each(["cmd", "ps1", "sh", "bat", "py"])(
@@ -1171,3 +1191,24 @@ it("r18 records an unavailable command realpath", () => {
 		}),
 	]);
 });
+
+// R18-V2: the filesystem acceptance catch publishes its own bounded decision.
+it.runIf(process.platform !== "win32")(
+	"r18 records executable access refusal once",
+	() => {
+		const file = path.join(tempDir("pi-lens-global-"), "not-executable");
+		fs.writeFileSync(file, "fixture", { mode: 0o644 });
+		expect(isAcceptedCommandFile(file)).toBe(false);
+		expect(isAcceptedCommandFile(file)).toBe(false);
+		expect(
+			getDegradationSummary()
+				.filter((row) => row.kind === "command-file-not-executable")
+				.flatMap((row) => row.latestReasons),
+		).toEqual([
+			expect.objectContaining({
+				subject: file,
+				reason: "command file failed executable access check",
+			}),
+		]);
+	},
+);

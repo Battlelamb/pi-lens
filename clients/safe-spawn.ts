@@ -1162,7 +1162,11 @@ export function isAcceptedCommandFile(
 		fs.accessSync(candidate, fs.constants.X_OK);
 		return true;
 	} catch {
-		// none: filesystem acceptance reports absence through its boolean verdict.
+		recordDegradationOnce({
+			kind: "command-file-not-executable",
+			subject: candidate,
+			reason: "command file failed executable access check",
+		});
 		return false;
 	}
 }
