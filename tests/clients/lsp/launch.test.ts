@@ -346,10 +346,8 @@ describe("lsp launch", () => {
 	);
 
 	// #4566 r14 (Greptile r4303887682): an npm `cmd` shim may name an
-	// extensionless launcher script. The shim parser understood only .js/.mjs/.cjs,
-	// so a GLOBAL shim (yaml-language-server's documented wrapper) read as project
-	// code and an adopted root refused it. The target still decides: inside the
-	// project it remains a refusal.
+	// extensionless launcher script. R17 retains that admission through complete
+	// upstream captures; the target still decides for an adopted root.
 	it.each(["unknown", "trusted"] as const)(
 		"spawns a global npm shim whose target is an extensionless script under %s trust (#4566 r14)",
 		async (trust) => {
@@ -366,20 +364,18 @@ describe("lsp launch", () => {
 			fs.mkdirSync(path.dirname(target), { recursive: true });
 			fs.writeFileSync(target, "#!/usr/bin/env node\n", { mode: 0o755 });
 			const shim = path.join(globalDir, "yaml-language-server.cmd");
-			// npm cmd-shim v6 spelling, `%dp0%` arm: the node copy is named FIRST
-			// (the `IF EXIST` line), so a parser that takes the first quoted spelling
-			// judges `node.exe` instead of the script.
+			// R17: use complete upstream bytes; the target must actually exist.
 			fs.writeFileSync(
 				shim,
-				[
-					"@ECHO off",
-					'IF EXIST "%dp0%\\node.exe" (',
-					'  SET "_prog=%dp0%\\node.exe"',
-					") ELSE (",
-					'  SET "_prog=node"',
-					")",
-					'endLocal & "%_prog%"  "%dp0%\\..\\yaml-language-server\\bin\\yaml-language-server" %*',
-				].join("\r\n"),
+				fs
+					.readFileSync(
+						path.resolve("tests/fixtures/global-command-wrappers/npm-node.cmd"),
+						"utf8",
+					)
+					.replaceAll(
+						"__TARGET__",
+						"yaml-language-server\\bin\\yaml-language-server",
+					),
 				{ mode: 0o755 },
 			);
 			const spawn = vi.fn(
@@ -520,7 +516,9 @@ describe("lsp launch", () => {
 			process.platform === "win32" ? "valid.exe" : "valid",
 		);
 		fs.mkdirSync(invalid);
-		fs.writeFileSync(valid, "#!/bin/sh\n", { mode: 0o755 });
+		fs.writeFileSync(valid, Buffer.from([0x7f, 0x45, 0x4c, 0x46]), {
+			mode: 0o755,
+		});
 		const spawnMock = vi.fn(
 			mockSpawn(
 				(_command: string, _args: string[]) => new MockChildProcess(9876),
