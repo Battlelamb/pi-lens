@@ -47,6 +47,7 @@
  */
 
 import { logCascade } from "../cascade-logger.js";
+import { BoundedFifoMap } from "../bounded-cache.js";
 import { incrementDegradationCount } from "../degradation-ledger.js";
 import { logLatency } from "../latency-logger.js";
 import { normalizeMapKey } from "../path-utils.js";
@@ -205,7 +206,11 @@ interface OutstandingTouch {
 const MAX_OUTSTANDING_TOUCHES = 256;
 const OUTSTANDING_TOUCH_MAX_AGE_MS = 15 * 60_000;
 
-const _outstandingTouches = new Map<string, OutstandingTouch>();
+// Insertion order IS touch order, and the size cap lives in the map's own
+// `set` (#4570: was a hand-rolled `while (size > cap)` evict-oldest block).
+const _outstandingTouches = new BoundedFifoMap<string, OutstandingTouch>(
+	MAX_OUTSTANDING_TOUCHES,
+);
 
 /** Entries dropped by the age bound since the last sweep reported. */
 let _expiredSinceLastSweep = 0;
@@ -364,11 +369,8 @@ export function recordOutstandingCascadeTouch(entry: OutstandingTouch): void {
 	// its notify, so it trails real time, and the age bound is a statement about
 	// the clock rather than about the newest touch's own stamp.
 	pruneExpiredOutstandingTouches(Date.now());
-	_outstandingTouches.set(key, entry);
-	while (_outstandingTouches.size > MAX_OUTSTANDING_TOUCHES) {
-		const oldest = _outstandingTouches.keys().next();
-		if (oldest.done) break;
-		_outstandingTouches.delete(oldest.value);
+	const evicted = _outstandingTouches.set(key, entry);
+	for (let i = 0; i < evicted.length; i++) {
 		_evictedSinceLastSweep++;
 		// Bounded by construction: one ledger tally per session, not per
 		// eviction event. The subject is the cap itself rather than the evicted
@@ -557,7 +559,7 @@ export async function reconcileOutstandingCascadeTouches(
 	// a registry that received no further touches would otherwise hand the sweep
 	// entries of unbounded age.
 	pruneExpiredOutstandingTouches(Date.now(), guard);
-	const entries = [..._outstandingTouches.entries()];
+	const entries = _outstandingTouches.entriesArray();
 	_outstandingTouches.clear();
 
 	for (const [key, touch] of entries) {

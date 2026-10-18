@@ -32,7 +32,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { loadAstGrepNapiSync, type SgNode } from "../deps/ast-grep-napi.js";
-import { recordDegradationOnce } from "../degradation-ledger.js";
+import {
+	incrementDegradationCount,
+	recordDegradationOnce,
+} from "../degradation-ledger.js";
 import { isFileKind } from "../file-kinds.js";
 import { isDeclarationFile } from "../generated-artifacts.js";
 import { exceedsLspSyncLimits } from "./content-limits.js";
@@ -60,6 +63,49 @@ function inOneGoPackage(a: string, b: string): boolean {
 }
 
 /**
+ * #4596: why an implicit-scope question could not be answered. Each cause is
+ * also the ledger subject, so the retained population stays bounded while the
+ * reason names the file the reader needs (AGENTS shape 9, shape 38).
+ */
+export type ImplicitScopeUnknownCause =
+	/** A Go peer's header could not be opened. */
+	| "unreadable-go-peer"
+	/** A JS/TS file could not be read. */
+	| "unreadable-file"
+	/** A directory walked for its Go peers could not be listed. */
+	| "unreadable-go-dir"
+	/** A directory or peer's mtime could not be read. */
+	| "unreadable-mtime"
+	/** The parser threw on the file's bytes. */
+	| "parse-failed";
+
+/**
+ * #4596: record one unresolved implicit-scope decision with its path and its
+ * cause. The verdict stays conservative (`"unknown"` feeds the global scope,
+ * which makes the diagnostics cache refuse rather than serve); only the
+ * silence was the defect — an unreadable module graded `"unknown"` with no
+ * row anywhere, so a wrong refusal had no trace (audit probe 1).
+ */
+function recordUnknownRole(
+	filePath: string,
+	cause: ImplicitScopeUnknownCause,
+	err?: unknown,
+): void {
+	incrementDegradationCount({
+		kind: "lsp-implicit-scope-unknown",
+		subject: cause,
+		reason: `${cause}: ${filePath}${err === undefined ? "" : ` (${err instanceof Error ? err.message : String(err)})`} — unresolved, so the diagnostics cache refuses its entry and the blocker sweep and the cascade see no role for it`,
+		metadata: {
+			file: filePath,
+			cause,
+			...(err === undefined
+				? {}
+				: { err: err instanceof Error ? err.message : String(err) }),
+		},
+	});
+}
+
+/**
  * The Go files in `dir`, as absolute paths; `undefined` when the directory
  * cannot be read.
  */
@@ -67,7 +113,8 @@ export function goPackageFiles(dir: string): string[] | undefined {
 	let entries: fs.Dirent[];
 	try {
 		entries = fs.readdirSync(dir, { withFileTypes: true });
-	} catch {
+	} catch (err) {
+		recordUnknownRole(dir, "unreadable-go-dir", err);
 		return undefined;
 	}
 	return entries.flatMap((entry) =>
@@ -111,7 +158,8 @@ export function goPackageChangedAt(dir: string): number | undefined {
 			changedAt = Math.max(changedAt, fs.statSync(peer).mtimeMs);
 		}
 		return changedAt;
-	} catch {
+	} catch (err) {
+		recordUnknownRole(dir, "unreadable-mtime", err);
 		return undefined;
 	}
 }
@@ -196,7 +244,8 @@ function goHeaderOf(filePath: string): string | undefined {
 		const buffer = Buffer.alloc(GO_HEADER_BYTES);
 		const read = fs.readSync(fd, buffer, 0, GO_HEADER_BYTES, 0);
 		return buffer.toString("utf8", 0, read);
-	} catch {
+	} catch (err) {
+		recordUnknownRole(filePath, "unreadable-go-peer", err);
 		return undefined;
 	} finally {
 		if (fd !== undefined) fs.closeSync(fd);
@@ -323,7 +372,8 @@ export function classifyJsTsGlobalScope(filePath: string): GlobalScopeRole {
 	let content: string;
 	try {
 		content = fs.readFileSync(filePath, "utf8");
-	} catch {
+	} catch (err) {
+		recordUnknownRole(filePath, "unreadable-file", err);
 		return "unknown";
 	}
 	if (exceedsLspSyncLimits(content).tooLarge) return "unknown";
@@ -346,7 +396,8 @@ export function classifyJsTsGlobalScope(filePath: string): GlobalScopeRole {
 	let root: SgNode;
 	try {
 		root = napi.parse(lang, content).root();
-	} catch {
+	} catch (err) {
+		recordUnknownRole(filePath, "parse-failed", err);
 		return "unknown";
 	}
 	let isModule = false;

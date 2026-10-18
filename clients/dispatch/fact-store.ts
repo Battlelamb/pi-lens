@@ -1,4 +1,4 @@
-import { BoundedLruCache } from "../bounded-cache.js";
+import { BoundedLruCache, BoundedSet } from "../bounded-cache.js";
 import { normalizeMapKey } from "../path-utils.js";
 
 // #2243 item 4 telemetry sink, INJECTED rather than imported. fact-store must
@@ -116,8 +116,12 @@ export class FactStore implements ReadonlyFactStore {
 		MAX_SESSION_FACT_RECORDS,
 	);
 	// Keys evicted from `boundedSessionFacts` and not written since, so a reader
-	// can tell "evicted" from "never seen" (#2282). Same cap, same FIFO order.
-	private readonly evictedSessionFactKeys = new Set<string>();
+	// can tell "evicted" from "never seen" (#2282). Same cap, same FIFO order —
+	// the cap lives in `BoundedSet.add`'s own overflow rather than in a
+	// hand-rolled tombstone trim here (#4580 review F1).
+	private readonly evictedSessionFactKeys = new BoundedSet<string>(
+		MAX_SESSION_FACT_RECORDS,
+	);
 	// Pin refcount per file. A file is exempt from capacity eviction while its
 	// count is > 0. Refcounted, not a Set, so two overlapping dispatches of the
 	// same file both hold the pin until BOTH settle (#2243 item 2).
@@ -416,13 +420,6 @@ export class FactStore implements ReadonlyFactStore {
 		const evicted = this.boundedSessionFacts.set(factId, value);
 		for (const [oldestKey] of evicted) {
 			this.evictedSessionFactKeys.add(oldestKey);
-			while (this.evictedSessionFactKeys.size > MAX_SESSION_FACT_RECORDS) {
-				const oldestTombstone = this.evictedSessionFactKeys
-					.values()
-					.next().value;
-				if (oldestTombstone === undefined) break;
-				this.evictedSessionFactKeys.delete(oldestTombstone);
-			}
 			capacityEvictionReporter?.(
 				this.subject,
 				"session-count",

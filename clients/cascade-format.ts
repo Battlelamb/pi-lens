@@ -12,6 +12,7 @@ import {
 	renderedRuleIdentities,
 } from "./dispatch/finding-policy.js";
 import { detectFileRole } from "./file-role.js";
+import { BoundedFifoMap } from "./bounded-cache.js";
 import { logLatency } from "./latency-logger.js";
 import { formatCacheAgeLabel } from "./finding-delivery-gate.js";
 import { recordDegradationOnce } from "./degradation-ledger.js";
@@ -612,7 +613,11 @@ interface PendingNeighbor {
 
 /** Bound on the record; the oldest-written entry goes first. */
 const MAX_PENDING_NEIGHBORS = 256;
-const pendingNeighbors = new Map<string, PendingNeighbor>();
+// Insertion-ordered, bounded by `set` itself (#4570: was a hand-rolled
+// `while (pendingNeighbors.size > cap)` evict-oldest block).
+const pendingNeighbors = new BoundedFifoMap<string, PendingNeighbor>(
+	MAX_PENDING_NEIGHBORS,
+);
 
 /** One diagnostic's identity across observations: the rule, place and text
  * the agent reads. */
@@ -661,11 +666,10 @@ export function recordDeliveredCascadeNeighbor(
 	}
 	pendingNeighbors.delete(key);
 	if (errors.size === 0) return;
-	pendingNeighbors.set(key, { filePath, errors, checkedAt });
-	while (pendingNeighbors.size > MAX_PENDING_NEIGHBORS) {
-		const oldest = pendingNeighbors.keys().next();
-		if (oldest.done) break;
-		pendingNeighbors.delete(oldest.value);
+	// The cap lives in the map (#4570): `set` evicts the oldest entries and
+	// reports them, so the degradation is recorded once for the batch rather
+	// than inside a hand-rolled evict-oldest loop.
+	if (pendingNeighbors.set(key, { filePath, errors, checkedAt }).length > 0) {
 		recordDegradationOnce({
 			kind: "cascade-pending-neighbors-evicted",
 			subject: `cap=${MAX_PENDING_NEIGHBORS}`,

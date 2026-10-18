@@ -105,10 +105,12 @@ exports change.
   behaviour broken is a deleted test (#4390: the eviction smoke's rewrite
   passed with root re-registration broken).
 - A PR that adds or changes a detector (a ratchet, census or source scan)
-  plants three spellings its author did not design for: an alias, an
-  indirect call and a value reached through another binding. Quote each
-  result. A plant that stays green is fixed, or named in the body as a
-  stated residual (AGENTS.md shape 69).
+  writes STATE_TABLE.md before the first edit: each form the detector
+  admits, and the statement that every other form refuses. It then plants
+  three spellings its author did not design for: an alias, an indirect
+  call and a value reached through another binding. Quote each result. A
+  plant that stays green is fixed. A stated residual names an admitted
+  form that is too broad, never an unread spelling (AGENTS.md shape 69).
 - The manual per-test campaign (`stryker-pertest.yml`, #4365) lists tests that
   cover mutated code but kill no mutant. It is a triage input, not a verdict:
   a candidate that guards another seam or a named recurrence stays, and a

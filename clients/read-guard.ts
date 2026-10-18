@@ -12,7 +12,7 @@
 
 import { constants as bufferConstants } from "node:buffer";
 import * as fs from "node:fs";
-import { BoundedSet } from "./bounded-cache.js";
+import { BoundedFifoMap, BoundedSet } from "./bounded-cache.js";
 import {
 	incrementDegradationCount,
 	recordDegradationOnce,
@@ -967,10 +967,13 @@ export class ReadGuard {
 	// in its own call's set, because the set a tool NAMES at `tool_call` can be
 	// narrower than the set it WRITES: a rename's importers, an ast-grep folder
 	// or its project default, a server-initiated `workspace/applyEdit` that has
-	// no call at all. Bounded by READ_GUARD_MAX_CHECKED_CALLS; session state,
-	// so it dies with the guard every session start replaces, and a branch move
-	// clears it with the authorship it licenses.
-	private readonly checkedPathsByCall = new Map<string, Set<string>>();
+	// no call at all. Bounded by READ_GUARD_MAX_CHECKED_CALLS (the cap lives in
+	// the map's own `set`, #4570); session state, so it dies with the guard
+	// every session start replaces, and a branch move clears it with the
+	// authorship it licenses.
+	private readonly checkedPathsByCall = new BoundedFifoMap<string, Set<string>>(
+		READ_GUARD_MAX_CHECKED_CALLS,
+	);
 	// Files whose write record idle-expired (#3520): `evictFile` drops the
 	// authorship with the rest of the file's state, and a later zero-read edit
 	// must say so instead of "you have not read" (false for a file the agent
@@ -1483,11 +1486,6 @@ export class ReadGuard {
 		if (!checked) {
 			checked = new Set<string>();
 			this.checkedPathsByCall.set(toolCallId, checked);
-			while (this.checkedPathsByCall.size > READ_GUARD_MAX_CHECKED_CALLS) {
-				const oldest = this.checkedPathsByCall.keys().next();
-				if (oldest.done === true) break;
-				this.checkedPathsByCall.delete(oldest.value);
-			}
 		}
 		for (const rawPath of rawPaths) {
 			if (checked.size >= READ_GUARD_MAX_CHECKED_PATHS_PER_CALL) return;

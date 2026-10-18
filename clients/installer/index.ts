@@ -5313,6 +5313,8 @@ export async function swapExtractedDir(
 		await fs.rename(finalDir, backupDir);
 		hadPrevious = true;
 	} catch (err) {
+		// none: ENOENT means there was no previous install to move aside — the
+		// tree is absent, not a failure to read it; every other code rethrows.
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 	}
 	try {

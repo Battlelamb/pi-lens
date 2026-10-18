@@ -563,6 +563,10 @@ export async function applyPartiallyApplicableEdits(args: {
 			// The write is committed. Preserve the existing caller behavior for
 			// uninstrumented callers; the read-guard path records and handles it.
 			postEditStatus = "failed";
+			// none: the committed bytes are explained, not swallowed: the
+			// instrumented caller reads `postEditStatus: "failed"` and blocks with
+			// the agent-visible reason (clients/runtime-tool-call.ts); an
+			// uninstrumented caller gets this throw.
 			if (!summaryRef && !correlationId) throw error;
 		}
 	}

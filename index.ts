@@ -190,6 +190,7 @@ import {
 	deregisterInstance,
 	deregisterInstanceRoot,
 	readInstanceRegistry,
+	recordRootDeregistrationFailure,
 	registerInstance,
 	registerInstanceRoot,
 } from "./clients/instance-registry.js";
@@ -4187,12 +4188,21 @@ function activateExtension(hostPi: ExtensionAPI) {
 					ownedSecondaryRoot !== undefined &&
 					shutdownClassification === "secondary"
 				) {
-					void deregisterInstanceRoot(
-						ownedSecondaryRoot,
-						secondaryRootHolder,
-					).catch(() => {
-						// best-effort bookkeeping — never fail teardown
-					});
+					const releasedRoot = ownedSecondaryRoot;
+					// #4596: the queued deregistration can still reject (the residual
+					// the registry's own fs failures do not cover). Teardown must not
+					// fail on it, and the root then stays registered, so the rejection
+					// is recorded at the registry's owner with the root it held rather
+					// than swallowed.
+					void deregisterInstanceRoot(releasedRoot, secondaryRootHolder).catch(
+						(err: unknown) => {
+							recordRootDeregistrationFailure(
+								releasedRoot,
+								secondaryRootHolder,
+								err,
+							);
+						},
+					);
 				}
 				dbg(
 					shutdownClassification === "secondary"

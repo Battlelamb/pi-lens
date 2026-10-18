@@ -540,6 +540,15 @@ export type DegradationKind =
 	 */
 	| "instance-registry-deregister-queued"
 	/**
+	 * #4596 (#4563): a concurrent secondary's own root deregistration, queued at
+	 * its shutdown, rejected. Before this row the call ended in
+	 * `.catch(() => {})` (`index.ts`), so a root could stay registered in the
+	 * process-wide registry with nothing to explain it: the next session that
+	 * walks the registry reads a root no live session owns. Subject is the root
+	 * the holder tried to release; counted, since each root is a separate leak.
+	 */
+	| "instance-registry-deregister-root-failed"
+	/**
 	 * #3071: a registration-record write fell back to the process cwd because
 	 * the session's identity carried no `projectRoot` — `instance-registry.ts`
 	 * still records the child, just without the caller-supplied root.
@@ -706,6 +715,18 @@ export type DegradationKind =
 	 */
 	| "lsp-declaration-look-capped"
 	/**
+	 * #4596: the walk of a root's declaration files could not LIST a directory
+	 * under it, so the walk's map is incomplete. Before this record the walk
+	 * skipped the failed directory silently (`catch { continue; }`), the diff
+	 * read every declaration file under it as deleted, and
+	 * `lsp_out_of_band_change` published `deleted: 1` for a file that still
+	 * existed (clients/out-of-band-changes.ts). Subject is the root; counted,
+	 * because each unreadable subtree is a different blind spot. Metadata names
+	 * the directory count, the first directory, and how many previous
+	 * fingerprints were kept so no consumer is told the file went away.
+	 */
+	| "lsp-declaration-walk-unreadable"
+	/**
 	 * `loadWebTreeSitter()` (clients/deps/web-tree-sitter.js) rejected during
 	 * MODULE EVALUATION, not resolution (#1592). Node's ESM loader permanently
 	 * memoizes a module record that threw while evaluating, so re-importing
@@ -788,6 +809,18 @@ export type DegradationKind =
 	 * next request. Subject is the client key.
 	 */
 	| "lsp-idle-eviction"
+	/**
+	 * #4596: an implicit-scope question could not be answered — a JS/TS file
+	 * that cannot be read or parsed, a Go package directory that cannot be
+	 * listed, a Go package's mtime, or a Go peer's header
+	 * (clients/lsp/implicit-scope.ts). The verdict is still conservative
+	 * (`"unknown"` feeds the global scope, so the diagnostics cache refuses
+	 * rather than serves); before this row the decision left no trace at all,
+	 * so a wrong refusal could not be explained. Subject is the cause, so the
+	 * retained population stays bounded, and the reason and metadata name the
+	 * file. Counted: each unresolved file is a separate decision.
+	 */
+	| "lsp-implicit-scope-unknown"
 	| "lsp-liveness-probe-unsupported"
 	/**
 	 * A pi-lens `tool_call` handler threw. pi's `emitToolCall` has no
