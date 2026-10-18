@@ -44,6 +44,7 @@ import {
 } from "./generation-guard.js";
 import {
 	isAtOrAboveHomeDir,
+	isFullyQualified,
 	isUnderCanonicalDir,
 	isUnderDir,
 	normalizeFilePath,
@@ -774,11 +775,17 @@ export function commandResolvesIntoProject(
 			const match = new RegExp(`^(?:${pattern})$`).exec(content);
 			if (!match) continue;
 			const shimDir = path.dirname(commandPath);
-			const targets = match
+			const spellings = match
 				.slice(1)
-				.map((spelling) =>
-					path.resolve(shimDir, spelling.replace(/[/\\]/g, path.sep)),
-				);
+				.map((spelling) => spelling.replace(/[/\\]/g, path.sep));
+			if (
+				!template.relative &&
+				spellings.some((spelling) => !isFullyQualified(spelling))
+			)
+				return true;
+			const targets = spellings.map((spelling) =>
+				template.relative ? path.join(shimDir, spelling) : spelling,
+			);
 			// A missing slot cannot vouch for anything. realpathSync refuses an
 			// unreadable/broken link too; the surrounding catch records refusal.
 			if (targets.some((file) => reaches(fs.realpathSync(file)))) return true;

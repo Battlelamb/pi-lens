@@ -1353,3 +1353,56 @@ it("r17 Yarn's absolute runtime does not consult a sibling node", () => {
 	setProjectTrustState("unknown");
 	expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
 });
+
+// R17 path binding: an own-directory prefix concatenates even a leading slash;
+// resolving that slot as an independent absolute path measures a decoy instead.
+it.each(["cmd", "ps1", "sh"])(
+	"r17 own-directory slot retains its base with a leading separator: %s",
+	(kind) => {
+		const outside = tempDir("pi-lens-wrapper-");
+		const decoyDir = tempDir("pi-lens-decoy-");
+		const decoy = path.join(decoyDir, "server.js");
+		fs.writeFileSync(decoy, "");
+		const slot = path.sep + path.relative(path.parse(decoy).root, decoy);
+		const project = path.join(outside, path.dirname(slot));
+		fs.mkdirSync(project, { recursive: true });
+		fs.writeFileSync(path.join(project, "package.json"), "{}");
+		fs.writeFileSync(path.join(project, "server.js"), "");
+		const shim = path.join(outside, `tool.${kind}`);
+		fs.writeFileSync(
+			shim,
+			fs
+				.readFileSync(path.join(wrapperFixtures, `npm-direct.${kind}`), "utf8")
+				.replaceAll(
+					"__TARGET__",
+					slot.split(path.sep).join(kind === "cmd" ? "\\" : "/"),
+				),
+		);
+		setProjectTrustState("unknown");
+		expect(commandResolvesIntoProject(shim, project)).toBe(true);
+	},
+);
+
+it.each(["__TARGET__", "__RUNTIME__"])(
+	"r17 Yarn absolute slot cannot become cwd-relative: %s",
+	(slot) => {
+		const project = makeProject();
+		const outside = tempDir("pi-lens-wrapper-");
+		const script = path.join(outside, "server.js");
+		fs.writeFileSync(script, "");
+		fs.writeFileSync(path.join(outside, "node"), "");
+		fs.writeFileSync(path.join(project.root, "server.js"), "");
+		fs.writeFileSync(path.join(project.root, "node"), "");
+		const text = fs
+			.readFileSync(path.join(wrapperFixtures, "yarn4-node.cmd"), "utf8")
+			.replaceAll("__TARGET__", slot === "__TARGET__" ? "server.js" : script)
+			.replaceAll(
+				"__RUNTIME__",
+				slot === "__RUNTIME__" ? "node" : process.execPath,
+			);
+		const shim = path.join(outside, "tool.cmd");
+		fs.writeFileSync(shim, text);
+		setProjectTrustState("unknown");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+	},
+);
