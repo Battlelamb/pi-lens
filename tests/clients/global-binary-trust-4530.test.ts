@@ -1279,3 +1279,78 @@ it("r17 wrapper read cap refuses a complete template at the truncated boundary",
 	setProjectTrustState("unknown");
 	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
 });
+
+it.each(wrapperNames.filter((name) => name.endsWith(".sh")))(
+	"r17 extensionless shell wrapper requires complete format: %s",
+	(name) => {
+		const project = makeProject();
+		const outside = tempDir("pi-lens-wrapper-");
+		const script = path.join(outside, "server.js");
+		fs.writeFileSync(script, "");
+		const shim = path.join(outside, "tool");
+		const text = fs
+			.readFileSync(path.join(wrapperFixtures, name), "utf8")
+			.replaceAll("__TARGET__", script)
+			.replaceAll("__RUNTIME__", process.execPath);
+		fs.writeFileSync(shim, text);
+		setProjectTrustState("unknown");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
+		fs.appendFileSync(shim, "echo injected\n");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+	},
+);
+
+it.each(["cmd", "ps1", "sh"])(
+	"r17 template kind must match launch language: %s",
+	(kind) => {
+		const project = makeProject();
+		const outside = tempDir("pi-lens-wrapper-");
+		fs.writeFileSync(path.join(outside, "server.js"), "");
+		const other = kind === "cmd" ? "ps1" : "cmd";
+		const shim = path.join(outside, `tool.${kind}`);
+		fs.writeFileSync(
+			shim,
+			fs
+				.readFileSync(path.join(wrapperFixtures, `npm-direct.${other}`), "utf8")
+				.replaceAll("__TARGET__", "server.js"),
+		);
+		setProjectTrustState("unknown");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+	},
+);
+
+it("r17 repeated target slots must bind the same literal", () => {
+	const project = makeProject();
+	const outside = tempDir("pi-lens-wrapper-");
+	fs.writeFileSync(path.join(outside, "one.js"), "");
+	fs.writeFileSync(path.join(outside, "two.js"), "");
+	const text = fs
+		.readFileSync(path.join(wrapperFixtures, "npm-node.sh"), "utf8")
+		.replace("__TARGET__", "one.js")
+		.replaceAll("__TARGET__", "two.js");
+	const shim = path.join(outside, "tool.sh");
+	fs.writeFileSync(shim, text);
+	setProjectTrustState("unknown");
+	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+});
+
+it.each(wrapperNames)(
+	"r17 whole-file match rejects an extra terminal newline: %s",
+	(name) => {
+		const project = makeProject();
+		const outside = tempDir("pi-lens-wrapper-");
+		const script = path.join(outside, "server.js");
+		fs.writeFileSync(script, "");
+		const shim = path.join(outside, `tool${path.extname(name)}`);
+		const spelling = name.startsWith("yarn4-") ? script : "server.js";
+		fs.writeFileSync(
+			shim,
+			fs
+				.readFileSync(path.join(wrapperFixtures, name), "utf8")
+				.replaceAll("__TARGET__", spelling)
+				.replaceAll("__RUNTIME__", process.execPath) + "\n",
+		);
+		setProjectTrustState("unknown");
+		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+	},
+);
