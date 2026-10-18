@@ -918,9 +918,10 @@ describe.skipIf(process.platform === "win32")(
 	() => {
 		it("omits PATH rather than leaving an empty one when every entry is refused", async () => {
 			const project = makeProject();
-			// A `which` at the project ROOT is exactly the cwd search an empty
-			// PATH performs: the finder would run the project's own copy.
+			// F1: cover both empty-PATH cwd search and revival of the refused
+			// ambient project.bin during the shared spawn environment merge.
 			plant(path.join(project.root, "which"), project.marker);
+			plant(path.join(project.bin, "which"), project.marker);
 			plant(path.join(project.bin, FIXTURE_TOOL), project.marker);
 			process.env.PATH = project.bin;
 			process.chdir(project.root);
@@ -1335,4 +1336,34 @@ describe("shim target resolution fails closed (#4566 r16)", () => {
 		setProjectTrustState("trusted");
 		expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
 	});
+});
+
+// R16-F2/F3/F4: verifier plants enter the production discovered-command judge.
+it.each([
+	["bat", "team-project", "quoted", ".bat skips the judge"],
+	["cmd", "team's-project", "quoted", "apostrophe truncates the target"],
+	["cmd", "100%", "percent", "double-percent escape"],
+	["cmd", "arg-proj", "argument", "batch argument expansion"],
+	["cmd", "plain-project", "unquoted", "unquoted own-directory target"],
+])("r17 verifier plant: %s / %s / %s (%s)", (extension, name, form) => {
+	const container = tempDir("pi-lens-shim-");
+	const project = path.join(container, name);
+	fs.mkdirSync(project);
+	fs.writeFileSync(path.join(project, "server.js"), "");
+	const outside = path.join(container, "outside");
+	fs.mkdirSync(outside);
+	const shim = path.join(outside, `server.${extension}`);
+	const target =
+		form === "percent"
+			? "../100%%/server.js"
+			: form === "argument"
+				? "../%1/server.js"
+				: `../${name}/server.js`;
+	const operand = `%~dp0/${target}`;
+	fs.writeFileSync(
+		shim,
+		`@echo off\n"%~dp0/node.exe" ${form === "unquoted" ? operand : `"${operand}"`} %*\n`,
+	);
+	setProjectTrustState("unknown");
+	expect(commandResolvesIntoProject(shim, project)).toBe(true);
 });
