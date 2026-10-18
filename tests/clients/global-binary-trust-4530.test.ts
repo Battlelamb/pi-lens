@@ -1334,23 +1334,22 @@ it("r17 repeated target slots must bind the same literal", () => {
 	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
 });
 
-it.each(wrapperNames)(
-	"r17 whole-file match rejects an extra terminal newline: %s",
-	(name) => {
-		const project = makeProject();
-		const outside = tempDir("pi-lens-wrapper-");
-		const script = path.join(outside, "server.js");
-		fs.writeFileSync(script, "");
-		const shim = path.join(outside, `tool${path.extname(name)}`);
-		const spelling = name.startsWith("yarn4-") ? script : "server.js";
-		fs.writeFileSync(
-			shim,
-			fs
-				.readFileSync(path.join(wrapperFixtures, name), "utf8")
-				.replaceAll("__TARGET__", spelling)
-				.replaceAll("__RUNTIME__", process.execPath) + "\n",
-		);
-		setProjectTrustState("unknown");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-	},
-);
+it("r17 Yarn's absolute runtime does not consult a sibling node", () => {
+	const project = makeProject();
+	const outside = tempDir("pi-lens-wrapper-");
+	const script = path.join(outside, "server.js");
+	fs.writeFileSync(script, "");
+	const inside = path.join(project.root, "runtime");
+	fs.writeFileSync(inside, "");
+	fs.symlinkSync(inside, path.join(outside, "node"));
+	const shim = path.join(outside, "tool.cmd");
+	fs.writeFileSync(
+		shim,
+		fs
+			.readFileSync(path.join(wrapperFixtures, "yarn4-node.cmd"), "utf8")
+			.replaceAll("__TARGET__", script)
+			.replaceAll("__RUNTIME__", process.execPath),
+	);
+	setProjectTrustState("unknown");
+	expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
+});

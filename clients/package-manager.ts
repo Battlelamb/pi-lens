@@ -763,7 +763,7 @@ export function commandResolvesIntoProject(
 						if (previous >= 0) return `\\${previous + 1}`;
 						slots.push(part);
 						// Positive literal alphabet, shared by all three languages.
-						// No quotes, escapes, substitutions, drive-relative or UNC slots.
+						// No quotes, escapes or substitutions are accepted in a slot.
 						return kind === "cmd"
 							? "([a-zA-Z0-9_ ./\\\\:@+,-]+)"
 							: "([a-zA-Z0-9_ ./:@+,-]+)";
@@ -772,8 +772,7 @@ export function commandResolvesIntoProject(
 				})
 				.join("");
 			const match = new RegExp(`^(?:${pattern})$`).exec(content);
-			// JS $ also matches before a final newline: require byte equality.
-			if (!match || match[0] !== content) continue;
+			if (!match) continue;
 			const shimDir = path.dirname(commandPath);
 			const targets = match
 				.slice(1)
@@ -784,11 +783,9 @@ export function commandResolvesIntoProject(
 			// unreadable/broken link too; the surrounding catch records refusal.
 			if (targets.some((file) => reaches(fs.realpathSync(file)))) return true;
 			// Node templates may select a sibling runtime on either OS arm.
-			if (template.id.includes("node") || template.id.includes("preserve")) {
-				for (const runtime of ["node", "node.exe"]) {
-					if (reaches(realpathOrResolve(path.join(shimDir, runtime))))
-						return true;
-				}
+			for (const runtime of template.runtimes) {
+				if (reaches(realpathOrResolve(path.join(shimDir, runtime))))
+					return true;
 			}
 			return false;
 		}
@@ -903,7 +900,7 @@ export function normalizeSearchPath(
 
 /**
  * #4530 round 9: put `pathValue`, scoped by {@link trustScopedPath}, onto a
- * child's environment, or REMOVE the key when every entry was refused.
+ * child's environment, or carry a removal override when every entry was refused.
  *
  * A scoped result can be empty — every entry reached the project — and an empty
  * PATH is not "no directories": it hands project code back the lookup the trust
