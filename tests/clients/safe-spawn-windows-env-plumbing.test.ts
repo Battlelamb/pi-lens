@@ -259,8 +259,14 @@ it.each(["linux", "win32"])(
 			child.emit("close", 0, null);
 			await pending;
 			for (const calls of [spawnSyncMock.mock.calls, spawnMock.mock.calls]) {
-				expect(calls).toHaveLength(1);
-				const handed = calls[0][2].env;
+				// The one-shot `chcp 65001` helper shares the sync dispatcher, and
+				// whether it already ran is a per-process latch another case can
+				// leave set. Find OUR call rather than counting the dispatcher's.
+				const ours = calls.filter((call) =>
+					String(call[0]).includes("__r17__"),
+				);
+				expect(ours).toHaveLength(1);
+				const handed = ours[0]?.[2].env;
 				expect(handed?.PATH).toBeUndefined();
 				expect(handed?.Path).toBe(
 					platform === "win32" ? undefined : process.cwd(),
@@ -269,9 +275,9 @@ it.each(["linux", "win32"])(
 			// A partial unrelated override still inherits ambient PATH (#4566 F1).
 			safeSpawn(command, [], { env: { R17_UNRELATED: "kept" } });
 			expect(
-				spawnSyncMock.mock.calls.at(-1)?.[2].env?.[
-					platform === "win32" ? "Path" : "PATH"
-				],
+				spawnSyncMock.mock.calls
+					.filter((call) => String(call[0]).includes("__r17__"))
+					.at(-1)?.[2].env?.[platform === "win32" ? "Path" : "PATH"],
 			).toBe(process.cwd());
 		} finally {
 			vi.unstubAllEnvs();

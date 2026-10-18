@@ -484,14 +484,19 @@ describe("lsp launch", () => {
 				await import("../../../clients/process-snapshot.js");
 			const { terminateScannerChild } =
 				await import("../../../clients/instance-reaper.js");
+			// `vi.resetModules()` does not re-instantiate a client module the setup
+			// file already loaded, so in a shuffled order this worker's
+			// `child-unref` instance can still hold the real spawn and run a real
+			// `ps`. The budget is therefore a settle window, not a race: one that
+			// a real query or the mocked probe child finishes well inside.
 			const result = await queryProcessTable(
 				{ fields: ["pid"] },
 				{
-					timeoutMs: 20,
+					timeoutMs: 5000,
 					onTimeout: (child) =>
 						terminateScannerChild(child, {
 							kind: "resource-sampler-scanner-escalated",
-							timeoutMs: 20,
+							timeoutMs: 5000,
 						}),
 				},
 			);
