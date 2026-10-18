@@ -2581,7 +2581,7 @@ export async function isSpawnableCommand(command: string): Promise<boolean> {
 		);
 	}
 	const searchPath = installerSearchPath();
-	const memoKey = `${process.cwd()}:${command}:${hashSync(searchPath)}`;
+	const memoKey = `${getProjectTrustState()}:${process.cwd()}:${command}:${hashSync(searchPath)}`;
 	if (getProjectTrustState() === "trusted" && pathWalkMemo.has(memoKey))
 		return pathWalkMemo.get(memoKey) ?? false;
 

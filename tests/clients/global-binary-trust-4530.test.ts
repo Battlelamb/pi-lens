@@ -1138,17 +1138,29 @@ it.each(["unknown", "untrusted", "trusted"] as const)(
 	async (trust) => {
 		const project = makeProject();
 		const outside = tempDir("pi-lens-global-");
-		const target = plant(path.join(project.root, "tool"), project.marker);
-		const command = path.join(outside, "stylelint");
+		const suffix = process.platform === "win32" ? ".cmd" : "";
+		const body =
+			process.platform === "win32"
+				? `@echo off\r\necho ran >> "${project.marker}"\r\necho 1.0.0\r\n`
+				: `#!/bin/sh\necho ran >> ${JSON.stringify(project.marker)}\necho 1.0.0\n`;
+		const target = writeScript(path.join(project.root, `tool${suffix}`), body);
+		const command = path.join(outside, `stylelint${suffix}`);
 		fs.symlinkSync(target, command);
 		process.env.PATH = outside;
 		process.chdir(project.root);
 		setProjectTrustState(trust);
 		expect(await isCommandAvailable("stylelint")).toBe(trust === "trusted");
+		expect(await isSpawnableCommand("stylelint")).toBe(trust === "trusted");
+		setProjectTrustState("trusted");
+		expect(await isSpawnableCommand("stylelint")).toBe(true);
+		setProjectTrustState(trust);
 		expect(await verifyToolBinary(command)).toBe(trust === "trusted");
 		expect(Boolean(project.ran())).toBe(trust === "trusted");
 		const fallback = tempDir("pi-lens-global-");
-		const admitted = plant(path.join(fallback, "stylelint"), project.marker);
+		const admitted = writeScript(
+			path.join(fallback, `stylelint${suffix}`),
+			body,
+		);
 		process.env.PATH = [outside, fallback].join(path.delimiter);
 		expect(await getToolPath("stylelint")).toBe(
 			trust === "trusted" ? "stylelint" : admitted,

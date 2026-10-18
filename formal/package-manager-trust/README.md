@@ -14,3 +14,7 @@ share admission and therefore one scope; trusted has the other scope.
 `FinalSelection.tla` covers trust changes and executable replacement between
 initial discovery and spawn, including installer cache reuse. Admission uses the selected executable and the
 current trust answer. Outside executables remain admitted in every trust state.
+
+The installer PATH availability memo also keys its verdict by caller root,
+search PATH, and current trust. A non-trusted refusal cannot answer after trust
+changes to trusted.
