@@ -1152,13 +1152,17 @@ export function getPathExts(env: NodeJS.ProcessEnv): string[] {
 }
 
 /** Filesystem-only command acceptance; stat follows links and rejects dangling ones. */
-export function isAcceptedCommandFile(candidate: string): boolean {
+export function isAcceptedCommandFile(
+	candidate: string,
+	executable = true,
+): boolean {
 	if (!statIsFile(candidate)) return false;
-	if (process.platform === "win32") return true;
+	if (!executable || process.platform === "win32") return true;
 	try {
 		fs.accessSync(candidate, fs.constants.X_OK);
 		return true;
 	} catch {
+		// none: filesystem acceptance reports absence through its boolean verdict.
 		return false;
 	}
 }

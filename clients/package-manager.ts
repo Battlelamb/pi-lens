@@ -15,8 +15,6 @@
  */
 
 import * as fs from "node:fs";
-import { GLOBAL_COMMAND_WRAPPERS } from "./global-command-wrappers.js";
-import { escapeRegExp } from "./string-utils.js";
 import { BoundedFifoMap } from "./bounded-cache.js";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -44,7 +42,6 @@ import {
 } from "./generation-guard.js";
 import {
 	isAtOrAboveHomeDir,
-	isFullyQualified,
 	isUnderCanonicalDir,
 	isUnderDir,
 	normalizeFilePath,
@@ -714,92 +711,51 @@ export function commandResolvesIntoProject(
 ): boolean {
 	if (!classifyRegardlessOfTrust && getProjectTrustState() === "trusted")
 		return false;
-	// #4566 r14: a discovered spelling can be relative (`which` echoes the PATH
-	// entry it searched with), and the child resolves it against ITS cwd. Judging
-	// it against `process.cwd()` measured the session's file while the spawn ran
-	// the launch cwd's, so a relative project PATH entry executed unowned code
-	// (R13-V1). The target that runs is the one this must judge.
+	// Preserve the spelling until the filesystem resolves symlinks and `..`.
 	const commandPath = path.isAbsolute(resolvedCommand)
 		? resolvedCommand
-		: path.resolve(cwd, resolvedCommand);
-	const target = normalizeFilePath(realpathOrResolve(commandPath));
-	const reaches = projectReach(cwd);
-	if (reaches(target)) return true;
-
-	// #4566 r17: executable wrappers are data, not a shell language to infer.
-	// A whole-file capture binds every variable slot. Unknown formats refuse.
-	const extension = path.extname(commandPath).toLowerCase();
-	if (extension === ".bat") return true;
-	const kind =
-		extension === ".cmd" ? "cmd" : extension === ".ps1" ? "ps1" : "sh";
+		: `${cwd}${path.sep}${resolvedCommand}`;
 	try {
-		// Bound the read before allocating: native files need only their header;
-		// no admitted generator emits a wrapper larger than 64 KiB.
-		const fd = fs.openSync(commandPath, "r");
-		let content: string;
-		try {
-			const buffer = Buffer.alloc(65537);
-			const size = fs.readSync(fd, buffer, 0, buffer.length, 0);
-			content = buffer.toString("utf8", 0, size);
-		} finally {
-			fs.closeSync(fd);
-		}
-		// Other executables keep their existing real-target admission. A shell
-		// wrapper (including an extensionless one) must prove its format.
-		if (
-			kind === "sh" &&
-			extension !== ".sh" &&
-			!/^#![^\r\n]*(?:\/|\s)[^\s/]*sh(?:\s|$)/.test(content)
-		)
-			return false;
-		if (Buffer.byteLength(content) > 65536) return true;
-		for (const template of GLOBAL_COMMAND_WRAPPERS) {
-			if (template.kind !== kind) continue;
-			const slots: string[] = [];
-			const parts = template.text.split(/(__TARGET__|__RUNTIME__)/);
-			const pattern = parts
-				.map((part) => {
-					if (part === "__TARGET__" || part === "__RUNTIME__") {
-						const previous = slots.indexOf(part);
-						if (previous >= 0) return `\\${previous + 1}`;
-						slots.push(part);
-						// Positive literal alphabet, shared by all three languages.
-						// No quotes, escapes or substitutions are accepted in a slot.
-						return kind === "cmd"
-							? "([a-zA-Z0-9_ ./\\\\:@+,-]+)"
-							: "([a-zA-Z0-9_ ./:@+,-]+)";
-					}
-					return escapeRegExp(part);
-				})
-				.join("");
-			const match = new RegExp(`^(?:${pattern})$`).exec(content);
-			if (!match) continue;
-			const shimDir = path.dirname(commandPath);
-			const spellings = match
-				.slice(1)
-				.map((spelling) => spelling.replace(/[/\\]/g, path.sep));
-			if (
-				!template.relative &&
-				spellings.some((spelling) => !isFullyQualified(spelling))
-			)
-				return true;
-			const targets = spellings.map((spelling) =>
-				template.relative ? path.join(shimDir, spelling) : spelling,
-			);
-			// A missing slot cannot vouch for anything. realpathSync refuses an
-			// unreadable/broken link too; the surrounding catch records refusal.
-			if (targets.some((file) => reaches(fs.realpathSync(file)))) return true;
-			// Node templates may select a sibling runtime on either OS arm.
-			for (const runtime of template.runtimes) {
-				if (reaches(realpathOrResolve(path.join(shimDir, runtime))))
-					return true;
-			}
-			return false;
-		}
-		return true;
+		return projectReach(cwd)(fs.realpathSync.native(commandPath));
 	} catch {
+		recordDegradationOnce({
+			kind: "trust-refusal",
+			subject: `global-command-realpath:${commandPath}`,
+			reason: "resolved command realpath unavailable",
+		});
 		return true;
 	}
+}
+
+/** Resolve and judge the executable selected by a scoped PATH walk. */
+export function resolveTrustScopedCommand(
+	command: string,
+	cwd: string = process.cwd(),
+	pathValue: string = process.env.PATH ?? "",
+	executable = true,
+): string | undefined {
+	const names =
+		onWindows() && !path.extname(command)
+			? [command, ...getPathExts(process.env).map((ext) => command + ext)]
+			: [command];
+	const dirs = /[/\\]/.test(command)
+		? [""]
+		: trustScopedPath(pathValue, cwd).split(path.delimiter).filter(Boolean);
+	for (const dir of dirs) {
+		for (const name of names) {
+			const candidate = dir ? `${dir}${path.sep}${name}` : name;
+			const absolute = path.isAbsolute(candidate)
+				? candidate
+				: `${cwd}${path.sep}${candidate}`;
+			if (!isAcceptedCommandFile(absolute, executable)) continue;
+			if (commandResolvesIntoProject(absolute, cwd)) {
+				refuseGlobalCommandTarget(absolute);
+				continue;
+			}
+			return absolute;
+		}
+	}
+	return undefined;
 }
 
 /**

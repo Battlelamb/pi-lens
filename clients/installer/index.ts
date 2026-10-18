@@ -68,6 +68,7 @@ import { isFullyQualified } from "../path-utils.js";
 import {
 	assertInstallAllowed,
 	projectTrustDenialReason,
+	getProjectTrustState,
 } from "../project-trust.js";
 
 const _installerRequire = createRequire(import.meta.url);
@@ -100,6 +101,7 @@ import {
 	normalizeSearchPath,
 	pmBinary,
 	resolveNodePackageManager,
+	resolveTrustScopedCommand,
 	trustScopedPath,
 	trustScopedSpawnEnv,
 } from "../package-manager.js";
@@ -2383,7 +2385,9 @@ async function verifyAstGrepProbePath(binPath: string): Promise<boolean> {
 	// Windows `.cmd`/`.bat` resolution this used `shell: true` for, and the
 	// timeout tree-kill a bare `spawn({ timeout })` does not do.
 	const env = trustScopedSpawnEnv();
-	const result = await probeToolAsync(binPath, ["--version"], {
+	const admitted = resolveTrustScopedCommand(binPath);
+	if (!admitted) return false;
+	const result = await probeToolAsync(admitted, ["--version"], {
 		...(env && { env }),
 		timeout: 5000,
 	});
@@ -2549,32 +2553,10 @@ export async function isCommandAvailable(
 	_args?: string[],
 	pathEnv: string = installerSearchPath(),
 ): Promise<boolean> {
-	const isWindows = installerPlatform() === "win32";
-	const dirs = pathEnv.split(path.delimiter);
-
-	// On Windows, probe .exe, .cmd, and .bat extensions in addition to bare name.
-	// On Unix, probe bare name and extensionless (scripts, symlinks).
-	const names = isWindows
-		? [command, `${command}.exe`, `${command}.cmd`, `${command}.bat`]
-		: [command];
-
-	for (const dir of dirs) {
-		if (!dir) continue;
-		for (const name of names) {
-			const candidate = path.join(dir, name);
-			try {
-				const stat = statSync(candidate);
-				// isFile() returns false for broken symlinks (target missing)
-				if (stat.isFile() && stat.size > 0) {
-					return true;
-				}
-			} catch {
-				// ENOENT or permission denied — skip this candidate
-			}
-		}
-	}
-
-	return false;
+	return (
+		resolveTrustScopedCommand(command, process.cwd(), pathEnv, false) !==
+		undefined
+	);
 }
 
 /**
@@ -2583,17 +2565,21 @@ export async function isCommandAvailable(
  * probe that is guaranteed to fail with a full spawn round-trip.
  */
 export async function isSpawnableCommand(command: string): Promise<boolean> {
-	if (/[\\/]/.test(command)) {
-		try {
-			const stat = statSync(command);
-			return stat.isFile() && stat.size > 0;
-		} catch {
-			return false;
-		}
+	if (/[/\\]/.test(command)) {
+		return (
+			resolveTrustScopedCommand(
+				command,
+				process.cwd(),
+				ambientPath(),
+				false,
+			) !== undefined
+		);
 	}
 	const searchPath = installerSearchPath();
-	const memoKey = `${command}:${hashSync(searchPath)}`;
-	if (pathWalkMemo.has(memoKey)) return pathWalkMemo.get(memoKey) ?? false;
+	const memoKey = `${process.cwd()}:${command}:${hashSync(searchPath)}`;
+	if (getProjectTrustState() === "trusted" && pathWalkMemo.has(memoKey))
+		return pathWalkMemo.get(memoKey) ?? false;
+
 	const isSpawnable = await isCommandAvailable(command, undefined, searchPath);
 	pathWalkMemo.set(memoKey, isSpawnable);
 	return isSpawnable;
@@ -2825,6 +2811,7 @@ export async function verifyToolBinary(
 	 */
 	onInconclusive?: () => void,
 ): Promise<boolean> {
+	if (!resolveTrustScopedCommand(binPath)) return false;
 	if (packageEntryOf !== undefined) {
 		return verifyNpmPackageEntry(binPath, packageEntryOf);
 	}
@@ -2859,8 +2846,10 @@ export async function verifyToolBinary(
 	// #4530: global binary lookups honour project trust: what this spawn
 	// resolves through PATH stays outside an untrusted project.
 	const env = trustScopedSpawnEnv();
+	const admitted = resolveTrustScopedCommand(execPath);
+	if (!admitted) return false;
 	try {
-		const result = await safeSpawnAsync(execPath, verificationArgs, {
+		const result = await safeSpawnAsync(admitted, verificationArgs, {
 			...(env && { env }),
 			timeout: timeoutMs,
 			input: "",
@@ -3011,7 +3000,9 @@ export async function getAllToolStatuses(): Promise<ToolStatus[]> {
 			// JVM, so `--version` is no probe there; the listing shows no version.
 			if (tool.verification !== "tree-manifest") {
 				const env = trustScopedSpawnEnv();
-				const probe = await probeToolAsync(tool.checkCommand, ["--version"], {
+				const admitted = resolveTrustScopedCommand(tool.checkCommand);
+				if (!admitted) continue;
+				const probe = await probeToolAsync(admitted, ["--version"], {
 					...(env && { env }),
 					timeout: 5000,
 				});
@@ -4628,7 +4619,9 @@ async function probeManagedToolVersion(
 	if (!cached?.path || !existsSync(cached.path)) return undefined;
 	const env = trustScopedSpawnEnv();
 	try {
-		const result = await probeToolAsync(cached.path, tool.checkArgs, {
+		const admitted = resolveTrustScopedCommand(cached.path);
+		if (!admitted) return undefined;
+		const result = await probeToolAsync(admitted, tool.checkArgs, {
 			...(env && { env }),
 			timeout: getToolVerificationTimeout(tool),
 			input: "",

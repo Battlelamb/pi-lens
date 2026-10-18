@@ -29,6 +29,7 @@ import {
 	checkProbeCache,
 	isCommandAvailable,
 	isSpawnableCommand,
+	verifyToolBinary,
 	ensureTool,
 	getAllToolStatuses,
 	getInstallAttempt,
@@ -63,7 +64,6 @@ import {
 	findCommandAsync,
 } from "../../clients/safe-spawn.js";
 import { trustScopedSpawnEnv } from "../../clients/package-manager.js";
-import { assertNonEmptyScan } from "../support/sweep-kit.js";
 import {
 	resolveJavaRuntimeEnv,
 	_resetJvmRuntimeCacheForTests,
@@ -1115,361 +1115,59 @@ it("isolates availability by the caller root (#4566 F2)", async () => {
 	expect(await resolveNodePackageManager(project.root)).toBe("npm");
 });
 
-// Captured upstream bytes, independent of the runtime template registry.
-// R17: every admitted template needs an outside success witness so removing
-// an entry cannot hide behind the fail-closed default.
-const wrapperFixtures = path.resolve("tests/fixtures/global-command-wrappers");
-const wrapperNames = fs
-	.readdirSync(wrapperFixtures)
-	.filter((name) => /\.(cmd|ps1|sh)$/.test(name));
-// R17 sweep floor: the captured corpus is the admitted population. A capture
-// that disappears shrinks the matrix, so the count is pinned rather than read.
-assertNonEmptyScan("r17 captured wrapper corpus", wrapperNames.length, 23);
-const wrapperCases = wrapperNames.flatMap((name) =>
-	["exact", "near-miss", "suffix", "prefix"].flatMap((form) =>
-		(["trusted", "unknown", "untrusted"] as const).flatMap((trust) =>
-			["outside", "inside", "unresolvable"].map((target) => ({
-				name,
-				form,
-				trust,
-				target,
-			})),
-		),
-	),
-);
-it.each(wrapperCases)(
-	"r17 wrapper matrix: $name / $form / $trust / $target",
-	({ name, form, trust, target }) => {
-		const project = makeProject();
-		const outside = tempDir("pi-lens-wrapper-");
-		const script = path.join(
-			target === "inside" ? project.root : outside,
-			"server.js",
-		);
-		if (target !== "unresolvable") fs.writeFileSync(script, "");
-		const kind = path.extname(name);
-		const shim = path.join(outside, `tool${kind}`);
-		let spelling = name.startsWith("yarn4-")
-			? script
-			: path.relative(outside, script);
-		spelling = spelling.split(path.sep).join(kind === ".cmd" ? "\\" : "/");
-		let text = fs
-			.readFileSync(path.join(wrapperFixtures, name), "utf8")
-			.replaceAll("__TARGET__", spelling)
-			.replaceAll("__RUNTIME__", process.execPath.replaceAll("\\", "/"));
-		if (form === "near-miss") text = text.slice(0, -1) + "^";
-		if (form === "suffix") text += "\necho injected\n";
-		// A leading command is what the start anchor alone refuses.
-		if (form === "prefix") text = "echo injected\n" + text;
-		fs.writeFileSync(shim, text);
-		setProjectTrustState(trust);
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(
-			trust !== "trusted" && (form !== "exact" || target !== "outside"),
-		);
-	},
-);
-
-it("r17 admits no wrapper format without a captured fixture", async () => {
-	const { GLOBAL_COMMAND_WRAPPERS } =
-		await import("../../clients/global-command-wrappers.js");
-	// Both directions: a template added without a capture would otherwise be an
-	// admission arm no cell reads, and a capture without a template would sit
-	// in the corpus unadmitted.
-	expect(
-		GLOBAL_COMMAND_WRAPPERS.map((template) =>
-			template.id.replace(/-([^-]+)$/, ".$1"),
-		).sort(),
-	).toEqual([...wrapperNames].sort());
-});
-
-it.each(["cmd", "ps1", "sh"])("r17 unknown wrapper refuses: %s", (kind) => {
-	const project = makeProject();
-	const shim = path.join(tempDir("pi-lens-wrapper-"), `tool.${kind}`);
-	fs.writeFileSync(shim, "unknown wrapper");
-	setProjectTrustState("unknown");
-	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-});
-
+// R18: the maintainer scopes admission to the executable realpath.
 it.each(["unknown", "untrusted", "trusted"] as const)(
-	"r17 bat wrapper refuses: %s",
-	(trust) => {
+	"r18 installer judges linked command realpaths under %s trust",
+	async (trust) => {
 		const project = makeProject();
-		const shim = path.join(tempDir("pi-lens-wrapper-"), "tool.bat");
-		fs.writeFileSync(
-			shim,
-			fs.readFileSync(path.join(wrapperFixtures, "npm-node.cmd")),
-		);
+		const outside = tempDir("pi-lens-global-");
+		const target = plant(path.join(project.root, "tool"), project.marker);
+		const command = path.join(outside, "stylelint");
+		fs.symlinkSync(target, command);
+		process.env.PATH = outside;
+		process.chdir(project.root);
 		setProjectTrustState(trust);
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(
-			trust !== "trusted",
-		);
+		expect(await isCommandAvailable("stylelint")).toBe(trust === "trusted");
+		expect(await verifyToolBinary(command)).toBe(trust === "trusted");
+		expect(Boolean(project.ran())).toBe(trust === "trusted");
 	},
 );
-
-it.each(["node", "node.exe"])(
-	"r17 sibling runtime target refuses: %s",
-	(runtime) => {
+it.each(["cmd", "ps1", "sh", "bat", "py"])(
+	"r18 outside wrapper admission ignores script content: %s",
+	(extension) => {
 		const project = makeProject();
-		const outside = tempDir("pi-lens-wrapper-");
-		fs.writeFileSync(path.join(outside, "server.js"), "");
-		const inside = path.join(project.root, "runtime");
-		fs.writeFileSync(inside, "");
-		fs.symlinkSync(inside, path.join(outside, runtime));
-		const shim = path.join(outside, "tool.cmd");
-		fs.writeFileSync(
-			shim,
-			fs
-				.readFileSync(path.join(wrapperFixtures, "npm-node.cmd"), "utf8")
-				.replaceAll("__TARGET__", "server.js"),
-		);
-		setProjectTrustState("unknown");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-	},
-);
-
-// R16-F2/F3/F4: verifier plants enter the production discovered-command judge.
-it.each([
-	["bat", "team-project", "quoted", ".bat skips the judge"],
-	["cmd", "team's-project", "quoted", "apostrophe truncates the target"],
-	["cmd", "100%", "percent", "double-percent escape"],
-	["cmd", "arg-proj", "argument", "batch argument expansion"],
-	["cmd", "plain-project", "unquoted", "unquoted own-directory target"],
-])("r17 verifier plant: %s / %s / %s (%s)", (extension, name, form) => {
-	const container = tempDir("pi-lens-shim-");
-	const project = path.join(container, name);
-	fs.mkdirSync(project);
-	fs.writeFileSync(path.join(project, "server.js"), "");
-	const outside = path.join(container, "outside");
-	fs.mkdirSync(outside);
-	const shim = path.join(outside, `server.${extension}`);
-	const target =
-		form === "percent"
-			? "../100%%/server.js"
-			: form === "argument"
-				? "../%1/server.js"
-				: `../${name}/server.js`;
-	const operand = `%~dp0/${target}`;
-	fs.writeFileSync(
-		shim,
-		`@echo off\n"%~dp0/node.exe" ${form === "unquoted" ? operand : `"${operand}"`} %*\n`,
-	);
-	setProjectTrustState("unknown");
-	expect(commandResolvesIntoProject(shim, project)).toBe(true);
-});
-
-it.each(["$name", "%1", "100%%", "team's-project", "a`b", "a!VAR!"])(
-	"r17 literal path admission rejects expansion/quote spellings: %s",
-	(name) => {
-		const project = makeProject();
-		const outside = tempDir("pi-lens-wrapper-");
-		const script = path.join(outside, name);
-		fs.writeFileSync(script, "");
-		const shim = path.join(outside, "tool.cmd");
-		fs.writeFileSync(
-			shim,
-			fs
-				.readFileSync(path.join(wrapperFixtures, "npm-direct.cmd"), "utf8")
-				.replaceAll("__TARGET__", name),
-		);
-		setProjectTrustState("unknown");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-	},
-);
-
-it("r17 wrapper read cap refuses a complete template at the truncated boundary", () => {
-	const project = makeProject();
-	const outside = tempDir("pi-lens-wrapper-");
-	fs.writeFileSync(path.join(outside, "server.js"), "");
-	const template = fs.readFileSync(
-		path.join(wrapperFixtures, "npm-direct.cmd"),
-		"utf8",
-	);
-	const base = template.replaceAll("__TARGET__", "server.js");
-	const extra = 65537 - Buffer.byteLength(base);
-	// A long dot/separator spelling normalizes to the same real file. Without
-	// the cap a complete 65537-byte prefix would hide any later command.
-	const content = template.replaceAll(
-		"__TARGET__",
-		"." + "/".repeat(extra - 1) + "server.js",
-	);
-	expect(Buffer.byteLength(content)).toBe(65537);
-	const shim = path.join(outside, "tool.cmd");
-	fs.writeFileSync(shim, content + "\necho injected\n");
-	setProjectTrustState("unknown");
-	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-});
-
-it.each(wrapperNames.filter((name) => name.endsWith(".sh")))(
-	"r17 extensionless shell wrapper requires complete format: %s",
-	(name) => {
-		const project = makeProject();
-		const outside = tempDir("pi-lens-wrapper-");
-		const script = path.join(outside, "server.js");
-		fs.writeFileSync(script, "");
-		const shim = path.join(outside, "tool");
-		const text = fs
-			.readFileSync(path.join(wrapperFixtures, name), "utf8")
-			.replaceAll(
-				"__TARGET__",
-				name.startsWith("yarn4-") ? script.replaceAll("\\", "/") : "server.js",
-			)
-			.replaceAll("__RUNTIME__", process.execPath.replaceAll("\\", "/"));
-		fs.writeFileSync(shim, text);
+		const shim = path.join(tempDir("pi-lens-wrapper-"), `tool.${extension}`);
+		fs.writeFileSync(shim, "#!/usr/bin/env python3\nunknown wrapper\n");
 		setProjectTrustState("unknown");
 		expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
-		fs.appendFileSync(shim, "echo injected\n");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
 	},
 );
 
-// R17 admission arm: a format that is not shell text keeps the pre-fix
-// real-target admission, and a shell script must still be a captured wrapper.
-// Deleting the shebang arm reads a native binary as unknown wrapper text and
-// drops the arm that keeps plain shell scripts out.
-const formatCells: readonly (readonly [
-	string,
-	string,
-	() => string | Buffer,
-	boolean,
-])[] = [
-	[
-		"native bytes without a shell shebang keeps its real-target admission",
-		"tool",
-		() => Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01]),
-		false,
-	],
-	[
-		"extensionless shell script must prove its format",
-		"tool",
-		() => "#!/bin/sh\nexec /bin/true\n",
-		true,
-	],
-	[
-		".sh shell script must prove its format",
-		"tool.sh",
-		() => "#!/usr/bin/env bash\nexec /bin/true\n",
-		true,
-	],
-	[
-		".sh suffix never borrows the non-shell admission",
-		"tool.sh",
-		() => Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01]),
-		true,
-	],
-];
-it.each(formatCells)("r17 %s", (_name, fileName, body, refused) => {
-	const project = makeProject();
-	const outside = tempDir("pi-lens-wrapper-");
-	const shim = path.join(outside, fileName);
-	fs.writeFileSync(shim, body(), { mode: 0o755 });
-	setProjectTrustState("unknown");
-	expect(commandResolvesIntoProject(shim, project.root)).toBe(refused);
-});
-
-it.each(["cmd", "ps1", "sh"])(
-	"r17 template kind must match launch language: %s",
-	(kind) => {
+// R18-V4: filesystem resolution must precede lexical normalization.
+it.runIf(process.platform !== "win32")(
+	"r18 judges symlink parent traversal by filesystem resolution",
+	() => {
 		const project = makeProject();
-		const outside = tempDir("pi-lens-wrapper-");
-		fs.writeFileSync(path.join(outside, "server.js"), "");
-		const other = kind === "cmd" ? "ps1" : "cmd";
-		const shim = path.join(outside, `tool.${kind}`);
-		fs.writeFileSync(
-			shim,
-			fs
-				.readFileSync(path.join(wrapperFixtures, `npm-direct.${other}`), "utf8")
-				.replaceAll("__TARGET__", "server.js"),
-		);
+		const outside = tempDir("pi-lens-global-");
+		fs.mkdirSync(path.join(project.root, "sub"));
+		fs.writeFileSync(path.join(project.root, "server"), "fixture");
+		fs.writeFileSync(path.join(outside, "server"), "decoy");
+		fs.symlinkSync(path.join(project.root, "sub"), path.join(outside, "link"));
 		setProjectTrustState("unknown");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+		expect(
+			commandResolvesIntoProject(`${outside}/link/../server`, project.root),
+		).toBe(true);
 	},
 );
-
-it("r17 repeated target slots must bind the same literal", () => {
+it("r18 records an unavailable command realpath", () => {
 	const project = makeProject();
-	const outside = tempDir("pi-lens-wrapper-");
-	fs.writeFileSync(path.join(outside, "one.js"), "");
-	fs.writeFileSync(path.join(outside, "two.js"), "");
-	const text = fs
-		.readFileSync(path.join(wrapperFixtures, "npm-node.sh"), "utf8")
-		.replace("__TARGET__", "one.js")
-		.replaceAll("__TARGET__", "two.js");
-	const shim = path.join(outside, "tool.sh");
-	fs.writeFileSync(shim, text);
+	const missing = path.join(tempDir("pi-lens-global-"), "missing");
 	setProjectTrustState("unknown");
-	expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
+	expect(commandResolvesIntoProject(missing, project.root)).toBe(true);
+	expect(trustRows("global-command-realpath:")).toEqual([
+		expect.objectContaining({
+			subject: `global-command-realpath:${missing}`,
+			reason: "resolved command realpath unavailable",
+		}),
+	]);
 });
-
-it("r17 Yarn's absolute runtime does not consult a sibling node", () => {
-	const project = makeProject();
-	const outside = tempDir("pi-lens-wrapper-");
-	const script = path.join(outside, "server.js");
-	fs.writeFileSync(script, "");
-	const inside = path.join(project.root, "runtime");
-	fs.writeFileSync(inside, "");
-	fs.symlinkSync(inside, path.join(outside, "node"));
-	const shim = path.join(outside, "tool.cmd");
-	fs.writeFileSync(
-		shim,
-		fs
-			.readFileSync(path.join(wrapperFixtures, "yarn4-node.cmd"), "utf8")
-			.replaceAll("__TARGET__", script)
-			.replaceAll("__RUNTIME__", process.execPath.replaceAll("\\", "/")),
-	);
-	setProjectTrustState("unknown");
-	expect(commandResolvesIntoProject(shim, project.root)).toBe(false);
-});
-
-// R17 path binding: an own-directory prefix concatenates even a leading slash;
-// resolving that slot as an independent absolute path measures a decoy instead.
-it.each(["cmd", "ps1", "sh"])(
-	"r17 own-directory slot retains its base with a leading separator: %s",
-	(kind) => {
-		const outside = tempDir("pi-lens-wrapper-");
-		const decoyDir = tempDir("pi-lens-decoy-");
-		const decoy = path.join(decoyDir, "server.js");
-		fs.writeFileSync(decoy, "");
-		const slot = path.sep + path.relative(path.parse(decoy).root, decoy);
-		const project = path.join(outside, path.dirname(slot));
-		fs.mkdirSync(project, { recursive: true });
-		fs.writeFileSync(path.join(project, "package.json"), "{}");
-		fs.writeFileSync(path.join(project, "server.js"), "");
-		const shim = path.join(outside, `tool.${kind}`);
-		fs.writeFileSync(
-			shim,
-			fs
-				.readFileSync(path.join(wrapperFixtures, `npm-direct.${kind}`), "utf8")
-				.replaceAll(
-					"__TARGET__",
-					slot.split(path.sep).join(kind === "cmd" ? "\\" : "/"),
-				),
-		);
-		setProjectTrustState("unknown");
-		expect(commandResolvesIntoProject(shim, project)).toBe(true);
-	},
-);
-
-it.each(["__TARGET__", "__RUNTIME__"])(
-	"r17 Yarn absolute slot cannot become cwd-relative: %s",
-	(slot) => {
-		const project = makeProject();
-		const outside = tempDir("pi-lens-wrapper-");
-		const script = path.join(outside, "server.js");
-		fs.writeFileSync(script, "");
-		fs.writeFileSync(path.join(outside, "node"), "");
-		fs.writeFileSync(path.join(project.root, "server.js"), "");
-		fs.writeFileSync(path.join(project.root, "node"), "");
-		const text = fs
-			.readFileSync(path.join(wrapperFixtures, "yarn4-node.cmd"), "utf8")
-			.replaceAll("__TARGET__", slot === "__TARGET__" ? "server.js" : script)
-			.replaceAll(
-				"__RUNTIME__",
-				slot === "__RUNTIME__" ? "node" : process.execPath,
-			);
-		const shim = path.join(outside, "tool.cmd");
-		fs.writeFileSync(shim, text);
-		process.chdir(outside);
-		setProjectTrustState("unknown");
-		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
-	},
-);

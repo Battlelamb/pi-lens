@@ -10,3 +10,7 @@ The model abstracts manager names, filesystem evidence, bounded FIFO eviction,
 and subprocess failure. They do not change which root owns a successful answer.
 Eviction only removes an answer and causes another probe. Unknown and untrusted
 share admission and therefore one scope; trusted has the other scope.
+
+`FinalSelection.tla` covers trust changes and executable replacement between
+initial discovery and spawn. Admission uses the selected executable and the
+current trust answer. Outside executables remain admitted in every trust state.

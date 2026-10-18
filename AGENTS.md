@@ -894,12 +894,10 @@ file-scoped worklist and receives no project-wide scanner output.
   PATH entries that reach the project are dropped and recorded once each, the
   refusal notice is emitted once per session, and a global dir inside the
   project is skipped.
-  Discovered commands are judged by their executable target anywhere in the
-  caller's explicit project tree, including npm Windows shim script targets;
-  a cmd/PowerShell/shell wrapper is admitted only by a whole-file match to an
-  explicitly captured generator template with literal, existing targets outside
-  the project. Unknown formats, changed templates, and `.bat` wrappers refuse
-  until trusted; new generator versions/options require new captures;
+  Discovered commands are judged by their executable realpath against the
+  caller's project tree. A wrapper outside that tree is admitted by its own
+  realpath; script bodies and internal runtime selection are not inspected.
+  Installer PATH walks and verification use `resolveTrustScopedCommand`;
   availability probes, global-dir queries, and their bounded cache keys carry
   that same root. POSIX reads and writes only `PATH`; Windows alone folds key
   casing. `tests/clients/global-binary-trust-4530.test.ts` and

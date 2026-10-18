@@ -608,7 +608,24 @@ function trySpawn(
 	cwd: string,
 	env: NodeJS.ProcessEnv,
 	needsShell: boolean,
+	judgeTarget: boolean,
 ): ChildProcess {
+	// Re-read trust after asynchronous discovery, and judge the final launcher.
+	setTrustScopedPath(env, resolvePathValue(env), cwd);
+	if (
+		judgeTarget &&
+		(isFullyQualified(command) ||
+			command.includes("/") ||
+			command.includes("\\")) &&
+		commandResolvesIntoProject(command, cwd, true)
+	) {
+		refuseUntrustedLspExecution({
+			kind: "project-local-binary",
+			command,
+			resolvedCommand: command,
+			cwd,
+		});
+	}
 	let proc: ChildProcess;
 
 	if (needsShell) {
@@ -924,8 +941,16 @@ export async function launchLSP(
 	let proc: ChildProcess;
 
 	try {
-		proc = trySpawn(spawnCommand, args, cwd, env, needsShell);
+		proc = trySpawn(
+			spawnCommand,
+			args,
+			cwd,
+			env,
+			needsShell,
+			spawnCommand !== command,
+		);
 	} catch (err) {
+		if (err instanceof SpawnFailureError) throw err;
 		// If spawn failed with simple command, try npm global
 		if (
 			!isFullyQualified(command) &&
@@ -936,7 +961,7 @@ export async function launchLSP(
 			if (globalBinPath && globalBinPath !== spawnCommand) {
 				// Recompute needsShell for the resolved global path
 				const needsShellGlobal = computeNeedsShell(globalBinPath);
-				proc = trySpawn(globalBinPath, args, cwd, env, needsShellGlobal);
+				proc = trySpawn(globalBinPath, args, cwd, env, needsShellGlobal, true);
 			} else {
 				throw await classifySpawnFailure(err, { command, cwd });
 			}

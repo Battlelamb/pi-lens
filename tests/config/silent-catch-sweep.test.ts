@@ -662,8 +662,8 @@ const BASELINE: Readonly<Record<string, Admission>> = {
 		reason: PRE_RULE,
 	}, // :63, :176
 	"clients/installer/index.ts": {
-		silent: 60,
-		identities: "b2e5789ab5826d04",
+		silent: 58,
+		identities: "82d1538cf65dfac0",
 		reason: PRE_RULE,
 	}, // :155, :192, :197, :207, :218, :231, :288, :2163, :2470, :2557, :2576, :2710, :2722, :2748, :3083, :3123, :3158, :3170, :3292, :3315, :3337, :3507, :3603, :3671, :3699, :3788, :3866, :3874, :3989, :4549, :4602, :4793, :4833, :5306, :5341, :5494, :5511, :5536, :5567, :5570, :5576, :5592, :5629, :5632, :5717, :5804, :5905, :5912, :6104, :6127, :6185, :6195, :6199, :6232, :6296, :6332, :6369, :6487, :6646, :6716
 	"clients/installer/managed-tool-refresh.ts": {
@@ -803,7 +803,7 @@ const BASELINE: Readonly<Record<string, Admission>> = {
 	}, // :65
 	"clients/lsp/launch.ts": {
 		silent: 11,
-		identities: "679b905d4af5e7db",
+		identities: "86cd7de210d77cc1",
 		reason: PRE_RULE,
 	}, // :97, :195, :294, :359, :392, :649, :655, :881, :1110, :1121, :1132
 	"clients/lsp/lombok.ts": {
@@ -1377,7 +1377,7 @@ const BASELINE: Readonly<Record<string, Admission>> = {
  * 25 more silent sites visible, so the merged population is 1,188 (1,143 under
  * the old rule on the same tree). It moves only downward from here.
  */
-const PINNED_TOTAL = 1188;
+const PINNED_TOTAL = 1186;
 
 interface Census {
 	byFile: Map<string, CatchSite[]>;

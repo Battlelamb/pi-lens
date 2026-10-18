@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setPlatform } from "../../support/platform-stub.js";
 import {
 	removeTempDirSync,
 	setupTestEnvironment,
@@ -277,7 +278,7 @@ describe("lsp launch", () => {
 	it.each(["unknown", "untrusted", "trusted"] as const)(
 		"classifies targets independently of %s trust (#4566 r13)",
 		async (trust) => {
-			// #4566: outside spellings and npm shims must obey root ownership too.
+			// #4566 r18: realpath controls ownership; outside wrapper bodies do not.
 			// #4566 r14: the project-path input is defence in depth. Under unknown
 			// or untrusted trust the scoped PATH drops that entry before the finder
 			// runs, so the launch route reports tool-not-found and the classifier
@@ -326,7 +327,10 @@ describe("lsp launch", () => {
 						const call = withLspProjectCodePermission(allowed, () =>
 							launchLSP("r13-server", [], { cwd: root }),
 						);
-						if (target === global || (trust === "trusted" && allowed)) {
+						if (
+							[global, cmd, ps1].includes(target) ||
+							(trust === "trusted" && allowed)
+						) {
 							await expect(
 								call,
 								`${trust}/${allowed}/${target}`,
@@ -347,7 +351,7 @@ describe("lsp launch", () => {
 
 	// #4566 r14 (Greptile r4303887682): an npm `cmd` shim may name an
 	// extensionless launcher script. R17 retains that admission through complete
-	// upstream captures; the target still decides for an adopted root.
+	// executable realpaths; adopted roots retain their permission gate.
 	it.each(["unknown", "trusted"] as const)(
 		"spawns a global npm shim whose target is an extensionless script under %s trust (#4566 r14)",
 		async (trust) => {
@@ -364,18 +368,9 @@ describe("lsp launch", () => {
 			fs.mkdirSync(path.dirname(target), { recursive: true });
 			fs.writeFileSync(target, "#!/usr/bin/env node\n", { mode: 0o755 });
 			const shim = path.join(globalDir, "yaml-language-server.cmd");
-			// R17: use complete upstream bytes; the target must actually exist.
 			fs.writeFileSync(
 				shim,
-				fs
-					.readFileSync(
-						path.resolve("tests/fixtures/global-command-wrappers/npm-node.cmd"),
-						"utf8",
-					)
-					.replaceAll(
-						"__TARGET__",
-						"yaml-language-server\\bin\\yaml-language-server",
-					),
+				'@"%~dp0\\yaml-language-server\\bin\\yaml-language-server" %*\n',
 				{ mode: 0o755 },
 			);
 			const spawn = vi.fn(
@@ -416,7 +411,7 @@ describe("lsp launch", () => {
 		},
 	);
 
-	it("refuses a global npm shim whose extensionless target is the project's script (#4566 r14)", async () => {
+	it("refuses a global shim linked to the project executable (#4566 r18)", async () => {
 		const dir = setupTestEnvironment("pi-lens-launch-").tmpDir;
 		const root = path.join(dir, "project");
 		const target = path.join(root, "bin", "yaml-language-server");
@@ -425,11 +420,7 @@ describe("lsp launch", () => {
 		const globalDir = path.join(dir, "global");
 		fs.mkdirSync(globalDir);
 		const shim = path.join(globalDir, "yaml-language-server.cmd");
-		fs.writeFileSync(
-			shim,
-			'endLocal & "%_prog%"  "%dp0%\\..\\project\\bin\\yaml-language-server" %*',
-			{ mode: 0o755 },
-		);
+		fs.symlinkSync(target, shim);
 		const spawn = vi.fn(
 			mockSpawn(
 				(_command: string, _args: string[]) => new MockChildProcess(9876),
@@ -750,4 +741,85 @@ describe("lsp launch", () => {
 			expect(result.pid).toBe(5678);
 		},
 	);
+});
+
+// R18-V6: admission follows the final replacement executable.
+it.each(["unknown", "untrusted", "trusted"] as const)(
+	"r18 judges the PowerShell replacement under %s trust",
+	async (trust) => {
+		const dir = setupTestEnvironment("pi-lens-launch-").tmpDir;
+		const root = path.join(dir, "project");
+		fs.mkdirSync(root);
+		const target = path.join(root, "server.cmd");
+		fs.writeFileSync(target, "fixture", { mode: 0o755 });
+		const ps1 = path.join(dir, "server.ps1");
+		fs.writeFileSync(ps1, "fixture", { mode: 0o755 });
+		fs.symlinkSync(target, path.join(dir, "server.cmd"));
+		const spawn = vi.fn(mockSpawn(() => new MockChildProcess(9876)));
+		vi.doMock("node:child_process", () => ({
+			execFileSync: vi.fn(() => ""),
+			spawn,
+		}));
+		setPlatform("win32");
+		const { setProjectTrustState, resetProjectTrust } =
+			await import("../../../clients/project-trust.js");
+		const { launchLSP, withLspProjectCodePermission } =
+			await import("../../../clients/lsp/launch.js");
+		setProjectTrustState(trust);
+		try {
+			const call = withLspProjectCodePermission(true, () =>
+				launchLSP(ps1, [], { cwd: root }),
+			);
+			if (trust === "trusted")
+				await expect(call).resolves.toHaveProperty("pid", 9876);
+			else {
+				await expect(call).rejects.toMatchObject({ kind: "trust-refused" });
+				expect(spawn).not.toHaveBeenCalled();
+			}
+		} finally {
+			setPlatform(process.platform);
+			resetProjectTrust();
+			vi.doUnmock("node:child_process");
+			vi.resetModules();
+		}
+	},
+);
+
+// R18-V8: the spawn environment must reflect trust withdrawn during discovery.
+it("r18 re-scopes PATH when trust changes during discovery", async () => {
+	const dir = setupTestEnvironment("pi-lens-launch-").tmpDir;
+	const root = path.join(dir, "project");
+	fs.mkdirSync(root);
+	const server = path.join(dir, "server.exe");
+	fs.writeFileSync(server, "fixture", { mode: 0o755 });
+	const { setProjectTrustState, resetProjectTrust } =
+		await import("../../../clients/project-trust.js");
+	setProjectTrustState("trusted");
+	const spawn = vi.fn(mockSpawn(() => new MockChildProcess(9876)));
+	vi.doMock("node:child_process", () => ({
+		execFileSync: vi.fn(() => {
+			setProjectTrustState("unknown");
+			return server;
+		}),
+		spawn,
+	}));
+	const previousPath = process.env.PATH;
+	process.env.PATH = [root, previousPath].join(path.delimiter);
+	try {
+		const { launchLSP } = await import("../../../clients/lsp/launch.js");
+		await launchLSP("r18-server", [], { cwd: root });
+		const call = spawn.mock.calls.find(([command]) => command.includes(server));
+		expect(call).toBeDefined();
+		expect(
+			(call?.[2] as { env: NodeJS.ProcessEnv } | undefined)?.env.PATH?.split(
+				path.delimiter,
+			),
+		).not.toContain(root);
+	} finally {
+		if (previousPath === undefined) delete process.env.PATH;
+		else process.env.PATH = previousPath;
+		resetProjectTrust();
+		vi.doUnmock("node:child_process");
+		vi.resetModules();
+	}
 });

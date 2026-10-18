@@ -190,7 +190,8 @@ const spawnVerdict = vi.hoisted(() => ({
 	// Undefined by default: every other test in this file is unaffected.
 	onCall: undefined as ((command: string, args: string[]) => void) | undefined,
 }));
-vi.mock("../../../clients/safe-spawn.js", () => ({
+vi.mock("../../../clients/safe-spawn.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../clients/safe-spawn.js")>()),
 	safeSpawn: vi.fn(() => ({ stdout: "", stderr: "", status: 0 })),
 	safeSpawnAsync: async (
 		command: string,
@@ -303,6 +304,13 @@ function ghPath(name: string): string {
 }
 
 function fakeAccess(...allowed: string[]): void {
+	// R18: command verification now judges a real filesystem target.
+	for (const file of allowed) {
+		if (!file.startsWith(TEST_HOME + path.sep)) continue;
+		realFs.mkdirSync(path.dirname(file), { recursive: true });
+		if (!realFs.existsSync(file))
+			realFs.writeFileSync(file, "fixture", { mode: 0o755 });
+	}
 	const set = new Set(allowed);
 	mockFsAccess.mockImplementation(async (p: string) => {
 		if (set.has(p)) return;
