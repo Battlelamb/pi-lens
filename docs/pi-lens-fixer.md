@@ -114,11 +114,17 @@ exports change.
   a candidate that guards another seam or a named recurrence stays, and a
   deletion it proposes lands only with the covering test named and the
   reviewer's agreement test by test.
-- Every record the `Observability` section names is asserted by a test in the
-  diff and quoted in the body (#2642, #2647, #2649, #2654). The body lint
-  refuses a named record literal no test under `tests/` reads
-  (`scripts/check-pr-body.mjs`, #4597), so a record the section names without a
-  read-back cannot merge; `none: <reason>` still answers a diff with no record.
+- Every record the `Observability` section names is asserted by a test under
+  `tests/` (any collected test, not only a file this PR touches) and quoted in
+  the body (#2642, #2647, #2649, #2654). The body lint refuses a named record
+  literal no collected test reads back (`scripts/check-pr-body.mjs`, #4597), so
+  a record the section names without a read-back cannot merge; `none: <reason>`
+  still answers a diff with no record. The read-back is the record's full name
+  in an assertion, a comparison, a `case` label or a record-keyed row of a test
+  vitest runs; a title, a `console.log`, a skipped test and an excluded tree do
+  not count, and a record named only through a table imported from another file
+  does not either, so inline the name in the assertion. Naming a record that
+  predates the PR owes the same test.
 - Every behavioural sentence (a docstring invariant, a memo, a registry
   justification) maps to a test or a probe, or is deleted (#2643, #2654).
 - Name where new state sits in its ladder and what happens to it at

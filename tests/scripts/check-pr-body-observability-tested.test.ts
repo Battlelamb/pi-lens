@@ -12,6 +12,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { lintPrBody } from "../../scripts/check-pr-body.mjs";
+import { vitestCollects } from "../support/vitest-collection.js";
 
 // A docs-only diff: truthy, so the rule runs, and holding no runtime hunk, so
 // the record-naming rule beside it stays out of the way.
@@ -176,8 +177,8 @@ describe("#4597 a named observability record must be read by a test", () => {
 			'it("filters the phase", () => {\n\tconst kept = rows.filter((row) => row.phase === "fixture_record_emitted");\n\texpect(kept).toHaveLength(1);\n});\n',
 		],
 		[
-			"a row helper that selects the phase",
-			'it("reads the rows", async () => {\n\tconst [row] = await rows(target, "fixture_record_emitted");\n\texpect(row).toBeDefined();\n});\n',
+			"a helper call inside the assertion",
+			'it("reads the rows", async () => {\n\texpect(await rows(target, "fixture_record_emitted")).toHaveLength(1);\n});\n',
 		],
 		[
 			"an assertion on the raw NDJSON line",
@@ -274,6 +275,130 @@ describe("#4597 a named observability record must be read by a test", () => {
 			records: ["fixture_record_emitted"],
 		});
 		expect(ruleErrors(result)).toEqual([]);
+	});
+
+	// F1 (review round 1): a title, a `todo` and any other call argument are not
+	// read-backs. Each of these put the name where the reviewed head matched, and
+	// a rename of the emission left the suite green.
+	it.each([
+		[
+			"a test title",
+			'it("fixture_record_emitted", () => {\n\texpect(1).toBe(1);\n});\n',
+		],
+		["an `it.todo` title", 'it.todo("fixture_record_emitted");\n'],
+		[
+			"a describe title",
+			'describe("fixture_record_emitted", () => {\n\tit("notes it", () => {\n\t\texpect(1).toBe(1);\n\t});\n});\n',
+		],
+		[
+			"a console.log argument",
+			'it("logs the phase", () => {\n\tconsole.log("fixture_record_emitted");\n\texpect(1).toBe(1);\n});\n',
+		],
+		[
+			"a template-literal title",
+			"it(`fixture_record_emitted ${count}`, () => {\n\texpect(1).toBe(1);\n});\n",
+		],
+		[
+			"a call argument nobody asserts",
+			'it("notes the rows", async () => {\n\tconst [row] = await rows(target, "fixture_record_emitted");\n\texpect(row).toBeDefined();\n});\n',
+		],
+		// The plant nobody listed: a title that compares the name, and a chain of
+		// two modifiers where only the first is one the rule can prove live.
+		[
+			"a record compared inside a title",
+			'it(String(count) === "fixture_record_emitted" ? "a" : "b", () => {\n\texpect(1).toBe(1);\n});\n',
+		],
+		[
+			"a test behind a chain that ends in `.skip`",
+			'it.concurrent.skip("reads the phase", () => {\n\texpect(row.phase).toBe("fixture_record_emitted");\n});\n',
+		],
+	])("does not count %s as a read-back", (_name, source) => {
+		const result = lint({
+			observability: "The record is `fixture_record_emitted`.",
+			records: ["fixture_record_emitted"],
+			tests: { [TEST_FILE]: source },
+		});
+		expect(ruleErrors(result)).toHaveLength(1);
+	});
+
+	// F2 (review round 1): AGENTS.md "Test requirements" counts only live
+	// declarations, and `vitest.config.ts` decides which files run at all.
+	it.each([
+		[
+			"a skipped test",
+			'it.skip("reads the phase", () => {\n\texpect(row.phase).toBe("fixture_record_emitted");\n});\n',
+		],
+		[
+			"a conditionally skipped test",
+			'it.skipIf(true)("reads the phase", () => {\n\texpect(row.phase).toBe("fixture_record_emitted");\n});\n',
+		],
+		[
+			"a test under a skipped describe",
+			'describe.skip("suite", () => {\n\tit("reads the phase", () => {\n\t\texpect(row.phase).toBe("fixture_record_emitted");\n\t});\n});\n',
+		],
+		[
+			"a test behind a modifier this rule cannot prove runs",
+			'it.customOnce("reads the phase", () => {\n\texpect(row.phase).toBe("fixture_record_emitted");\n});\n',
+		],
+	])("does not count an assertion in %s", (_name, source) => {
+		const result = lint({
+			observability: "The record is `fixture_record_emitted`.",
+			records: ["fixture_record_emitted"],
+			tests: { [TEST_FILE]: source },
+		});
+		expect(ruleErrors(result)).toHaveLength(1);
+	});
+
+	// The collected-file answer is read from `vitest.config.ts`, so each row is
+	// also checked against the repository's own collector: a change to the
+	// config's include/exclude moves both answers together.
+	it.each([
+		"tests/clients/fixture-collected.test.ts",
+		"tests/clients/cascade-turn-merge.test.ts",
+		"tests/clients/lsp/integration.test.ts",
+		"tests/index-integration.test.ts",
+		"tests/fixtures/native-ts7-vitest/planted.test.ts",
+		"tests/support/fixture-record-helpers.ts",
+		"tests/native-ts7-live-fixed/planted.test.ts",
+	])("agrees with vitestCollects about %s", (file) => {
+		const result = lint({
+			observability: "The record is `fixture_record_emitted`.",
+			records: ["fixture_record_emitted"],
+			tests: {
+				[file]:
+					'it("reads the phase", () => {\n\texpect(row.phase).toBe("fixture_record_emitted");\n});\n',
+			},
+		});
+		expect(ruleErrors(result)).toHaveLength(vitestCollects(file) ? 0 : 1);
+	});
+
+	// F3 (review round 1): the name is matched whole. `lsp_document_drift` must
+	// not be satisfied by a test reading `lsp_document_drift_cap`, the shape the
+	// sibling rule's file-name match already fixed (#3905 r2).
+	it("does not count a longer record whose name starts with the named one", () => {
+		const result = lint({
+			observability: "The record is `fixture_record`.",
+			records: ["fixture_record", "fixture_record_cap"],
+			tests: {
+				[TEST_FILE]:
+					'it("reads the cap", () => {\n\texpect(row.phase).toBe("fixture_record_cap");\n});\n',
+			},
+		});
+		expect(ruleErrors(result)).toEqual([
+			expect.stringContaining("`fixture_record`"),
+		]);
+	});
+
+	it("does not count an identifier that contains the literal", () => {
+		const result = lint({
+			observability: "The record is `fixture_record`.",
+			records: ["fixture_record"],
+			tests: {
+				[TEST_FILE]:
+					'const fixture_record_notes = 1;\n\nit("notes", () => {\n\texpect(fixture_record_notes).toBe(1);\n});\n',
+			},
+		});
+		expect(ruleErrors(result)).toHaveLength(1);
 	});
 
 	// Shape 10: a probe that cannot run is a skipped check, disclosed once, and

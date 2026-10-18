@@ -913,9 +913,11 @@ describe("#4484 witness, round 2: only evidence retires a recorded blocker", () 
 		boundary.lsp.enabled = true;
 		const s = await openSession("ul", "src/unalign.ts", V_FIXED);
 		// The ledger is the file's process-global sink, and a sibling cell's own
-		// file may already hold this kind: only this cell's subject is read.
-		const unalignedRows = async () =>
-			(await degradationRows("blocker-position-unaligned")).filter((row) =>
+		// file may already hold this kind: only this cell's subject is read. The
+		// record's name is handed to the assertion, so the #4597 read-back is a
+		// comparison this test makes (#4597 r2 F1).
+		const unalignedRows = async (kind: string) =>
+			(await degradationRows(kind)).filter((row) =>
 				String(row.subject ?? "").includes("unalign.ts"),
 			);
 		expect(await s.write(V1)).toContain("🔴 STOP");
@@ -926,12 +928,12 @@ describe("#4484 witness, round 2: only evidence retires a recorded blocker", () 
 		expect(await s.edit(V1_LINE_REWRITTEN, [2])).toContain(
 			"Still unfixed: 1 blocker reported earlier",
 		);
-		expect(await unalignedRows()).toEqual([]);
+		expect(await unalignedRows("blocker-position-unaligned")).toEqual([]);
 		// The next write has nothing to place that stale record against.
 		expect(await s.write(V1_LINE_REWRITTEN_OTHER_LINE)).toContain(
 			"Still unfixed: 1 blocker reported earlier",
 		);
-		expect(await unalignedRows()).toContainEqual(
+		expect(await unalignedRows("blocker-position-unaligned")).toContainEqual(
 			expect.objectContaining({ count: 1 }),
 		);
 		boundary.lsp.mode = "answer";
