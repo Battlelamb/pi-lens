@@ -1515,10 +1515,10 @@ function hasNoRecordReason(content, files) {
 
 // --- #4597: a named record must be read back by a test ---------------------
 //
-// `docs/pi-lens-fixer.md:117` requires every record the `## Observability`
-// section names to be asserted by a test, and nothing checked it: the audit of
-// the 53 `fix` PRs merged 2026-10-11..2026-10-18 found 3 of 29 record-naming
-// bodies whose record no test reads (`cascade_pending_rendered`,
+// The `## Evidence` rule in `docs/pi-lens-fixer.md` requires every record the
+// `## Observability` section names to be asserted by a test, and nothing checked
+// it: the audit of the 53 `fix` PRs merged 2026-10-11..2026-10-18 found 3 of 29
+// record-naming bodies whose record no test reads (`cascade_pending_rendered`,
 // `blocker-position-unaligned`, and #4527's `savedServerIds` claim). The rule
 // is its own function with one call site, beside `lintRuntimeObservability`
 // (which asks whether a record was named at all), so the diff-keyed rules of
@@ -1966,8 +1966,14 @@ function statementEnd(code, from) {
  * The name of the module-scope function that encloses `position`, or null:
  * `function NAME(…) { … }`, `const NAME = (…) => { … }`, `const NAME =
  * function (…) { … }`, and a concise arrow (`const NAME = () => rows(…);`),
- * whose statement is the body. A declaration whose brace comes after its own
- * `;` is not a helper this reader can name.
+ * whose statement is the body. The arrow's parameters and its return type may
+ * carry TypeScript annotations (`const rowsOf = (rows: Row[]): Row[] => …`,
+ * F-4597-R3-1), because an annotated helper is a read position like any other.
+ * A declaration whose brace comes after its own `;` is not a helper this
+ * reader can name, and a return type that carries a brace or its own arrow
+ * (`(): { a: string } => …`, `(): () => void => …`) stays unnamed: those
+ * forms are refused, never guessed, because their first `{` belongs to the
+ * type and not to the body.
  */
 function enclosingHelperName(code, position) {
 	const candidates = [];
@@ -1992,7 +1998,7 @@ function enclosingHelperName(code, position) {
 	))
 		add(match[1], match.index);
 	for (const match of code.matchAll(
-		/(?<![.$\w])(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^()]*\)\s*=>|function\b|[A-Za-z_$][\w$]*\s*=>)/g,
+		/(?<![.$\w])(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^()]*\)\s*(?::\s*[^=;{}]+?)?\s*=>|function\b|[A-Za-z_$][\w$]*\s*=>)/g,
 	))
 		add(match[1], match.index);
 	if (!candidates.length) return null;
@@ -2579,7 +2585,7 @@ function lintObservabilityRecordsTested(lines, headings, options = {}) {
 		? ` A tests/ file whose declarations this rule cannot prove runs contributes nothing, so name the record in a form it reads: ${shown.join(", ")}${extra}.`
 		: "";
 	return [
-		`PR body Observability names ${missing.map((name) => `\`${name}\``).join(", ")}, which no test under tests/ reads: admit one proven form — the record's full name in an assertion inside a test vitest collects and runs, or where that test compares the observed value with it — because docs/pi-lens-fixer.md:117 requires the record the section names to be asserted by a test (#4597).${unprovableNote}`,
+		`PR body Observability names ${missing.map((name) => `\`${name}\``).join(", ")}, which no test under tests/ reads: admit one proven form — the record's full name in an assertion inside a test vitest collects and runs, or where that test compares the observed value with it — because docs/pi-lens-fixer.md ("## Evidence") requires the record the section names to be asserted by a test (#4597).${unprovableNote}`,
 	];
 }
 

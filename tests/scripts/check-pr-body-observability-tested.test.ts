@@ -1,6 +1,7 @@
 /**
  * #4597: a record the `## Observability` section names must be read back by a
- * test. `docs/pi-lens-fixer.md:117` required it and nothing checked it, so 3 of
+ * test. The `## Evidence` rule in `docs/pi-lens-fixer.md` required it and
+ * nothing checked it, so 3 of
  * the 29 record-naming bodies the 2026-10-11..2026-10-18 audit read named a
  * record no test reads (`cascade_pending_rendered` and
  * `blocker-position-unaligned` live in this repository's own history).
@@ -256,7 +257,7 @@ describe("#4597 a named observability record must be read by a test", () => {
 	it("ignores a span that is not a record literal", () => {
 		const result = lint({
 			observability:
-				"See `docs/pi-lens-fixer.md:117`, `classifyJsTsGlobalScope` and `npm run lint`.",
+				"See `docs/pi-lens-fixer.md`, `classifyJsTsGlobalScope` and `npm run lint`.",
 			records: ["fixture_record_emitted"],
 		});
 		expect(ruleErrors(result)).toEqual([]);
@@ -431,6 +432,20 @@ describe("#4597 a named observability record must be read by a test", () => {
 			"a module-scope helper only a dead declaration calls",
 			'function dropped(phase) {\n\treturn phase === "fixture_record_emitted";\n}\n\nit.skip("trivial", () => {\n\texpect(dropped("x")).toBe(false);\n});\n',
 		],
+		// The typed form of F-4597-R3-1's helper: admitting the return type must
+		// not admit a helper whose only caller is a declaration the rule proved
+		// dead.
+		[
+			"a typed-return arrow helper only a dead declaration calls",
+			'const dropped = (phase: string): boolean =>\n\tphase === "fixture_record_emitted";\n\nit.skip("trivial", () => {\n\texpect(dropped("x")).toBe(false);\n});\n',
+		],
+		// The stated limit of F-4597-R3-1's admission: a return type that carries
+		// a brace belongs to the type, not the body, so the reader names no helper
+		// and the position is refused (fail closed) until a form is measured.
+		[
+			"a helper whose return type carries a brace",
+			'const rowsOf = (rows: Row[]): { phase: string }[] =>\n\trows.filter((row) => row.phase === "fixture_record_emitted");\n\nit("reads the phase", () => {\n\texpect(rowsOf(rows)).toHaveLength(1);\n});\n',
+		],
 	])("does not count a read-back through %s", (_name, source) => {
 		const result = lint({
 			observability: "The record is `fixture_record_emitted`.",
@@ -460,6 +475,18 @@ describe("#4597 a named observability record must be read by a test", () => {
 		[
 			"a module-scope helper a live test calls",
 			'function rowsOf(rows) {\n\treturn rows.filter((row) => row.phase === "fixture_record_emitted");\n}\n\nit("reads the phase", () => {\n\texpect(rowsOf(rows)).toHaveLength(1);\n});\n',
+		],
+		// F-4597-R3-1: an arrow helper carrying a TypeScript return type is the
+		// same read position as the untyped one. The detector used to match `=>`
+		// only where `)` was followed by it, so `): Row[] =>` named no helper and
+		// an honest read-back was refused.
+		[
+			"a typed-return arrow helper a live test calls",
+			'const rowsOf = (rows: Row[]): Row[] =>\n\trows.filter((row) => row.phase === "fixture_record_emitted");\n\nit("reads the phase", () => {\n\texpect(rowsOf(rows)).toHaveLength(1);\n});\n',
+		],
+		[
+			"a void typed-return arrow helper a live test calls",
+			'const check = (row: Row): void => {\n\texpect(row.phase).toBe("fixture_record_emitted");\n};\n\nit("reads the phase", () => {\n\tcheck(rows[0]);\n});\n',
 		],
 		[
 			"a generic `each` table",
@@ -621,6 +648,37 @@ describe("#4597 a named observability record must be read by a test", () => {
 					"`fixture_record_emitted`, but the tests/ search could not run",
 				),
 			);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	// F-4597-R3-3: the mention cap is a bound on an author-facing path, so it
+	// discloses its truncation on the rendered surface (shape 10) and is pinned
+	// here: 401 named records, the first 400 checked, the last one named in the
+	// warning rather than dropped in silence.
+	it("discloses its mention cap and checks only the first 400", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const records = Array.from(
+				{ length: 401 },
+				(_, index) => `fixture_cap_${String(index).padStart(3, "0")}`,
+			);
+			const result = lint({
+				observability: `The rows are ${records
+					.map((record) => `\`${record}\``)
+					.join(", ")}.`,
+				records,
+			});
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining(
+					"more than 400 record-shaped tokens, so the #4597 read-back check read the first 400 and did not check the rest",
+				),
+			);
+			const [error] = ruleErrors(result);
+			expect(error).toContain("`fixture_cap_000`");
+			expect(error).toContain("`fixture_cap_399`");
+			expect(error).not.toContain("`fixture_cap_400`");
 		} finally {
 			warn.mockRestore();
 		}
