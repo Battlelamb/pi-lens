@@ -63,6 +63,7 @@ import {
 	findCommandAsync,
 } from "../../clients/safe-spawn.js";
 import { trustScopedSpawnEnv } from "../../clients/package-manager.js";
+import { assertNonEmptyScan } from "../support/sweep-kit.js";
 import {
 	resolveJavaRuntimeEnv,
 	_resetJvmRuntimeCacheForTests,
@@ -1121,6 +1122,9 @@ const wrapperFixtures = path.resolve("tests/fixtures/global-command-wrappers");
 const wrapperNames = fs
 	.readdirSync(wrapperFixtures)
 	.filter((name) => /\.(cmd|ps1|sh)$/.test(name));
+// R17 sweep floor: the captured corpus is the admitted population. A capture
+// that disappears shrinks the matrix, so the count is pinned rather than read.
+assertNonEmptyScan("r17 captured wrapper corpus", wrapperNames.length, 23);
 const wrapperCases = wrapperNames.flatMap((name) =>
 	["exact", "near-miss", "suffix", "prefix"].flatMap((form) =>
 		(["trusted", "unknown", "untrusted"] as const).flatMap((trust) =>
@@ -1164,6 +1168,19 @@ it.each(wrapperCases)(
 		);
 	},
 );
+
+it("r17 admits no wrapper format without a captured fixture", async () => {
+	const { GLOBAL_COMMAND_WRAPPERS } =
+		await import("../../clients/global-command-wrappers.js");
+	// Both directions: a template added without a capture would otherwise be an
+	// admission arm no cell reads, and a capture without a template would sit
+	// in the corpus unadmitted.
+	expect(
+		GLOBAL_COMMAND_WRAPPERS.map((template) =>
+			template.id.replace(/-([^-]+)$/, ".$1"),
+		).sort(),
+	).toEqual([...wrapperNames].sort());
+});
 
 it.each(["cmd", "ps1", "sh"])("r17 unknown wrapper refuses: %s", (kind) => {
 	const project = makeProject();

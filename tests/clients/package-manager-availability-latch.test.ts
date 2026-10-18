@@ -291,6 +291,10 @@ describe("package-manager availability (#1496)", () => {
 
 it(
 	"keeps transient details for a flight joiner after latch eviction (#4566 r13)",
+	// The lane's own scale, in the options slot: a third positional argument
+	// (a plain timeout number or a call) hides this declaration from the
+	// title census the TLA+ pin and the skip sweeps read (#4566 F5).
+	{ timeout: scaledTestTimeout(5000) },
 	async () => {
 		// #4566: the joiner must read the shared verdict, not its replacement latch.
 		// Schedule join and eviction requests; cover missing as well as transient
@@ -389,7 +393,6 @@ it(
 			else process.env.PI_LENS_TEST_MODE = savedMode;
 		}
 	},
-	scaledTestTimeout(5000),
 );
 
 it("keys the availability latch by the caller root's canonical spelling (#4566 r16)", async () => {

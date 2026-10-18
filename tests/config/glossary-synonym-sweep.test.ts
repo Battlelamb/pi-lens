@@ -1087,7 +1087,10 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		// 29 -> 31 (#4566 r14): commandResolvesIntoProject resolves a relative
 		// discovered spelling against the caller's cwd with `path.isAbsolute` and
 		// `path.resolve`, so the judged target is the one the child runs.
-		"clients/package-manager.ts": 31,
+		// 31 -> 33 (#4566 r17): the wrapper judge reads `path.extname` and
+		// `path.dirname` beside the `path.sep`/`path.join` slot normalization it
+		// replaces the deleted shim parser's `path.resolve` with.
+		"clients/package-manager.ts": 33,
 		"clients/package-root.ts": 5,
 		"clients/path-keyed-map.ts": 11,
 		// 30 -> 34: findNearestMarkerRootDetailed (#3691) adds its own marker/root
