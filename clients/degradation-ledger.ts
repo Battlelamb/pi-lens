@@ -192,6 +192,8 @@ export type DegradationKind =
 	 * Subject is the change-log path.
 	 */
 	| "change-log-lock-unavailable"
+	/** #4530: a discovered command file fails executable access; once per path. */
+	| "command-file-not-executable"
 	/**
 	 * A per-file touch skipped a language server because that server is in the
 	 * breaker cooldown or is latched permanently broken (#1743). During an

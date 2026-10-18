@@ -679,8 +679,8 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/opaque-mutation-scan.ts": 1,
 		"clients/opengrep-client.ts": 2,
 		// #4566 round 9: the shared search-path join and the scoped-PATH
-		// assignment, two `Array.prototype.filter` calls, not a delivery filter.
-		"clients/package-manager.ts": 2,
+		// assignment and candidate-directory walk, three Array.prototype.filter calls.
+		"clients/package-manager.ts": 3,
 		"clients/path-utils.ts": 1,
 		"clients/persistent-reverify.ts": 4,
 		// 4 -> 6 (#4484): `liveBlockers.filter` and `recordBlockers.filter` split the
@@ -999,7 +999,7 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/inline-blocker-dispositions.ts": 2,
 		"clients/install-diagnostics.ts": 11,
 		// 107 -> 106 (#4530): two inline PATH-env reads fold into ambientPath().
-		"clients/installer/index.ts": 106,
+		"clients/installer/index.ts": 104,
 		"clients/installer/managed-tool-refresh.ts": 4,
 		"clients/instance-reaper.ts": 4,
 		// 8 -> 9 (#3498): the own-hold skip's degradation `subject`,

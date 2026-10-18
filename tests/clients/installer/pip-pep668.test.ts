@@ -683,7 +683,7 @@ describe("a PATH candidate that cannot run is not a resolution (#3311)", () => {
 
 		const program = await runInstaller(root, bin, "ruff");
 
-		expect(program.result.resolved).toBe("ruff");
+		expect(program.result.resolved).toBe(path.join(bin, "ruff"));
 	});
 });
 

@@ -292,7 +292,7 @@ const NO_CWD_EXEMPTION_ROWS: ReadonlyArray<readonly [string, string]> = [
 		"`go install golang.org/x/vuln/cmd/govulncheck@latest` — installs into the Go tool directory, not into the project",
 	],
 	[
-		"clients/installer/index.ts#verifyToolBinary:21f85a36",
+		"clients/installer/index.ts#verifyToolBinary:7b6b18c2",
 		"`<execPath> <verificationArgs>` verification that an installed managed binary runs at all",
 	],
 	[
@@ -348,7 +348,7 @@ const NO_CWD_EXEMPTION_ROWS: ReadonlyArray<readonly [string, string]> = [
 		"forks the review worker with `process.execPath`; the project it must analyse is passed explicitly as the `--cwd=<dir>` argv flag, so the child's own directory is not the channel",
 	],
 	[
-		"clients/package-manager.ts#probeGlobalBinDirs:13b21687",
+		"clients/package-manager.ts#probeGlobalBinDirs:b8ed232b",
 		"`npm config get prefix` / `pnpm bin -g` / `yarn global bin` — global install-location queries; under an untrusted project the query runs from HOME (#4530)",
 	],
 	[
@@ -438,11 +438,11 @@ const ORIGIN_ADMISSION_ROWS: ReadonlyArray<readonly [string, string]> = [
 		"LSP launch helper receives its own cwd parameter from the server launch boundary",
 	],
 	[
-		"clients/lsp/launch.ts#launchLSP:34d73dd1~2a84127e",
+		"clients/lsp/launch.ts#launchLSP:65a0d177~f623b094",
 		"launchLSP forwards its caller-provided cwd through trySpawn",
 	],
 	[
-		"clients/lsp/launch.ts#launchLSP:e7df4bb9~3f60133c",
+		"clients/lsp/launch.ts#launchLSP:720503c7~8334def8",
 		"launchLSP forwards its caller-provided cwd through trySpawn",
 	],
 	[

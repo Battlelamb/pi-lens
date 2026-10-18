@@ -7,7 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const safeSpawnAsync = vi.hoisted(() => vi.fn());
 const sessionLog = vi.hoisted(() => vi.fn());
-vi.mock("../../../clients/safe-spawn.js", () => ({ safeSpawnAsync }));
+vi.mock("../../../clients/safe-spawn.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../clients/safe-spawn.js")>()),
+	safeSpawnAsync,
+}));
 vi.mock("../../../clients/sessionstart-logger.js", () => ({
 	logSessionStart: sessionLog,
 }));
@@ -30,6 +33,15 @@ const fixture = fs.readFileSync(
 	"utf8",
 );
 
+let commandDir = "";
+function fixtureCommand(name: string): string {
+	const file =
+		path.join(commandDir, name.replaceAll("/", "-")) +
+		(process.platform === "win32" ? ".cmd" : "");
+	fs.writeFileSync(file, "fixture", { mode: 0o755 });
+	return file;
+}
+
 function result(overrides: Record<string, unknown> = {}) {
 	return {
 		stdout: "",
@@ -45,9 +57,13 @@ describe("managed markdownlint verification (#2045)", () => {
 	// trust-scoped verification records as ignored (#4530), so the file pins a
 	// PATH outside the checkout.
 	beforeEach(() => {
+		commandDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), "pi-lens-markdownlint-verify-"),
+		);
 		vi.stubEnv("PATH", path.dirname(process.execPath));
 	});
 	afterEach(() => {
+		removeTempDirSync(commandDir);
 		vi.unstubAllEnvs();
 	});
 
@@ -69,7 +85,12 @@ describe("managed markdownlint verification (#2045)", () => {
 		);
 
 		await expect(
-			verifyToolBinary("latch-only-tool", undefined, undefined, 10),
+			verifyToolBinary(
+				fixtureCommand("latch-only-tool"),
+				undefined,
+				undefined,
+				10,
+			),
 		).resolves.toBe(true);
 	});
 
@@ -88,7 +109,12 @@ describe("managed markdownlint verification (#2045)", () => {
 				result({ error: new Error("generic race"), spawnFailure: { kind } }),
 			);
 			await expect(
-				verifyToolBinary("typed-failure", undefined, undefined, 10),
+				verifyToolBinary(
+					fixtureCommand("typed-failure"),
+					undefined,
+					undefined,
+					10,
+				),
 			).resolves.toBe(false);
 			expect(sessionLog).toHaveBeenLastCalledWith(
 				expect.stringContaining(`kind=${kind}`),
@@ -106,7 +132,12 @@ describe("managed markdownlint verification (#2045)", () => {
 			}),
 		);
 		await expect(
-			verifyToolBinary("timeout-with-capped-output", undefined, undefined, 10),
+			verifyToolBinary(
+				fixtureCommand("timeout-with-capped-output"),
+				undefined,
+				undefined,
+				10,
+			),
 		).resolves.toBe(false);
 		expect(sessionLog).toHaveBeenLastCalledWith(
 			expect.stringContaining("check=--version, kind=timeout"),
@@ -119,14 +150,14 @@ describe("managed markdownlint verification (#2045)", () => {
 			result({ signal: "SIGTERM", error: new Error("killed") }),
 		);
 		await expect(
-			verifyToolBinary("signal-only", undefined, undefined, 10),
+			verifyToolBinary(fixtureCommand("signal-only"), undefined, undefined, 10),
 		).resolves.toBe(false);
 		expect(sessionLog).toHaveBeenLastCalledWith(
 			expect.stringContaining("kind=killed-signal=SIGTERM"),
 		);
 		safeSpawnAsync.mockResolvedValueOnce(result({ status: 3 }));
 		await expect(
-			verifyToolBinary("nonzero", undefined, undefined, 10),
+			verifyToolBinary(fixtureCommand("nonzero"), undefined, undefined, 10),
 		).resolves.toBe(false);
 		expect(sessionLog).toHaveBeenLastCalledWith(
 			expect.stringContaining("kind=exit-nonzero"),
@@ -136,7 +167,7 @@ describe("managed markdownlint verification (#2045)", () => {
 			result({ status: 0, stdout: "real output\n", error: undefined }),
 		);
 		await expect(
-			verifyToolBinary("success", onVersion, undefined, 10),
+			verifyToolBinary(fixtureCommand("success"), onVersion, undefined, 10),
 		).resolves.toBe(true);
 		expect(onVersion).toHaveBeenCalledWith("real output\n");
 		expect(sessionLog).not.toHaveBeenCalledWith(
@@ -148,14 +179,15 @@ describe("managed markdownlint verification (#2045)", () => {
 		safeSpawnAsync.mockResolvedValueOnce(
 			result({ status: 0, error: undefined }),
 		);
-		await verifyToolBinary("markdownlint-cli2", undefined, undefined, 10, [
-			"--no-globs",
-			"-",
-		]);
+		await verifyToolBinary(
+			fixtureCommand("markdownlint-cli2"),
+			undefined,
+			undefined,
+			10,
+			["--no-globs", "-"],
+		);
 		expect(safeSpawnAsync).toHaveBeenLastCalledWith(
-			process.platform === "win32"
-				? "markdownlint-cli2.cmd"
-				: "markdownlint-cli2",
+			fixtureCommand("markdownlint-cli2"),
 			["--no-globs", "-"],
 			expect.objectContaining({ timeout: 10, input: "" }),
 		);
@@ -172,7 +204,13 @@ describe("managed markdownlint verification (#2045)", () => {
 		]) {
 			const tool = TOOLS.find((entry) => entry.id === id);
 			expect(tool).toBeDefined();
-			await verifyToolBinary(id, undefined, undefined, 10, tool!.checkArgs);
+			await verifyToolBinary(
+				fixtureCommand(id),
+				undefined,
+				undefined,
+				10,
+				tool!.checkArgs,
+			);
 		}
 		const calls = safeSpawnAsync.mock.calls;
 		expect(calls.map((call) => call[1])).toEqual([
@@ -191,7 +229,7 @@ describe("managed markdownlint verification (#2045)", () => {
 			result({ status: 1, outputTruncated: true }),
 		);
 		await verifyToolBinary(
-			"intelephense",
+			fixtureCommand("intelephense"),
 			undefined,
 			undefined,
 			10,
@@ -200,7 +238,7 @@ describe("managed markdownlint verification (#2045)", () => {
 			onInconclusive,
 		);
 		expect(safeSpawnAsync).toHaveBeenLastCalledWith(
-			process.platform === "win32" ? "intelephense.cmd" : "intelephense",
+			fixtureCommand("intelephense"),
 			["--version"],
 			expect.objectContaining({
 				maxOutputBytes: 64 * 1024,
@@ -224,7 +262,7 @@ describe("managed markdownlint verification (#2045)", () => {
 				count: 1,
 				latestReasons: [
 					{
-						subject: "intelephense",
+						subject: fixtureCommand("intelephense"),
 						reason:
 							"transport-required marker unresolved in truncated output (--version)",
 					},
@@ -253,7 +291,7 @@ describe("managed markdownlint verification (#2045)", () => {
 		);
 		await expect(
 			verifyToolBinary(
-				"verbose-hanging-lsp",
+				fixtureCommand("verbose-hanging-lsp"),
 				undefined,
 				onTransient,
 				10,
