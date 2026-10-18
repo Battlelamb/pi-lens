@@ -1405,6 +1405,7 @@ it.each(["__TARGET__", "__RUNTIME__"])(
 			);
 		const shim = path.join(outside, "tool.cmd");
 		fs.writeFileSync(shim, text);
+		process.chdir(outside);
 		setProjectTrustState("unknown");
 		expect(commandResolvesIntoProject(shim, project.root)).toBe(true);
 	},
