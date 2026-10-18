@@ -896,8 +896,9 @@ file-scoped worklist and receives no project-wide scanner output.
   project is skipped.
   Discovered commands are judged by their executable realpath against the
   caller's project tree. A wrapper outside that tree is admitted by its own
-  realpath; script bodies and internal runtime selection are not inspected.
-  Installer PATH walks and verification use `resolveTrustScopedCommand`;
+  realpath; trust admission does not inspect script bodies or internal runtime
+  selection. Installer PATH walks, verification, and cached command results
+  use `resolveTrustScopedCommand`;
   availability probes, global-dir queries, and their bounded cache keys carry
   that same root. POSIX reads and writes only `PATH`; Windows alone folds key
   casing. `tests/clients/global-binary-trust-4530.test.ts` and

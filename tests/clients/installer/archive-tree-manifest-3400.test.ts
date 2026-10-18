@@ -100,6 +100,7 @@ import {
 	getInstallAttempt,
 	getInstallFailureReason,
 	getToolPath,
+	ensureTool,
 	getAllToolStatuses,
 	installTool,
 	resetProbeCacheStateForTesting,
@@ -370,6 +371,12 @@ describe.each(SHAPES)("archive install integrity: $label", (shape) => {
 			),
 		).toBe(true);
 		expect(extractorCalls()).toHaveLength(1);
+		// R18: an installed tree bundle is data, not a command candidate.
+		if (shape.toolId === "powershell-editor-services") {
+			expect(await ensureTool(shape.toolId, { allowInstall: false })).toBe(
+				path.join(TOOLS_DIR, shape.toolId),
+			);
+		}
 	});
 
 	it("refuses a correctly pinned archive whose tree lacks the launcher or marker", async () => {
@@ -737,7 +744,7 @@ describe("kotlin-language-server registry entry (#3400)", () => {
 
 		const resolved = await getToolPath("kotlin-language-server");
 
-		expect(resolved).toBe("kotlin-language-server");
+		expect(resolved).toBe(path.join(fakeBin, "kotlin-language-server"));
 		expect(
 			spawnMock.mock.calls.filter(([command]) =>
 				String(command).includes("kotlin-language-server"),

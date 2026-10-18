@@ -37,6 +37,9 @@ import {
 	getToolPath,
 	refreshManagedTool,
 	resetProbeCacheStateForTesting,
+	resetResolvedPathCache,
+	flushProbeCache,
+	updateProbeCache,
 } from "../../clients/installer/index.js";
 import {
 	resolveAndLaunch,
@@ -1210,5 +1213,46 @@ it.runIf(process.platform !== "win32")(
 				reason: "command file failed executable access check",
 			}),
 		]);
+	},
+);
+
+// R18-V3: cached discovery evidence never carries an earlier trust grant.
+it.runIf(process.platform !== "win32").each([
+	["unknown", "session"],
+	["untrusted", "session"],
+	["unknown", "disk"],
+	["untrusted", "disk"],
+] as const)(
+	"r18 rejudges %s installer %s cache results",
+	async (trust, cache) => {
+		const project = makeProject();
+		const outside = tempDir("pi-lens-global-");
+		const target = plant(path.join(project.root, "stylelint"), project.marker);
+		fs.symlinkSync(target, path.join(outside, "stylelint"));
+		process.env.PATH = [outside, savedEnv["PATH"]].join(path.delimiter);
+		process.chdir(project.root);
+		resetResolvedPathCache();
+		setProjectTrustState("trusted");
+		try {
+			expect(await ensureTool("stylelint", { allowInstall: false })).toBe(
+				"stylelint",
+			);
+			if (cache === "disk")
+				await updateProbeCache("stylelint", path.join(outside, "stylelint"));
+			await flushProbeCache();
+			if (cache === "disk") resetResolvedPathCache();
+			setProjectTrustState(trust);
+			expect(
+				await ensureTool("stylelint", { allowInstall: false }),
+			).toBeUndefined();
+			const fallback = tempDir("pi-lens-global-");
+			const admitted = plant(path.join(fallback, "stylelint"), project.marker);
+			process.env.PATH = [outside, fallback].join(path.delimiter);
+			expect(await ensureTool("stylelint", { allowInstall: false })).toBe(
+				admitted,
+			);
+		} finally {
+			resetResolvedPathCache();
+		}
 	},
 );

@@ -6638,6 +6638,7 @@ export async function ensureTool(
 	toolId: string,
 	opts?: { forceReinstall?: boolean; allowInstall?: boolean },
 ): Promise<string | undefined> {
+	let result: string | undefined;
 	if (
 		opts?.allowInstall !== false &&
 		!assertInstallAllowed(`managed tool ensure: ${toolId}`)
@@ -6652,9 +6653,24 @@ export async function ensureTool(
 		});
 		// AFTER the discovery pass, which clears the per-attempt record on entry.
 		noteInstallAttempt(toolId, "declined", `project trust: ${denialReason}`);
-		return discovered;
+		result = discovered;
+	} else {
+		result = await ensureToolResolved(toolId, opts);
 	}
-	return ensureToolResolved(toolId, opts);
+	if (!result || getProjectTrustState() === "trusted") return result;
+	// Tree bundles return data directories, not executable command paths.
+	const tool = TOOLS.find((entry) => entry.id === toolId);
+	if (tool?.installStrategy === "archive" && !tool.archive?.launcher)
+		return result;
+	// Session and durable cache hits pass the same current executable judgment.
+	const admitted = resolveTrustScopedCommand(
+		result,
+		process.cwd(),
+		ambientPath(),
+		false,
+	);
+	if (!admitted) invalidateManagedToolResolution(toolId);
+	return admitted;
 }
 
 async function ensureToolResolved(
