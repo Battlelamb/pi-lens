@@ -162,6 +162,10 @@ describe("grammar-health Swift crash-watch, executed (#4518)", () => {
 			// `set +e`: a crashing child must not kill the step under `bash -e`.
 			expect(result.first.status, result.first.stderr).toBe(0);
 			expect(result.outputs.evaluated).toBe(evaluated);
+			// #4518: the run's own log states the count, not only the step output
+			// the floor step reads. The record the floor prints is JSON, so a log
+			// search for `evaluated=` found only the step's echoed script text.
+			expect(result.first.stdout).toContain(`evaluated=${evaluated}`);
 			expect(result.second.status, result.second.stderr).toBe(floorExit);
 			expect(
 				result.first.stdout.includes("::notice title=Swift crash-watch::"),

@@ -206,8 +206,27 @@ exactly one `priority:p1|p2|p3` (AGENTS.md #1676 rubric). The priority labels
 were found deleted from the repo on 2026-09-03 and recreated (#2553); an
 issue filed without one is a triage defect, not a shortcut.
 
-Every reviewer **follow-up issue** generalization verdict is filed and assigned
-to a seam group on the tracking queue in the same turn. At each regroup, scan
+**Merge bar (user, 2026-10-18).** A PR merges when no HIGH finding is open and
+every gating check is green on the exact head. Each MEDIUM or LOW finding
+either folds into the same PR or becomes an accepted residual: the PR body
+lists it under `## Accepted residuals`, named `p3` with its severity and live
+population (for example `p3 (MEDIUM, live 0): <the gap>`), so the gap keeps a
+priority without an issue.
+A residual never becomes a follow-up issue. File an issue only for p2 or
+higher work that cannot ride the PR: a HIGH outside the PR's scope, or a
+MEDIUM with a live population. Before a final round, the brief says "final
+round" and names what it fixes; a residual of MEDIUM or below after it does not
+reopen the round.
+
+**Known gaps (user, 2026-10-19).** An open p3 issue is an accepted known gap,
+not backlog. The orchestrator closes it as not planned with the `known-gap`
+label and lists it under its seam on the pinned tracker #4626. When a PR
+merges, its `## Accepted residuals` lines join the same tracker under their
+seam. A known gap reopens as p2 when it turns material: a live wrong result,
+data loss, a hang, or a leak with no bound.
+
+Every reviewer **follow-up issue** generalization verdict that meets that bar is
+filed and assigned to a seam group on the tracking queue in the same turn. At each regroup, scan
 merged PRs for subset-shaped changes that lack a generalization verdict.
 
 Before filing a review follow-up, apply the standing fold rule: fold same-seam
@@ -766,7 +785,7 @@ Each row cost a lane at least once; the prose above carries the record.
 | Quoting a closing keyword in a commit message | #4375's commit f40ac6c28 quoted `not fixed: #4346` and `Whether this closes #1513` as lint examples; GitHub acts on commit-message keywords that reach the default branch, so the merge closed both (2026-10-14). `closingIssuesReferences` omits them. Commit messages get the same keyword rules as the body; quote examples as `#N` without the keyword |
 | Merging a contract-doc edit on an orchestrator read alone | #4379's seven-line host-cap section used "read-only" for the opposite of its meaning in `docs/pi-lens-subagent.md`, and left probe-running investigators unclassified; a scoped review caught both (2026-10-14). An edit to `docs/pi-lens-*.md` or AGENTS.md gets one scoped reviewer pass |
 | Seeding a group list from the active queue instead of the tracker | The orchestrator's session group held 3 issues while `area:session` had 8 more open p2s, so "is the session group done?" was answered from an incomplete list (2026-10-08). Build a group from the label and the tracker, then subtract what is out of scope |
-| Filing every LOW review finding as an issue | Each review spawned about one follow-up, so the CI group stayed at about 36 open after 16 closures (2026-10-07). Fold or drop LOW findings; file only MEDIUM and above or a reproduced sibling, and give each group a "done when" |
+| Filing every LOW review finding as an issue | Each review spawned about one follow-up, so the CI group stayed at about 36 open after 16 closures (2026-10-07). Fold or drop LOW findings; file only what the merge bar admits (p2 or higher that cannot ride the PR), and give each group a "done when" |
 | No cleanup when lanes end | 78 GB of finished lane trees and a 22 GB leaking test TMPDIR filled the root disk twice; two reviewers lost probe runs and one fixer's test file was truncated (2026-10-07). Remove a lane's trees and TMPDIR when its PR merges, and keep a disk alarm |
 | Deriving the next round from a stale brief or a stale premise | #3871's brief asked for a selection fix #3903 had already shipped, and #3813's assumed every producer was unfixed; both fixers correctly refused to rebuild merged work (2026-10-07). Re-check the premise on current master when a lane starts, not when the issue was filed |
 | Calling a PR-owned hygiene leak pre-existing because the same files fail on a later run | The PR's own CI run exposed the leak, but the reviewer classified it as a flake and fixed an unreachable injected path; the PR review and red-on-base comparison should have owned the finding. The hygiene check now treats a new leak on a green-master PR as CAUSED-BY-PR until red-on-base proves otherwise, and harness children receive a private `TMPDIR` (#4133, #4128). |

@@ -106,6 +106,10 @@ jobs:
               ;;
           esac
           echo "$msg"
+          # The log states the count, not only the step output: a night read from
+          # the job log alone (the #4518 remainder) must show whether swift was
+          # evaluated, and `evaluated=` is the greppable spelling.
+          echo "evaluated=${evaluated}"
           echo "- ${msg}" >> "$GITHUB_STEP_SUMMARY"
           echo "evaluated=${evaluated}" >> "$GITHUB_OUTPUT"
 

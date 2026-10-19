@@ -9,9 +9,14 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CacheManager } from "../../clients/cache-manager.js";
 import {
+	AgentBehaviorClient,
+	type BehaviorWarning,
+} from "../../clients/agent-behavior-client.js";
+import {
 	_resetAgentNudgeForTests,
 	consumeAgentNudge,
 } from "../../clients/agent-nudge.js";
+import { PI_LENS_SYNTHETIC_MUTATION_FIELD } from "../../clients/mutating-tool.js";
 import { readChangesSince } from "../../clients/project-changes.js";
 import {
 	MAX_PENDING_CASCADE_RUNS,
@@ -3508,6 +3513,186 @@ describe("runtime-tool-result inline behavior warnings", () => {
 			env.cleanup();
 		}
 	});
+
+	// A bash result fans out into per-file write results. Counting those replays
+	// used to evict the real bash call from the five-call BLIND WRITE window.
+	it.each([1, 11])(
+		"counts one bash call across %i per-file diagnostic results",
+		async (fileCount) => {
+			const env = setupTestEnvironment("pi-lens-bash-behavior-count-");
+			try {
+				vi.mocked(runPipeline).mockImplementation(async (ctx) => ({
+					output: `diagnostics for ${path.basename(ctx.filePath)}`,
+					hasBlockers: false,
+					isError: false,
+					fileModified: false,
+				}));
+				const paths = Array.from({ length: fileCount }, (_, index) =>
+					createTempFile(env.tmpDir, `bash-${index}.ts`, "export {};\n"),
+				);
+				const runtime = new RuntimeCoordinator();
+				runtime.projectRoot = env.tmpDir;
+				const behavior = new AgentBehaviorClient();
+				const base: Omit<Parameters<typeof handleToolResult>[0], "event"> = {
+					getFlag: () => false,
+					dbg: () => {},
+					runtime,
+					cacheManager: new CacheManager(false),
+					resetLSPService: () => {},
+					agentBehaviorRecord: (name, filePath) =>
+						behavior.recordToolCall(name, filePath),
+					formatBehaviorWarnings: (warnings) =>
+						behavior.formatWarnings(warnings as BehaviorWarning[]),
+				};
+				const returned = await handleToolResult({
+					...base,
+					event: {
+						toolName: "bash",
+						input: {
+							command: paths
+								.map((file) => `echo x > "${toPosix(file)}"`)
+								.join("; "),
+						},
+						content: [{ type: "text", text: "bash ok" }],
+					},
+				});
+				const text = returned?.content.map((part) => part.text).join("\n");
+				expect(text).not.toContain("BLIND WRITE");
+				expect(text).not.toContain("THRASHING");
+				for (const filePath of paths) {
+					expect(text).toContain(`diagnostics for ${path.basename(filePath)}`);
+					expect(runtime.getFileSeq(filePath)).toBe(1);
+				}
+				expect(
+					readChangesSince(env.tmpDir, 0).map((change) => change.filePath),
+				).toEqual(paths);
+
+				// The real bash must still provide knowledge for later real calls.
+				// Dropping it as well would warn on the third edit of a new file.
+				for (let index = 0; index < 3; index++) {
+					const filePath = createTempFile(
+						env.tmpDir,
+						`edit-${index}.ts`,
+						"export {};\n",
+					);
+					const edited = await handleToolResult({
+						...base,
+						event: { toolName: "edit", input: { path: filePath }, content: [] },
+					});
+					expect(
+						edited?.content.map((part) => part.text).join("\n"),
+					).not.toContain("BLIND WRITE");
+				}
+			} finally {
+				env.cleanup();
+			}
+		},
+	);
+
+	// The replay guard must not silence warnings from separate host calls.
+	it.each(["write", "edit"])(
+		"keeps BLIND WRITE and THRASHING warnings for real %s calls",
+		async (toolName) => {
+			const env = setupTestEnvironment("pi-lens-native-behavior-count-");
+			try {
+				vi.mocked(runPipeline).mockResolvedValue({
+					output: "diagnostics complete",
+					hasBlockers: false,
+					isError: false,
+					fileModified: false,
+				});
+				const runtime = new RuntimeCoordinator();
+				runtime.projectRoot = env.tmpDir;
+				const behavior = new AgentBehaviorClient();
+				const base: Omit<Parameters<typeof handleToolResult>[0], "event"> = {
+					getFlag: () => false,
+					dbg: () => {},
+					runtime,
+					cacheManager: new CacheManager(false),
+					resetLSPService: () => {},
+					agentBehaviorRecord: (name, filePath) =>
+						behavior.recordToolCall(name, filePath),
+					formatBehaviorWarnings: (warnings) =>
+						behavior.formatWarnings(warnings as BehaviorWarning[]),
+				};
+				for (let index = 0; index < 6; index++) {
+					const filePath = createTempFile(
+						env.tmpDir,
+						index < 3 ? `storm-${index}.ts` : "thrash.ts",
+						`export const value = ${index};\n`,
+					);
+					const returned = await handleToolResult({
+						...base,
+						event: { toolName, input: { path: filePath }, content: [] },
+					});
+					const text = returned?.content.map((part) => part.text).join("\n");
+					if (index === 2) expect(text).toContain("BLIND WRITE");
+					if (index === 5) expect(text).toContain("THRASHING");
+				}
+			} finally {
+				env.cleanup();
+			}
+		},
+	);
+
+	// #4623: the guard asks `mutating-tool.ts` which results are bash replays, and
+	// only the exact marker keeps a result out of the behavior history. A
+	// look-alike marker is still the host call it is: all three writes below
+	// are recorded, so the third one warns BLIND WRITE.
+	it.each<[string, unknown, boolean]>([
+		["the exact bash value", "bash", false],
+		["another case", "BASH", true],
+		["another replay source", "opaque-script", true],
+		["a boolean", true, true],
+	])(
+		"counts a write result carrying %s as a host call only when it is not the bash marker",
+		async (_label, marker, isRecorded) => {
+			const env = setupTestEnvironment("pi-lens-replay-marker-behavior-");
+			try {
+				vi.mocked(runPipeline).mockResolvedValue({
+					output: "diagnostics complete",
+					hasBlockers: false,
+					isError: false,
+					fileModified: false,
+				});
+				const runtime = new RuntimeCoordinator();
+				runtime.projectRoot = env.tmpDir;
+				const behavior = new AgentBehaviorClient();
+				let text: string | undefined;
+				for (let index = 0; index < 3; index++) {
+					const filePath = createTempFile(
+						env.tmpDir,
+						`marked-${index}.ts`,
+						"export {};\n",
+					);
+					const returned = await handleToolResult({
+						getFlag: () => false,
+						dbg: () => {},
+						runtime,
+						cacheManager: new CacheManager(false),
+						resetLSPService: () => {},
+						agentBehaviorRecord: (name, recordedPath) =>
+							behavior.recordToolCall(name, recordedPath),
+						formatBehaviorWarnings: (warnings) =>
+							behavior.formatWarnings(warnings as BehaviorWarning[]),
+						event: {
+							toolName: "write",
+							input: { path: filePath },
+							content: [],
+							[PI_LENS_SYNTHETIC_MUTATION_FIELD]: marker,
+						},
+					});
+					text = returned?.content.map((part) => part.text).join("\n");
+				}
+				// The diagnostics still render for every marker: only the history differs.
+				expect(text).toContain("diagnostics complete");
+				if (isRecorded) expect(text).toContain("BLIND WRITE");
+				else expect(text).not.toContain("BLIND WRITE");
+			} finally {
+				env.cleanup();
+			}
+		},
+	);
 
 	it("runs bash synthetic writes immediately and returns authoritative content", async () => {
 		const { runPipeline } = await import("../../clients/pipeline.js");

@@ -516,6 +516,11 @@ async function openSession(
 }
 
 const V1 = "const a = 1;\nBAD_CALL();\nconst b = 2;\n";
+/** V1's blocker line rewritten: same error, different bytes, so its old line
+ *  hash no longer describes these bytes. */
+const V1_LINE_REWRITTEN = "const a = 1;\nBAD_CALL(1);\nconst b = 2;\n";
+const V1_LINE_REWRITTEN_OTHER_LINE =
+	"const a = 1;\nBAD_CALL(1);\nconst b = 5;\n";
 const V2_OTHER_LINE = "const a = 1;\nBAD_CALL();\nconst b = 3;\n";
 const V2_INSERT_ABOVE =
 	"const z = 0;\nconst a = 1;\nBAD_CALL();\nconst b = 2;\n";
@@ -560,6 +565,33 @@ async function lastRunnerRows(
 	return Object.fromEntries(
 		(row?.metadata?.runners ?? []).map((r) => [r.id, r]),
 	);
+}
+
+/**
+ * The ledger rows of one kind, read back from the real latency.log sink
+ * (shape 67: the sink is flushed first, with no other await in between).
+ */
+async function degradationRows(
+	kind: string,
+): Promise<Record<string, unknown>[]> {
+	await flushLatencyLog();
+	const log = getLatencyLogPath();
+	if (!fs.existsSync(log)) return [];
+	return fs
+		.readFileSync(log, "utf8")
+		.split("\n")
+		.filter((line) => line.includes(`"${kind}"`))
+		.flatMap((line) => {
+			const row = JSON.parse(line) as {
+				phase?: string;
+				metadata?: Record<string, unknown> | undefined;
+			};
+			return row.phase === "degradation_ledger" &&
+				row.metadata?.kind === kind &&
+				row.metadata !== undefined
+				? [row.metadata]
+				: [];
+		});
 }
 
 describe("#4484 witness: a repeat write keeps an unfixed blocker pending", () => {
@@ -869,6 +901,41 @@ describe("#4484 witness, round 2: only evidence retires a recorded blocker", () 
 			"Unresolved from this turn — src/carry-timeout.ts:",
 		);
 		expect(turnEnd).not.toContain("Resolved this turn");
+		boundary.lsp.mode = "answer";
+		await fixAndDrain(s);
+	}, 120_000);
+
+	// #4597 read-back: `blocker-position-unaligned` (clients/pipeline.ts) is the
+	// record that says a kept blocker has no place in these bytes. It landed
+	// unasserted, so its rename or removal would have left every cell here green
+	// while a stale line number read as "no verdict".
+	it("counts a recorded blocker it cannot place in the write's bytes", async () => {
+		boundary.lsp.enabled = true;
+		const s = await openSession("ul", "src/unalign.ts", V_FIXED);
+		// The ledger is the file's process-global sink, and a sibling cell's own
+		// file may already hold this kind: only this cell's subject is read. The
+		// record's name is handed to the assertion, so the #4597 read-back is a
+		// comparison this test makes (#4597 r2 F1).
+		const unalignedRows = async (kind: string) =>
+			(await degradationRows(kind)).filter((row) =>
+				String(row.subject ?? "").includes("unalign.ts"),
+			);
+		expect(await s.write(V1)).toContain("🔴 STOP");
+		// The server stops answering, and the blocker's own line is rewritten:
+		// the alignment cannot place it, so this write marks the record stale
+		// instead of counting it as unplaced yet.
+		boundary.lsp.mode = "inconclusive";
+		expect(await s.edit(V1_LINE_REWRITTEN, [2])).toContain(
+			"Still unfixed: 1 blocker reported earlier",
+		);
+		expect(await unalignedRows("blocker-position-unaligned")).toEqual([]);
+		// The next write has nothing to place that stale record against.
+		expect(await s.write(V1_LINE_REWRITTEN_OTHER_LINE)).toContain(
+			"Still unfixed: 1 blocker reported earlier",
+		);
+		expect(await unalignedRows("blocker-position-unaligned")).toContainEqual(
+			expect.objectContaining({ count: 1 }),
+		);
 		boundary.lsp.mode = "answer";
 		await fixAndDrain(s);
 	}, 120_000);

@@ -194,6 +194,13 @@ jobs:
       pull-requests: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # `finalize-rerun` has no checkout step, so `gh pr edit` found no git
+      # remote to resolve the repository from and the terminal label swap
+      # never ran: run 38956598286 (2026-10-16, attempt 2 green) failed with
+      # `failed to run git: fatal: not a git repository` (refs #4382). The
+      # label swap needs a repository source; GH_REPO is the one the sibling
+      # clear-stale-verdict-labels job already uses.
+      GH_REPO: ${{ github.repository }}
       # #4382: `pull_requests` lists PRs by head branch and sha across forks, so
       # a master push run named other repositories' PRs (brooksmcmillin/pi-lens
       # #23) and the comment write 403ed. Only a pull_request run takes a

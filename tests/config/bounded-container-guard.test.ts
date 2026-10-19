@@ -2,8 +2,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Lang, parse } from "@ast-grep/napi";
 import { describe, expect, it } from "vitest";
+import { parseNodes, parseRoot, walkAst } from "../support/ast-census.js";
 import {
 	auditRegistry,
 	listSourceFiles,
@@ -73,31 +73,13 @@ type Site = {
 	keyAxis: KeyAxis;
 };
 
-function walk(node: any, visit: (node: any) => void): void {
-	visit(node);
-	for (const child of node.children()) walk(child, visit);
-}
-
-/**
- * One parse and ONE pre-order walk per source text. Every predicate below
- * reads this document-ordered node array instead of parsing and walking the
- * tree itself.
- *
- * #3058: the predicates used to take the source STRING, so `scan()` re-parsed
- * and re-walked each whole file up to six times per container occurrence --
- * 302 occurrences over 121 files, ~1,800 whole-file passes. An
- * `@ast-grep/napi` root holds a native tree-sitter arena and every
- * `children()` call materialises a NAPI handle per node, none of which V8
- * accounts for and so none of which it ever feels pressure to collect.
- * Measured 9,207 MB peak RSS against 62 MB of V8 heap. Passing the node array
- * makes the per-call pass structurally impossible to re-introduce: a
- * predicate has no source string to parse and no root to walk.
- */
-export function parseNodes(source: string): any[] {
-	const nodes: any[] = [];
-	walk(parse(Lang.TypeScript, source).root(), (node) => nodes.push(node));
-	return nodes;
-}
+// The one parse and pre-order walk live in `tests/support/ast-census.ts`
+// (#4606 S0), shared with the eviction sweep. Every predicate below reads the
+// document-ordered node array `parseNodes` returns instead of parsing or
+// walking a tree itself: #3058 measured the alternative (a source STRING per
+// predicate, ~1,800 whole-file passes, 9,207 MB peak RSS against 62 MB of V8
+// heap). Keep the predicates on nodes; the seam's own test rejects a second
+// traversal in this file.
 
 function identifier(node: any): string | undefined {
 	return node?.kind() === "identifier" ? node.text() : undefined;
@@ -227,7 +209,7 @@ function axisName(node: any): KeyAxis {
 
 export function determineKeyAxis(expression: string | undefined): KeyAxis {
 	if (!expression) return "undetermined";
-	const root = parse(Lang.TypeScript, expression).root();
+	const root = parseRoot(expression);
 	const expressionNode = root.namedChildren()[0]?.namedChildren()[0];
 	if (
 		!["identifier", "member_expression", "subscript_expression"].includes(
@@ -236,10 +218,10 @@ export function determineKeyAxis(expression: string | undefined): KeyAxis {
 	)
 		return "undetermined";
 	let axis: KeyAxis = "undetermined";
-	walk(root, (node) => {
+	walkAst(root, (node) => {
 		if (
 			axis !== "undetermined" ||
-			!["identifier", "property_identifier"].includes(node.kind())
+			!["identifier", "property_identifier"].includes(String(node.kind()))
 		)
 			return;
 		axis = axisName(node);
@@ -294,7 +276,7 @@ export function hasNamedSizeComparison(nodes: any[], name: string): boolean {
 						"do_statement",
 					].includes(parent.kind())
 				) {
-					walk(parent, (child) => {
+					walkAst(parent, (child) => {
 						if (
 							child.kind() !== "call_expression" ||
 							child.field("function")?.kind() !== "member_expression" ||

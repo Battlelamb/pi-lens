@@ -15,7 +15,7 @@ respawned server reports every finding it reported before eviction; the
 content-bound coverage check the auxiliary freeze depends on. A server that
 cannot demonstrate it is never proposed for eviction on perf grounds alone.
 
-_Last generated: 2026-10-17 on linux; 49 registry servers: 17 eligible, 0 vetoed, 18 inconclusive, 14 unavailable (0 not reached: budget)._
+_Last generated: 2026-10-18 on linux; 49 registry servers: 17 eligible, 0 vetoed, 18 inconclusive, 14 unavailable (0 not reached: budget)._
 
 ## Per-server rows
 
@@ -48,7 +48,7 @@ step log only, because it flaps.
 | docker | primary | transparent | eligible | · | ok | preserved |
 | docker-official | primary | unmeasured | inconclusive | not-evicted | not-evicted | n/a |
 | elixir | primary | unmeasured | unavailable | tool-unavailable | n/a | n/a |
-| expert | primary | unmeasured | inconclusive | not-evicted | not-evicted | n/a |
+| expert | primary | unmeasured | inconclusive | no-baseline | n/a | unproven |
 | fish | primary | transparent | eligible | · | ok | preserved |
 | fsharp | primary | unmeasured | unavailable | tool-unavailable | n/a | n/a |
 | gleam | primary | unmeasured | inconclusive | not-evicted | not-evicted | n/a |

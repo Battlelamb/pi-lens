@@ -1003,6 +1003,42 @@ export function splitWords(segment) {
 	return words;
 }
 
+/**
+ * Whether a segment contains a live stdin redirection. Quote handling belongs
+ * here with the shared shell lexer so consumers do not reinterpret folded
+ * words such as `bash<<EOF` from quoted prose.
+ *
+ * @param {string} segment
+ * @returns {boolean}
+ */
+export function hasLiveStdinRedirect(segment) {
+	/** @type {"single" | "double" | undefined} */
+	let quote;
+	for (let index = 0; index < segment.length; index++) {
+		const char = segment[index];
+		// A single-quoted span escapes nothing: `'x\'` closes at the `'`, so the
+		// redirection after it is live (#4595 Greptile r4307901268).
+		if (quote === "single") {
+			if (char === "'") quote = undefined;
+			continue;
+		}
+		if (char === "\\") {
+			index++;
+			continue;
+		}
+		if (quote === "double") {
+			if (char === '"') quote = undefined;
+			continue;
+		}
+		if (char === "'" || char === '"') {
+			quote = char === "'" ? "single" : "double";
+			continue;
+		}
+		if (char === "<" && segment[index + 1] === "<") return true;
+	}
+	return false;
+}
+
 const ENV_ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
 
 /**
@@ -2621,7 +2657,7 @@ const COPROC_NAMED_BODY_WORDS = new Set(["{", "if", "while", "until"]);
  * @param {string[]} words
  * @returns {string[]}
  */
-function stripCommandGroupAndRunnerPrefixes(words) {
+export function stripCommandGroupAndRunnerPrefixes(words) {
 	let i = 0;
 	while (i < words.length) {
 		if (words[i] === "coproc") {
@@ -2659,7 +2695,7 @@ function stripCommandGroupAndRunnerPrefixes(words) {
  * @param {string} cmd
  * @returns {string}
  */
-function commandBasename(cmd) {
+export function commandBasename(cmd) {
 	const idx = Math.max(cmd.lastIndexOf("/"), cmd.lastIndexOf("\\"));
 	return idx === -1 ? cmd : cmd.slice(idx + 1);
 }

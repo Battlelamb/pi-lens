@@ -577,6 +577,16 @@ export function discoveredTreeScanners(): string[] {
 	return discoverTreeScannersFromWalk(readWalkedFiles(walked), readWalkedFile);
 }
 
+/** Registrations that appear in BOTH registry lists, sorted. */
+function bothTreeScanners(registered: readonly string[]): string[] {
+	const counts = new Map<string, number>();
+	for (const file of registered) counts.set(file, (counts.get(file) ?? 0) + 1);
+	return [...counts.entries()]
+		.filter(([, count]) => count > 1)
+		.map(([file]) => file)
+		.sort();
+}
+
 // One census per worker: two assertions read the same walking of ~1,200 files.
 let censusCache: string[] | undefined;
 function census(): string[] {
@@ -631,8 +641,23 @@ describe("targeted advisory workflow contract (#3215)", () => {
 				...TREE_SCANNING_GOVERNANCE_TESTS,
 				...TEST_TREE_GOVERNANCE_TESTS,
 			];
-			expect(expectedRegistry).toEqual([...registered].sort());
-			expect(new Set(registered).size).toBe(registered.length);
+			// #4590: a scanner that walks BOTH trees is registered in BOTH lists,
+			// because each list is armed by a different change kind and the union
+			// cannot see which half a given file needs. The census equality is over
+			// the deduped union, and the both-list population is pinned exactly, so
+			// no other scanner can drift into both lists — #3951's concern (a
+			// tests-only scanner hiding in the production list) still reds.
+			const bothLists = bothTreeScanners(registered);
+			expect(
+				bothLists,
+				"a scanner in both lists is armed by a production change AND a " +
+					"tests/ change; only a scanner that walks both trees may be, and " +
+					"the list is pinned",
+			).toEqual(["tests/config/env-path-key-composition-sweep.test.ts"]);
+			expect(expectedRegistry).toEqual([...new Set(registered)].sort());
+			expect(new Set(registered).size).toBe(
+				registered.length - bothLists.length,
+			);
 
 			// Dead-sweep floors (AGENTS.md shape 10, #1718): the census cannot pass
 			// by discovering nothing. Registered through the sweep-kit seam so the

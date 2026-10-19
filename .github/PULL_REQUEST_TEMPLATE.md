@@ -93,6 +93,10 @@ candidates you do not delete here go to the corpus value ledger issue.
 
 Optional unless this PR closes a bug-labelled issue: name `Caught by:` (one layer word from `DETECTION_LAYERS` in `scripts/check-pr-body.mjs`, among them `TLA+`, `mutation`, `pre-push` and `lint/type check`; `nightly:<workflow>` names the workflow; a bug-closing PR may not answer `unknown`, `n/a`, `tbd` or `?` in any free-text line), `Should have been caught by:` (a layer or `this layer`), and `Gap:` (`#NNN`, `exists: <path of a test already on master>`, or `none: <reason>`; a test this PR adds does not count); a bug-closing PR also names `Shape:` (`#N`, an AGENTS.md "Recurring defect shapes" number, or `new: <name>`) and `Enforcer:` (the tree-wide test path on master that scans the shape's whole population, `#N` for an issue to build one, or `none: judgment-only, <reason>`; with `Shape: #N` the path must be one catalog entry N names).
 
+## Accepted residuals
+
+Optional. List each review finding of MEDIUM or below that this PR leaves open as `p3 (<severity>, live <n>): <the gap>`, where live is the number of sites in the tree that hit it today. These are accepted under the merge bar in `docs/pi-lens-merge-policy.md` "Filing issues" and are not filed as issues. Write `None.` when nothing is left open.
+
 ## Blast radius
 
 State affected dependents for each touched production module (from

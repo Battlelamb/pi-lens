@@ -13,6 +13,10 @@ const TARGETS = {
 		file: "tests/config/test-env-restore-sweep.test.ts",
 		regenEnv: "TEST_ENV_RESTORE_REGEN",
 	},
+	"test-server-teardown": {
+		file: "tests/config/test-server-teardown-sweep.test.ts",
+		regenEnv: "TEST_SERVER_TEARDOWN_REGEN",
+	},
 };
 
 const target = TARGETS[process.argv[2]];

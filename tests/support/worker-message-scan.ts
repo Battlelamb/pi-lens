@@ -57,7 +57,7 @@
  * every such call; tests/scripts/lint-js.test.ts plants both forms.
  */
 
-import { Lang, parse } from "@ast-grep/napi";
+import { parseRoot, walkAst } from "./ast-census.js";
 import { stripSource } from "./sweep-kit.js";
 
 /** The napi node type is untyped, exactly as the socket sweep walks it. */
@@ -97,11 +97,6 @@ export interface MessageHandlerSite {
 	problems: string[];
 }
 
-function walk(node: SgNode, visit: (node: SgNode) => void): void {
-	visit(node);
-	for (const child of node.children()) walk(child, visit);
-}
-
 /** Descendants of `node`, not descending into nested functions. */
 function walkOwnBody(node: SgNode, visit: (node: SgNode) => void): void {
 	for (const child of node.children()) {
@@ -127,7 +122,7 @@ function isMessageLiteral(node: SgNode | undefined): boolean {
 /** Names a same-file declarator binds to the `"message"` literal (#4413 r1 F5). */
 function messageNameIndex(root: SgNode): Set<string> {
 	const names = new Set<string>();
-	walk(root, (node: SgNode) => {
+	walkAst(root, (node: SgNode) => {
 		if (
 			node.kind() === "variable_declarator" &&
 			isMessageLiteral(node.field("value"))
@@ -206,7 +201,7 @@ function functionIndex(root: SgNode): Map<string, SgNode[]> {
 		if (!name) return;
 		index.set(name, [...(index.get(name) ?? []), fn]);
 	};
-	walk(root, (node: SgNode) => {
+	walkAst(root, (node: SgNode) => {
 		if (node.kind() === "function_declaration") {
 			add(node.field("name")?.text(), node);
 		} else if (node.kind() === "variable_declarator") {
@@ -274,7 +269,7 @@ class Judge {
 				);
 			}
 			if (param.name !== undefined) {
-				walk(fn, (node: SgNode) => {
+				walkAst(fn, (node: SgNode) => {
 					const kind = node.kind();
 					if (
 						(kind === "as_expression" || kind === "type_assertion") &&
@@ -482,7 +477,7 @@ export function scanMessageHandlers(
 ): MessageHandlerSite[] {
 	const stripped = stripSource(source, { strings: "keep" });
 	if (!/["'`]message["'`]|\bonmessage\b/.test(stripped)) return [];
-	const root = parse(Lang.TypeScript, stripped).root();
+	const root = parseRoot(stripped);
 	const index = functionIndex(root);
 	const messageNames = messageNameIndex(root);
 	const sites: MessageHandlerSite[] = [];
@@ -517,7 +512,7 @@ export function scanMessageHandlers(
 			problems,
 		});
 	};
-	walk(root, (node: SgNode) => {
+	walkAst(root, (node: SgNode) => {
 		if (node.kind() === "call_expression") {
 			const fn = node.field("function");
 			if (fn?.kind() !== "member_expression") return;

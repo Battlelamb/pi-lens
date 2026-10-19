@@ -935,8 +935,40 @@ file-scoped worklist and receives no project-wide scanner output.
   `continue-on-error` producer either calls the same helper (`--count
   <producer>=<n> --floor <m>` from a workflow step; `--min-pass`, the
   complexity file count and the shuffle census's missing starts already do) or
-  carries a `# No floor (<issue>): <reason>` header above its job; a floor comes
-  from a run recorded in `tests/fixtures/nightly-floors/measurements.json`.
+  needs none, and one census decides that: every `continue-on-error` site in a
+  `.github/workflows/*.yml` or `*.yaml` file and in a composite
+  `.github/actions/**/action.yml` or `action.yaml` is registered in
+  `tests/fixtures/nightly-floors/continue-on-error-sites.json` as `floored`
+  (naming the gating step and the floor text, which must sit in the argument
+  list of a named measuring invocation — `scripts/assert-evaluated.mjs`,
+  `scripts/smoke-tools.mjs`, `scripts/complexity-report.mjs` — on a top-level
+  line the shell executes, of a step whose `if:` is absent or a conjunction of
+  `always()`, `success()`, `!cancelled()` and one `github.event_name` or
+  `matrix.<name>` comparison the parsed document settles (the workflow's `on:`
+  keys, that job's `strategy.matrix` list), so
+  `!cancelled() && matrix.os == 'macos-latest'` counts only where the matrix
+  declares that leg; every other `if:` expression, including a trivially true
+  literal and a comparison no declared value satisfies, leaves the floor
+  unproven, and so does a job whose own `if:` the document proves never true).
+  A `\`-continued line and a line the previous one left unfinished with `&&`,
+  `||` or `|` are one command, so the measuring invocation must start the
+  joined command; an `exit` ends the script only in command position. A
+  `no-floor` row states the reader that makes an empty result visible, or
+  `governed-by` (naming the issue and the live tests that own the site, in
+  files vitest collects). The reader derives the population from the parsed
+  files, so it fails closed on a site the registry
+  does not name, on a producer file or a non-file entry it does not classify,
+  on a `continue-on-error` key in a location that is not a job or a step, and
+  on a floor whose evidence is not in the argument list of such an invocation
+  on a top-level command (a comment, a quoted command, a heredoc body, a
+  printed command, a function or block body, a subshell, a chained command, or
+  a line after an `exit`), or that names a step whose `if:` is outside that
+  allowlist; a floor comes from a run recorded in
+  `tests/fixtures/nightly-floors/measurements.json`. A
+  `# No floor (<issue>): <reason>` header above a job is human-facing copy
+  where one exists, not the record: six sites keep one (the five `lint.yml`
+  jobs and `install-smoke.yml`'s `mise-repro`), and the registry row the
+  census requires is the record.
   The helper must stay importable without `dist/` (the refresh-PR job runs it
   on a fresh checkout).
 - LSP service generations, workspace-sweep holds, and repair latches use
@@ -1658,6 +1690,17 @@ Test authoring screens:
   members sit in `scripts/shuffle-census-ratchet.json`, keyed by file, which
   only shrinks: a new member reds, and an entry clean two nights running
   must be deleted.
+  A file whose subject IS the order its cases run in (a backstop that reaps
+  the previous case's process, a drain the next case observes) cannot be
+  fixed by restoring state: that `describe` opts out with `{ shuffle: false }`
+  and a header saying why order is the behaviour under test, never the whole
+  file, and is registered in the ratchet's `byDesign` rows, which
+  `tests/scripts/ci-shuffle-census.test.ts` checks both ways. The reader
+  (`tests/support/shuffle-opt-out-scan.ts`) admits only the minimal marker:
+  an options object is read as a SEQUENCE, so a spread or a computed key it
+  cannot name refuses even beside a readable `shuffle` and the last key wins;
+  and a callee resolves through any number of aliases, a binding it cannot
+  follow refusing when the call passes an options object.
   A `vi.doMock` is undone in the file's top-level `afterEach`, not in the
   case that mocks it: a shuffle runs the next case on the leaked mock.
   `vi.resetModules()` does not clear `globalThis` or pre-reset singletons.
@@ -1689,7 +1732,11 @@ one. History: `HISTORY.md`, 2026-10-15. A detector that decides a test exists co
 declarations (`testDeclarations` in `tests/support/sweep-kit.ts`) in files
 vitest collects (`tests/support/vitest-collection.ts`): a skipped, todo,
 conditional (`skipIf`/`runIf`, an options key, a body skip) or uncalled test
-is absent. New mock
+is absent. A governance question with a data-flow answer is asked structurally,
+not by extending a spelling list: `tests/support/eviction-programs.ts` owns the
+eviction question over the S0 census seam's AST, admits four tabled forms, and
+refuses everything else, with the live sites it still refuses tabled beside
+them. New mock
 exports, fixture shapes, path rules, spawn lanes, and durable fields must
 update their registered-or-fail coverage tests.
 

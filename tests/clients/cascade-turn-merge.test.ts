@@ -1811,6 +1811,15 @@ describe("cascade delivery at turn_end (#4485, #4487)", () => {
 				.filter((e) => e.phase === "cascade_pending_gated");
 		}
 
+		// #4597: the sibling record of `cascade_pending_gated` on the block that
+		// reaches the model. #4495 named it and no test read it back, so a rename
+		// or a dropped emission kept the whole suite green.
+		function renderedRows() {
+			return logCascadeMock.mock.calls
+				.map((c) => c[0] as { phase: string; metadata?: any })
+				.filter((e) => e.phase === "cascade_pending_rendered");
+		}
+
 		function sharedGateRows() {
 			return logLatencyMock.mock.calls
 				.map((c) => c[0] as { phase?: string; metadata?: any })
@@ -1851,9 +1860,22 @@ describe("cascade delivery at turn_end (#4485, #4487)", () => {
 					}),
 				]);
 				expect(sharedGateRows()).toEqual([]);
+				// #4597: the block that reached the model is the record of the
+				// delivery, so it says how many neighbours it named.
+				expect(renderedRows()).toEqual([
+					expect.objectContaining({
+						metadata: expect.objectContaining({
+							neighbors: 0,
+							shown: 0,
+							changed: 1,
+						}),
+					}),
+				]);
 
 				const third = await nextTurn(runtime, cacheManager, env.tmpDir);
 				expect(third).not.toContain("n1.ts");
+				// Nothing is left to render, so the row is not repeated.
+				expect(renderedRows()).toHaveLength(1);
 			} finally {
 				env.cleanup();
 			}

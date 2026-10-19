@@ -70,8 +70,9 @@ exports change.
   transcript quoted in `Test assessment`. A redundant test that still guards
   goes only with the named survivor that covers it.
 - Apply folded review follow-ups per `docs/pi-lens-subagent.md`
-  "Follow-ups", and list filed residuals in one **Residuals** section of the
-  PR body.
+  "Follow-ups", and list every gap left open in one **Accepted residuals** section of
+  the PR body, each named `p3` with its severity and live population (merge bar:
+  `docs/pi-lens-merge-policy.md` "Filing issues").
 
 ## Evidence
 
@@ -116,8 +117,26 @@ exports change.
   a candidate that guards another seam or a named recurrence stays, and a
   deletion it proposes lands only with the covering test named and the
   reviewer's agreement test by test.
-- Every record the `Observability` section names is asserted by a test in the
-  diff and quoted in the body (#2642, #2647, #2649, #2654).
+- Every record the `Observability` section names is asserted by a test under
+  `tests/` (any collected test, not only a file this PR touches) and quoted in
+  the body (#2642, #2647, #2649, #2654). The body lint refuses a named record
+  literal no collected test reads back (`scripts/check-pr-body.mjs`, #4597), so
+  a record the section names without a read-back cannot merge; `none: <reason>`
+  still answers a diff with no record. A mention counts whatever its spelling:
+  a backticked span, a bare word and a link label are all read against the
+  record values the runtime emits, so prose that reuses a record's own name is
+  a mention too.
+- The read-back is the record's full name in an assertion, a comparison, a
+  `case` label or a record-keyed row inside a declaration vitest collects and
+  runs, or inside a module-scope helper that one of them calls. A title, a
+  `console.log`, a skipped test and an excluded tree do not count, and a record
+  named only through a table imported from another file does not either, so
+  inline the name in the assertion. The declaration may be spelled with a
+  computed modifier or bracket link (`it["only"]`) and through an alias
+  (`const t = it`); a form the lint cannot classify (`it[modifier]`, a
+  destructured alias) makes its whole file contribute nothing, so write the
+  declaration the plain way. Naming a record that predates the PR owes the same
+  test.
 - Every behavioural sentence (a docstring invariant, a memo, a registry
   justification) maps to a test or a probe, or is deleted (#2643, #2654).
 - Name where new state sits in its ladder and what happens to it at

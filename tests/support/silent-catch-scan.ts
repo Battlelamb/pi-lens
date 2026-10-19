@@ -82,7 +82,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { Lang, parse } from "@ast-grep/napi";
+import { parseRoot, walkAst } from "./ast-census.js";
 import { stripSource } from "./sweep-kit.js";
 
 /** The napi node type is untyped, exactly as the sibling sweeps walk it. */
@@ -172,11 +172,6 @@ export interface CatchSite {
 	identity: string;
 	/** Why the site is `unclassified`; absent otherwise. */
 	problem?: string;
-}
-
-function walk(node: SgNode, visit: (node: SgNode) => void): void {
-	visit(node);
-	for (const child of node.children()) walk(child, visit);
 }
 
 /** Descendants of `node`, not descending into nested functions. */
@@ -685,7 +680,7 @@ function rejectionHandlerCall(
 export function scanSilentCatches(source: string): CatchSite[] {
 	const stringsBlanked = stripSource(source, { strings: "blank" });
 	const commentsBlanked = stripSource(source, { strings: "keep" });
-	const root = parse(Lang.TypeScript, stringsBlanked).root();
+	const root = parseRoot(stringsBlanked);
 	const strippings: Strippings = {
 		raw: source,
 		commentsBlanked,
@@ -697,7 +692,7 @@ export function scanSilentCatches(source: string): CatchSite[] {
 	// (#4603 review N2). A subscript value adds the name unconditionally; the
 	// scope-aware resolution decides whether it really names a member.
 	const boundRejectionNames = new Set<string>();
-	walk(root, (node: SgNode) => {
+	walkAst(root, (node: SgNode) => {
 		if (node.kind() !== "variable_declarator") return;
 		const name = node.field("name");
 		if (name === undefined || name === null || name.kind() !== "identifier")
@@ -715,7 +710,7 @@ export function scanSilentCatches(source: string): CatchSite[] {
 		if (property === "catch" || property === "then")
 			boundRejectionNames.add(name.text());
 	});
-	walk(root, (node: SgNode) => {
+	walkAst(root, (node: SgNode) => {
 		if (node.kind() === "catch_clause") {
 			const body = node.field("body");
 			const range = node.range();

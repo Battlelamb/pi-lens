@@ -84,9 +84,18 @@ does not ship.
 | A new failure path, catch or silent return | One bounded record per distinct event, in a stream a monitor reads without asking (principles §1 "Every new failure path gets bounded observability"; shape 31) | The record literal and its sink, or `none:` with its reason | #4562 (a failed log write stayed silent), #4575 (a failed save left no trace) |
 | Every diff, every changed file, tests included | Read the whole diff file by file. Check each PR-body claim against the diff, and look in the body for proof before calling it missing (principles §3 "Reviewing and delegating") | The body line or transcript quoted beside a claim the diff cannot show, or the finding names the body line that lacks it | #4574 F2, #4582 F1; 3 of Greptile's 4 false positives were a transcript already in the body (#4572, #4573, #4577) |
 
-Rows 1 to 4 are mechanical from #4585: `scripts/check-pr-body.mjs` will red a
-body that omits their evidence. Until that lint lands, check them by hand; once
-it lands, confirm the lint passed on the head and spend this pass on the rest.
+Rows 1, 2 and 4 are mechanical from #4585: `scripts/check-pr-body.mjs`
+(`lintDiffCompliance`, wired into both entry points) reds a body that omits
+their evidence, and it keys each item to the diff: a red belongs to the title
+its table names and to the file whose path it spells, and a Windows read
+belongs to the seam file it names or to a diff with exactly one seam file.
+Row 1 is file-level: a changed test file owes one fenced red-first transcript
+that names it and shows a failure from it, or a Controls row naming it with a
+reason. The lint does not read a title, a table row or a suite chain, so a red
+from the file proves the file whatever the new case is called (#4605). Row 3
+stays a reviewer judgement row; the lint never decides what a model means. Confirm the lint passed on the head, then spend
+this pass on the rest — a quoted mutation-table red is not a red-first
+transcript, and a body that names the right file is still yours to judge.
 
 ## Verification
 
@@ -103,10 +112,16 @@ real seam. Check that every gate the diff adds is exercised through that path.
   a wider query of your own, by primitive or mechanism instead of the fixer's
   call names. Report what the fixer's query missed; a population that a wider
   query extends is a finding (#4536).
+- **Severity and live population.** Every finding carries HIGH, MEDIUM or LOW
+  and its live population (how many sites in the tree hit it today). The
+  verdict follows the merge bar in `docs/pi-lens-merge-policy.md` "Filing
+  issues": no HIGH plus green gating checks is merge-ready, and a MEDIUM or
+  LOW names whether it folds or stays an accepted residual.
 - **Generalization verdict.** When a mechanism, policy, guard, or optimisation
   targets N of M members (registry entries, servers, tools, languages,
   stores), name M, why the others are excluded, and their default, and end
-  with *widen in this PR*, *follow-up issue* (with its seam group), or *stay
+  with *widen in this PR*, *accepted residual* (named `p3`, with its live population),
+  *follow-up issue* (p2 or higher only, with its seam group), or *stay
   specific* (with the reason). A missing verdict is a finding (#3622; the
   optional ast-grep assist is #3684).
 - Review the pre-push self-scan with `npm run astgrep:self-scan`; `pr-preflight`
@@ -276,8 +291,10 @@ the rate they remove them.
 
 ## Findings and verdict
 
-Classify every finding as **fold** or **file** with a one-word reason
-(`docs/pi-lens-subagent.md` "Follow-ups"). Order findings `CRITICAL`, `HIGH`,
+Classify every finding as **fold**, **accepted residual** (named `p3`) or
+**file** with a one-word reason and its live population (`docs/pi-lens-subagent.md`
+"Follow-ups"; the merge bar is in `docs/pi-lens-merge-policy.md` "Filing
+issues"). Order findings `CRITICAL`, `HIGH`,
 `MEDIUM`, `LOW`, `NITPICK`. Each carries a stable id, a file or symbol anchor,
 the reproduction command or probe output, expected and observed behaviour, the
 root cause, cost, and a concrete remedy, and whether it is an
