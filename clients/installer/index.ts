@@ -5797,7 +5797,9 @@ async function installNpmTool(
 			args: string[],
 		): Promise<{ ok: boolean; stderr: string }> => {
 			const env = trustScopedSpawnEnv();
-			const result = await safeSpawnAsync(pmCommand, args, {
+			const admitted = resolveTrustScopedCommand(pmCommand);
+			if (!admitted) throw new Error(`project trust refused ${pmCommand}`);
+			const result = await safeSpawnAsync(admitted, args, {
 				...(env && { env }),
 				cwd: TOOLS_DIR,
 				timeout: INSTALL_TIMEOUT_MS,
@@ -6129,7 +6131,11 @@ async function installPipTool(
 			});
 			return binaryPath;
 		};
-		const run = (command: string, args: string[], env?: NodeJS.ProcessEnv) => {
+		const run = async (
+			command: string,
+			args: string[],
+			env?: NodeJS.ProcessEnv,
+		) => {
 			// `pipConstraintEnv` is empty unless the entry declares
 			// `pipConstraints`, and it is applied HERE — the single spawn seam every
 			// rung of the ladder (pipx, venv, --user, private-prefix) goes through —
@@ -6143,7 +6149,15 @@ async function installPipTool(
 				Object.keys(pipConstraintEnv).length > 0
 					? { ...(baseEnv ?? process.env), ...pipConstraintEnv }
 					: baseEnv;
-			return safeSpawnAsync(command, args, {
+			const admitted = resolveTrustScopedCommand(command);
+			if (!admitted)
+				return {
+					status: 1,
+					stdout: "",
+					stderr: `project trust refused ${command}`,
+					error: new Error(`project trust refused ${command}`),
+				};
+			return safeSpawnAsync(admitted, args, {
 				timeout: 120_000,
 				ignoreAmbientSignal: true,
 				lifetimeCoupled: true,
@@ -6379,8 +6393,10 @@ async function installGemTool(
 ): Promise<string | undefined> {
 	try {
 		const env = trustScopedSpawnEnv();
+		const admitted = resolveTrustScopedCommand("gem");
+		if (!admitted) throw new Error("project trust refused gem");
 		const gemResult = await safeSpawnAsync(
-			"gem",
+			admitted,
 			["install", packageName, "--no-document"],
 			{
 				...(env && { env }),

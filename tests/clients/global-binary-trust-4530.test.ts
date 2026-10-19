@@ -26,6 +26,7 @@ import {
 } from "../../clients/degradation-ledger.js";
 import { getGlobalPiLensDir } from "../../clients/file-utils.js";
 import {
+	installTool,
 	checkProbeCache,
 	isCommandAvailable,
 	isSpawnableCommand,
@@ -580,6 +581,36 @@ describe.skipIf(process.platform === "win32")(
 				(await getToolEnvironment()).PATH?.split(path.delimiter),
 			).toContain(project.bin);
 		});
+	},
+);
+
+// R18-R1 class sweep: install strategies must retain executable admission.
+describe.skipIf(process.platform === "win32")(
+	"r19 installer strategy links",
+	() => {
+		for (const [id, commands] of [
+			["prettier", ["npm", "pnpm", "yarn", "bun"]],
+			["mypy", ["pip3", "pip", "python3", "python", "pipx"]],
+			["rubocop", ["gem"]],
+		] as const) {
+			it(`r19 ${id} install refuses project-linked package managers`, async () => {
+				const project = makeProject();
+				const target = path.join(project.root, "runtime");
+				plant(target, project.marker);
+				const outside = tempDir("pi-lens-4530-outside-");
+				for (const name of commands)
+					fs.symlinkSync(target, path.join(outside, name));
+				process.env.PATH = outside;
+				delete process.env.PI_LENS_DISABLE_TOOL_INSTALL;
+				process.env.PI_LENS_TEST_MODE = "0";
+				process.chdir(project.root);
+				setProjectTrustState("unknown");
+
+				await installTool(id);
+
+				expect(project.ran()).toBe("");
+			});
+		}
 	},
 );
 
