@@ -64,6 +64,11 @@ import {
 	setProjectTrustState,
 } from "../../clients/project-trust.js";
 import {
+	resetLazyInstallAttempts,
+	tryLazyInstall,
+	tryLazyInstallForFormatter,
+} from "../../clients/dispatch/runners/utils/lazy-installer.js";
+import {
 	isCommandAvailableAsync,
 	isAcceptedCommandFile,
 	findCommandAsync,
@@ -1333,5 +1338,192 @@ it.runIf(process.platform !== "win32").each([
 		} finally {
 			resetResolvedPathCache();
 		}
+	},
+);
+
+// ==========================================================================
+// Round 20: the spawn chokepoint (#4530 / PR #4566)
+//
+// Round 19 left four HIGH members green because their caller bound the command
+// as a bare name and trusted the PATH it inherited: a lazy `gem install`, the
+// two `rustup component add` installs, the Python user-base discovery probe,
+// and the pip user-base follow-up after a successful `--user` install. Each
+// member is driven through its PRODUCTION entry point below, with the runtime
+// reachable only as a link from an outside PATH directory into project bytes —
+// the shape that made every earlier round's directory check pass and the
+// program still run project code.
+// ==========================================================================
+
+/** An outside PATH directory whose `name` is a link to project bytes. */
+function linkedIntoProject(
+	project: ReturnType<typeof makeProject>,
+	name: string,
+) {
+	const outside = tempDir("pi-lens-4530-linked-");
+	const target = writeScript(
+		path.join(project.root, `runtime-${name}`),
+		`#!/bin/sh\necho "$0 $*" >> ${JSON.stringify(project.marker)}\nexit 0\n`,
+	);
+	fs.symlinkSync(target, path.join(outside, name));
+	return outside;
+}
+
+describe.skipIf(process.platform === "win32")(
+	"r20 lazy installs judge the runtime they run (#4530)",
+	() => {
+		beforeEach(() => {
+			resetLazyInstallAttempts();
+			delete process.env.PI_LENS_DISABLE_TOOL_INSTALL;
+			process.env.PI_LENS_TEST_MODE = "0";
+		});
+		afterEach(() => {
+			resetLazyInstallAttempts();
+		});
+
+		const LAZY: Array<{
+			label: string;
+			runtime: string;
+			run: (cwd: string) => Promise<boolean>;
+		}> = [
+			{
+				label: "rubocop gem install",
+				runtime: "gem",
+				run: (cwd) => tryLazyInstallForFormatter("rubocop", cwd),
+			},
+			{
+				label: "rustfmt rustup install",
+				runtime: "rustup",
+				run: (cwd) => tryLazyInstallForFormatter("rustfmt", cwd),
+			},
+			{
+				label: "rust-clippy rustup install",
+				runtime: "rustup",
+				run: (cwd) => tryLazyInstall("rust-clippy", cwd),
+			},
+		];
+
+		for (const { label, runtime, run } of LAZY) {
+			for (const trust of ["unknown", "untrusted"] as const) {
+				it(`refuses a project-linked ${label} runtime under ${trust} trust`, async () => {
+					const project = makeProject();
+					const outside = linkedIntoProject(project, runtime);
+					process.env.PATH = [outside, dirOf("sh")].join(path.delimiter);
+					process.chdir(project.root);
+					setProjectTrustState(trust);
+
+					await run(project.root);
+
+					expect(project.ran()).toBe("");
+					// Under `untrusted` the install gate refuses before the spawn, so the
+					// chokepoint record belongs to the `unknown` cell: an older host
+					// leaves install policy compatible and the seam is the only judgment.
+					expect(trustRows("global-command-target:")).toHaveLength(
+						trust === "unknown" ? 1 : 0,
+					);
+				});
+			}
+
+			it(`runs an outside ${label} runtime until trusted`, async () => {
+				const project = makeProject();
+				const outside = tempDir("pi-lens-4530-lazy-");
+				const marker = path.join(outside, "ran");
+				writeScript(
+					path.join(outside, runtime),
+					`#!/bin/sh\necho "$0 $*" >> ${JSON.stringify(marker)}\nexit 0\n`,
+				);
+				process.env.PATH = [outside, dirOf("sh")].join(path.delimiter);
+				process.chdir(project.root);
+				setProjectTrustState("unknown");
+
+				await run(project.root);
+
+				expect(fs.readFileSync(marker, "utf8")).toContain(runtime);
+				expect(project.ran()).toBe("");
+			});
+		}
+	},
+);
+
+describe.skipIf(process.platform === "win32")(
+	"r20 interpreter user-base discovery judges the interpreter (#4530)",
+	() => {
+		it("never runs a project-linked interpreter to discover the user base", async () => {
+			const project = makeProject();
+			const outside = linkedIntoProject(project, "python3");
+			fs.symlinkSync(
+				path.join(project.root, "runtime-python3"),
+				path.join(outside, "python"),
+			);
+			process.env.PATH = [outside, dirOf("sh")].join(path.delimiter);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			await getToolPath("black");
+
+			expect(project.ran()).toBe("");
+		});
+
+		it("still reads an outside interpreter's user base", async () => {
+			const project = makeProject();
+			const outside = tempDir("pi-lens-4530-userbase-");
+			const marker = path.join(outside, "ran");
+			const userBase = path.join(outside, "userbase");
+			writeScript(
+				path.join(outside, "python3"),
+				`#!/bin/sh\necho "$0 $*" >> ${JSON.stringify(marker)}\necho ${JSON.stringify(userBase)}\n`,
+			);
+			process.env.PATH = [outside, dirOf("sh")].join(path.delimiter);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			await getToolPath("black");
+
+			expect(fs.readFileSync(marker, "utf8")).toContain("--user-base");
+			expect(project.ran()).toBe("");
+		});
+	},
+);
+
+describe.skipIf(process.platform === "win32")(
+	"r20 pip user-base follow-up judges the interpreter (#4530)",
+	() => {
+		it("never runs a project-linked pip for the post-install user-base probe", async () => {
+			// The rung the run loop picks is the OUTSIDE pip3 (it succeeds), so the
+			// follow-up's bare-name spawn is the one that could reach project bytes
+			// through the ambient PATH — which is exactly what it used to do.
+			const project = makeProject();
+			const outside = tempDir("pi-lens-4530-pip-");
+			writeScript(path.join(outside, "pip3"), "#!/bin/sh\nexit 0\n");
+			plant(path.join(project.bin, "pip3"), project.marker);
+			process.env.PATH = [project.bin, outside, dirOf("sh")].join(
+				path.delimiter,
+			);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+			delete process.env.PI_LENS_DISABLE_TOOL_INSTALL;
+			process.env.PI_LENS_TEST_MODE = "0";
+
+			await installTool("mypy");
+
+			expect(project.ran()).toBe("");
+		});
+
+		it("runs a trusted project's pip follow-up probe", async () => {
+			const project = makeProject();
+			const outside = tempDir("pi-lens-4530-pip-trusted-");
+			writeScript(path.join(outside, "pip3"), "#!/bin/sh\nexit 0\n");
+			plant(path.join(project.bin, "pip3"), project.marker);
+			process.env.PATH = [project.bin, outside, dirOf("sh")].join(
+				path.delimiter,
+			);
+			process.chdir(project.root);
+			setProjectTrustState("trusted");
+			delete process.env.PI_LENS_DISABLE_TOOL_INSTALL;
+			process.env.PI_LENS_TEST_MODE = "0";
+
+			await installTool("mypy");
+
+			expect(project.ran()).toContain("--user-base");
+		});
 	},
 );
