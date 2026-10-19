@@ -614,6 +614,14 @@ const ADMITTED_AFTER_BASELINE: Readonly<
 		reason:
 			"the real advisory argv and counter process are the only faithful proof that CI sees a nonzero type-aware rule population",
 	},
+	// 2026-10-19 (#4530 round 20): the governance sweep plants raw `spawn(` and
+	// `execFileSync(` spellings as fixture SOURCE TEXT, then drives its scanner
+	// over them; nothing here starts a process, so no lane or bound applies.
+	"real-process-spawn:config/spawn-chokepoint-sweep.test.ts": {
+		detector: "real-process-spawn",
+		reason:
+			"the hits are planted source text in string fixtures: the sweep asserts what its scanner reports and starts nothing",
+	},
 	"real-process-spawn:config/tracked-control-bytes.test.ts": {
 		detector: "real-process-spawn",
 		reason:

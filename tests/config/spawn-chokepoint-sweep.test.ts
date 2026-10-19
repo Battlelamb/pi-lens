@@ -1,3 +1,4 @@
+// flake-shape: real-process-spawn — the three hits are planted source TEXT in string fixtures; the sweep asserts the scanner and starts no process
 /**
  * #4530 round 20 — every runtime process start goes through the spawn
  * chokepoint, or carries a reasoned admission.

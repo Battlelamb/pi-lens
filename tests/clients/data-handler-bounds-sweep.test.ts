@@ -116,10 +116,13 @@ const REGISTRY: Readonly<Record<string, BoundedHandlers>> = {
 		evidence: ["createWarmIpcLineReader(", "onOverflow: () =>"],
 	},
 	"clients/installer/index.ts": {
-		handlers: 4,
+		// 4 -> 2 (#4530 round 20): the two interpreter user-base probes now run
+		// through `safeSpawnAsync`, which owns their output cap, so their
+		// `data` handlers (and their `createBoundedOutputSink` seam) are gone.
+		handlers: 2,
 		bound:
-			"#3383: the two interpreter user-base probes accumulate through createBoundedOutputSink. The two Buffer[] sinks — the HTTPS asset body and the gunzip of it — are deliberately UNBOUNDED: `Buffer.concat` has no reachable length ceiling (buffer.constants.MAX_LENGTH is 9007199254740991 on Node 22), so there is no throw to convert into a bounded result, the failure mode is host OOM, and any byte cap would refuse an asset the user explicitly asked to install (#3383 non-goal).",
-		evidence: ["createBoundedOutputSink()", "Buffer.concat(chunks)"],
+			"#3383: the two remaining Buffer[] sinks — the HTTPS asset body and the gunzip of it — are deliberately UNBOUNDED: `Buffer.concat` has no reachable length ceiling (buffer.constants.MAX_LENGTH is 9007199254740991 on Node 22), so there is no throw to convert into a bounded result, the failure mode is host OOM, and any byte cap would refuse an asset the user explicitly asked to install (#3383 non-goal).",
+		evidence: ["Buffer.concat(chunks)"],
 	},
 	"clients/lsp/launch.ts": {
 		handlers: 2,

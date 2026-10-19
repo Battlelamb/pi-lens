@@ -617,6 +617,11 @@ export const wallClockBudgetInclude = [
 	// #3244: the advisory floor must observe the real oxlint --print-config and
 	// counter process; an in-process double would only restate the expected rule map.
 	"tests/config/oxlint-advisory-rule-floor-gate.test.ts",
+	// #4530 round 20: the spawn-chokepoint sweep plants raw `spawn(`/`execFileSync(`
+	// spellings as fixture source TEXT and drives its scanner over them. It starts
+	// no process, but the flake-shape ratchet counts the strings as hits, so it is
+	// admitted here and in ADMITTED_AFTER_BASELINE rather than left red.
+	"tests/config/spawn-chokepoint-sweep.test.ts",
 	// #2697: the strictness ratchet spawns two real tsc processes and waits for
 	// their wall-clock completion; keep its 120s budget in the quiet phase.
 	"tests/config/strictness-ratchet.test.ts",
