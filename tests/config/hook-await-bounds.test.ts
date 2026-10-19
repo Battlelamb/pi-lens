@@ -2465,7 +2465,12 @@ const HELPER_UNBOUNDED: Readonly<Record<string, number>> = {
 	// All three are intrinsically bounded local work on the install path; none
 	// can take the hook's signal until #2523 AC4 threads it, so this records the
 	// measured increase rather than hiding it.
-	"clients/installer/index.ts": 219,
+	// 219 → 220 (#4530 r20): the interpreter user-base probe now awaits
+	// `safeSpawnAsync`, which is not an abandoned promise — it owns a timeout
+	// budget, a SIGTERM→SIGKILL escalation and a process-group kill (#2523's
+	// documented exception), so the await cannot outlive the work it bounds. It
+	// replaces a `new Promise` over a raw `spawn` that had NO timeout at all.
+	"clients/installer/index.ts": 220,
 	"clients/installer/managed-tool-refresh.ts": 29,
 	// #3538/#3539 add five in each. The reaper reads start times and owner
 	// tags before its backstop decision and asks again before every signal

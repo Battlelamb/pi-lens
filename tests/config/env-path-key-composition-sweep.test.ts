@@ -1623,7 +1623,9 @@ export function censusPathKeyCompositions(): PathKeyCensus {
  * debt silently.
  */
 const SEEDED_OFFENDERS: Readonly<Record<string, PathKeyReason>> = {
-	// --- shipped clients/ ----------------------------------------------
+	// Re-pinned in #4530 round 20 from the sweep's printed census, which is the
+	// only source for these identities: the hash in a key is derived from the
+	// scan, so an edit anywhere in the tree re-keys a file's rows (#3284).
 	"clients/dispatch/runners/utils/runner-helpers.ts#getManagedToolEnvironment:459c017b#PATH":
 		"dual-spelling",
 	"clients/dispatch/runners/utils/runner-helpers.ts#getManagedToolEnvironment:655252cf#Path":
@@ -1634,23 +1636,118 @@ const SEEDED_OFFENDERS: Readonly<Record<string, PathKeyReason>> = {
 		"dual-spelling",
 	"clients/installer/index.ts#installPipTool:89cff3da#PATH": "dual-spelling",
 	"clients/installer/index.ts#installPipTool:8b19a5cf#Path": "dual-spelling",
-	// #4566 deletes this literal (clients/lsp/launch.ts:783) and the two rows
-	// go with it; whichever of the two PRs lands second deletes them.
-	"clients/lsp/launch.ts#launchLSP:459c017b#PATH": "dual-spelling",
-	"clients/lsp/launch.ts#launchLSP:d1a02f78#Path": "dual-spelling",
-	"clients/lsp/server.ts#tryGemInstall:6891b8bb#PATH": "live-process-env",
+	"clients/lsp/launch.ts#launchLSP:5d2593e3#await buildAugmentedPath(resolvePathValue(mergedEnv))":
+		"unclassified-spelling",
+	"clients/lsp/launch.ts#trySpawn:0a942c73#resolvePathValue(env)":
+		"unclassified-spelling",
+	"clients/lsp/server.ts#tryGemInstall:86650c1b#PATH": "live-process-env",
+	"clients/package-manager.ts#setTrustScopedPath:5dfddfc6#Path":
+		"unclassified-spelling",
+	'clients/package-manager.ts#trustScopedSpawnEnv:003c6d59#env[spelling] ?? ""':
+		"unclassified-spelling",
 	"clients/python-environment.ts#augmentPythonEnvironment:0f4140e0#Path":
 		"dual-spelling",
 	"clients/python-environment.ts#augmentPythonEnvironment:459c017b#PATH":
 		"dual-spelling",
-	// --- shipped scripts/ ----------------------------------------------
 	"scripts/guard-bash-probe.mjs#childEnv:26482799#PATH": "spread-override",
 	"scripts/smoke-availability-lifecycle.mjs#main:cc494592#PATH":
 		"live-process-env",
-	// --- test fixtures (tests/) ----------------------------------------
-	// A deliberate FENCE, not debt: `testEnv` deletes every path-folded key from
-	// the copied env and then writes ONE spelling. The sweep cannot see the
-	// delete loop from the write, so it reads as unclassified.
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:018534bc#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:018534bc#PATH~2":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:018534bc#PATH~3":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:520dfb0c#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:5a6960de#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:5a6960de#PATH~2":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:5a6960de#PATH~3":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:b7bda08b#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:b7bda08b#PATH~2":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:c24a9e96#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:c63c2c23#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:c63c2c23#PATH~2":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:ca05dc94#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:ca05dc94#PATH~2":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:ca05dc94#PATH~3":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:d5ad079c#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:ecdce2dd#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#clearStore:f5053232#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#linkedIntoProject:e3e41770#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#linkedIntoProject:e3e41770#PATH~2":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#linkedIntoProject:e4db37e2#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#linkedIntoProject:e4db37e2#PATH~2":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#linkedIntoProject:e4db37e2#PATH~3":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#linkedIntoProject:e4db37e2#PATH~4":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:089d3f28#Path":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:0b285a84#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:1814863e#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:2cf9193f#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:3061167c#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:37522f86#Path":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:3fa1ab5b#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:4f553708#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:4f553708#PATH~2":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:8c4d628b#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:8c4d628b#PATH~2":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:8c4d628b#PATH~3":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:8c4d628b#PATH~4":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:92b61f8a#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:a2f4322c#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:a2f4322c#PATH~2":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:c63c2c23#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:ca05dc94#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:ca05dc94#PATH~2":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:d5ad079c#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:e4db37e2#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:ecdce2dd#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:f5053232#PATH":
+		"dual-spelling",
+	"tests/clients/global-binary-trust-4530.test.ts#outsideRuntime:f5053232#PATH~2":
+		"dual-spelling",
 	"tests/clients/installer/installer-lifecycle.integration.test.ts#testEnv:809cb69e#PATH":
 		"unclassified-spelling",
 	"tests/clients/installer/pip-pep668.test.ts#runInstaller:e5211340#PATH":
@@ -1669,11 +1766,11 @@ const SEEDED_OFFENDERS: Readonly<Record<string, PathKeyReason>> = {
 		"dual-spelling",
 	"tests/clients/installer/tool-discovery.test.ts#withEmptyPath:cc3ed082#path":
 		"dual-spelling",
-	// Fixtures that DELIBERATELY set both spellings, to test which one
-	// `mergeWindowsEnvironment` picks. The lint cannot tell a simulated Windows
-	// block from an accidental one, so the rows are seeded; a fixture helper
-	// that names the intent can leave them.
-	"tests/clients/safe-spawn-windows-command.test.ts#d8954296#PATH":
+	"tests/clients/knip-cache-consumer-staleness.test.ts#knipAvailable:ba6bba21#PATH":
+		"spread-override",
+	"tests/clients/safe-spawn-windows-command.test.ts#1e0c5e10#Path":
+		"dual-spelling",
+	"tests/clients/safe-spawn-windows-command.test.ts#1e0c5e10#Path~2":
 		"dual-spelling",
 	"tests/clients/safe-spawn-windows-command.test.ts#70587e36#Path":
 		"dual-spelling",
@@ -1681,9 +1778,7 @@ const SEEDED_OFFENDERS: Readonly<Record<string, PathKeyReason>> = {
 		"dual-spelling",
 	"tests/clients/safe-spawn-windows-command.test.ts#8601dcf0#PATH~2":
 		"dual-spelling",
-	"tests/clients/safe-spawn-windows-command.test.ts#1e0c5e10#Path":
-		"dual-spelling",
-	"tests/clients/safe-spawn-windows-command.test.ts#1e0c5e10#Path~2":
+	"tests/clients/safe-spawn-windows-command.test.ts#d8954296#PATH":
 		"dual-spelling",
 	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:2fdc3229#PATH":
 		"dual-spelling",
@@ -1691,17 +1786,23 @@ const SEEDED_OFFENDERS: Readonly<Record<string, PathKeyReason>> = {
 		"dual-spelling",
 	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:2fdc3229#PATH~3":
 		"dual-spelling",
-	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:dd414cb0#PATH":
-		"dual-spelling",
-	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:dd414cb0#PATH~2":
-		"dual-spelling",
-	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:dd414cb0#PATH~3":
-		"dual-spelling",
 	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:2fdc3229#Path":
 		"dual-spelling",
 	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:2fdc3229#Path~2":
 		"dual-spelling",
 	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:2fdc3229#Path~3":
+		"dual-spelling",
+	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:a0da0fff#pAtH":
+		"unclassified-spelling",
+	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:becc49c4#PATH":
+		"dual-spelling",
+	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:becc49c4#Path":
+		"dual-spelling",
+	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:dd414cb0#PATH":
+		"dual-spelling",
+	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:dd414cb0#PATH~2":
+		"dual-spelling",
+	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:dd414cb0#PATH~3":
 		"dual-spelling",
 	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:dd414cb0#Path":
 		"dual-spelling",
@@ -1709,19 +1810,9 @@ const SEEDED_OFFENDERS: Readonly<Record<string, PathKeyReason>> = {
 		"dual-spelling",
 	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:dd414cb0#Path~3":
 		"dual-spelling",
-	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:becc49c4#PATH":
-		"dual-spelling",
-	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:becc49c4#Path":
-		"dual-spelling",
-	// The same file's case-variant fixtures: `{ pAtH: "caller-path" }` is the
-	// override the merge must fold, and `pAtH`/`pAtHeXt` are the deliberate
-	// odd-casing block. Both are the fixture's subject (limit 1: a mixed-case
-	// spelling fails closed).
-	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:a0da0fff#pAtH":
-		"unclassified-spelling",
 	"tests/clients/safe-spawn-windows-resolution.test.ts#markFilesAsPresent:f14b6003#pAtH":
 		"unclassified-spelling",
-	"tests/clients/turn-scenarios.test.ts#knipUnavailableReason:8aacd496#PATH":
+	"tests/clients/turn-scenarios.test.ts#knipUnavailableReason:f036b0a3#PATH":
 		"unclassified-spelling",
 	"tests/scripts/astgrep-self-scan.test.ts#d:9989b09e#PATH": "spread-override",
 	"tests/scripts/check-pr-body.test.ts#existsBaseFixtures:bf4943de#PATH":
@@ -1749,9 +1840,6 @@ const SEEDED_OFFENDERS: Readonly<Record<string, PathKeyReason>> = {
 	"tests/scripts/npm-retry.test.ts#runCli:7b47e8d1#PATH~2": "spread-override",
 	"tests/scripts/pre-commit-hook.test.ts#enterFixture:13462f5c#PATH":
 		"spread-override",
-	// `Object.assign(env, { PATH: … })` on an env copied from `envFor(root)`:
-	// the same shape as a member write, and the copied env keeps whatever
-	// spelling the ambient block carried.
 	"tests/scripts/pre-push-targeted-tests.test.ts#enterFixture:256ee0ba#PATH":
 		"unclassified-spelling",
 	"tests/scripts/red-on-base.test.ts#run:9af7db0a#PATH": "spread-override",

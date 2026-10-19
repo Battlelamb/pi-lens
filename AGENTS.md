@@ -888,7 +888,7 @@ file-scoped worklist and receives no project-wide scanner output.
 - `safeSpawnAsync` is the subprocess seam. It carries ambient abort behavior,
   process-tree cleanup, output caps, typed failure kinds, and bounded timeouts.
   Installs pass `ignoreAmbientSignal: true` and remain trust-gated.
-  It is also the admission chokepoint (#4530 round 20): `admitSpawnExecutable`
+  It is also the admission chokepoint: `admitSpawnExecutable`
   resolves the executable the kernel would run (the spawn's own Windows
   resolver, or a POSIX `PATH` walk in kernel order), asks
   `commandResolvesIntoProject` in `clients/project-reach.ts` whether that real

@@ -195,9 +195,12 @@ describe("#1980 every synchronous child-process call bounds the event-loop park"
 	it("actually finds the family (a dead scan must not read as clean)", () => {
 		// Vacuity guard on the DETECTOR, separate from the audit's floors: if
 		// the call-site regex breaks, every assertion below passes for free.
-		// There were 7 sites across 3 files when this landed.
-		expect(sites.length).toBeGreaterThanOrEqual(5);
-		expect(new Set(sites.map((s) => s.file)).size).toBeGreaterThanOrEqual(3);
+		// There were 7 sites across 3 files when this landed; #4530 round 20
+		// replaced `clients/metrics-history.ts`'s `execSync("git rev-parse …")`
+		// with `safeSpawn`, so the family is 2 files and the floor follows it
+		// down rather than pinning a member that no longer exists.
+		expect(sites.length).toBeGreaterThanOrEqual(4);
+		expect(new Set(sites.map((s) => s.file)).size).toBeGreaterThanOrEqual(2);
 	});
 
 	it("bounds every site, or exempts it with a reason", () => {

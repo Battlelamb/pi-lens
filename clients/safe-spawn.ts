@@ -1381,9 +1381,9 @@ export type SpawnAdmission =
 
 export interface SpawnAdmissionOptions {
 	/** The child's cwd; defaults to this process's. */
-	cwd?: string;
+	cwd?: string | undefined;
 	/** The child's EFFECTIVE environment (already merged with `process.env`). */
-	env?: NodeJS.ProcessEnv;
+	env?: NodeJS.ProcessEnv | undefined;
 	/**
 	 * A project root the caller serves, when it is not this process's session
 	 * project (an adopted or served root). The judgment always includes the
@@ -1392,7 +1392,7 @@ export interface SpawnAdmissionOptions {
 	 * taken as a project root would refuse every managed tool it installed
 	 * (measured: the pip ladder's `PI_LENS_HOME` rungs).
 	 */
-	projectRoot?: string;
+	projectRoot?: string | undefined;
 }
 
 /**

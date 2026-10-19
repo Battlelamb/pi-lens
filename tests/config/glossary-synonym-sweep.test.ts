@@ -439,7 +439,7 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		// protocol's own field name, not a delivery tier).
 		"clients/gzip-stage-write.ts": 4,
 		"clients/install-diagnostics.ts": 4,
-		"clients/installer/index.ts": 26,
+		"clients/installer/index.ts": 29,
 		"clients/installer/managed-tool-refresh.ts": 2,
 		"clients/instance-reaper.ts": 4,
 		"clients/instance-registry-lock.ts": 3,
@@ -455,7 +455,8 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/lsp/jvm-runtime.ts": 1,
 		"clients/lsp/server.ts": 13,
 		"clients/mcp/ipc.ts": 8,
-		"clients/mcp/review.ts": 8,
+		"clients/mcp/review.ts": 9,
+		"clients/metrics-history.ts": 1,
 		"clients/mcp/session.ts": 1,
 		"clients/module-report.ts": 27,
 		// 3 -> 5 (#4493): readGitHead and listGitHeadDelta read the spawn
@@ -479,7 +480,7 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/runtime-agent-end.ts": 6,
 		"clients/runtime-tool-call.ts": 7,
 		"clients/runtime-turn.ts": 10,
-		"clients/safe-spawn.ts": 52,
+		"clients/safe-spawn.ts": 53,
 		"clients/security-scan-client.ts": 2,
 		"clients/sg-runner.ts": 32,
 		"clients/shared-checkout-guard.ts": 1,
@@ -1090,7 +1091,11 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		// 31 -> 33 (#4566 r17): the wrapper judge reads `path.extname` and
 		// `path.dirname` beside the `path.sep`/`path.join` slot normalization it
 		// replaces the deleted shim parser's `path.resolve` with.
-		"clients/package-manager.ts": 33,
+		// 33 -> 22 (#4530 r20): the project-reach rule and its three bin-dir
+		// constants moved to `clients/project-reach.ts` (12), its own module, so
+		// the spawn seam can ask it without importing the module that spawns.
+		"clients/package-manager.ts": 22,
+		"clients/project-reach.ts": 12,
 		"clients/package-root.ts": 5,
 		"clients/path-keyed-map.ts": 11,
 		// 30 -> 34: findNearestMarkerRootDetailed (#3691) adds its own marker/root
@@ -1177,7 +1182,9 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		// file with `path.resolve` to forget its pending cascade errors.
 		"clients/runtime-turn.ts": 27,
 		"clients/rust-client.ts": 5,
-		"clients/safe-spawn.ts": 26,
+		// 26 -> 31 (#4530 r20): the admission chokepoint resolves the executable
+		// the kernel would run, which is `path`-shaped work on both platforms.
+		"clients/safe-spawn.ts": 31,
 		"clients/search-read-registration.ts": 3,
 		"clients/security-scan-client.ts": 4,
 		"clients/session-state-store.ts": 3,
@@ -1453,7 +1460,7 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/grammar-source.ts": 2,
 		"clients/host-ports.ts": 2,
 		// SpawnResult.status classifies an unadmitted pip candidate.
-		"clients/installer/index.ts": 43,
+		"clients/installer/index.ts": 45,
 		"clients/installer/managed-tool-refresh.ts": 9,
 		"clients/instance-reaper.ts": 15,
 		"clients/jscpd-client.ts": 3,
@@ -1475,6 +1482,7 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		// result's exit `status`, not a delivery status.
 		"clients/opaque-mutation-scan.ts": 26,
 		"clients/opengrep-client.ts": 9,
+		"clients/metrics-history.ts": 1,
 		"clients/package-manager.ts": 2,
 		"clients/pipeline.ts": 4,
 		"clients/process-snapshot.ts": 14,
@@ -1488,7 +1496,7 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/runtime-context.ts": 4,
 		"clients/runtime-coordinator.ts": 4,
 		"clients/runtime-turn.ts": 6,
-		"clients/safe-spawn.ts": 24,
+		"clients/safe-spawn.ts": 25,
 		"clients/security-scan-client.ts": 2,
 		"clients/sg-runner.ts": 32,
 		"clients/shared-checkout-guard.ts": 2,

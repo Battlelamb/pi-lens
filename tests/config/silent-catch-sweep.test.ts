@@ -662,10 +662,10 @@ const BASELINE: Readonly<Record<string, Admission>> = {
 		reason: PRE_RULE,
 	}, // :63, :176
 	"clients/installer/index.ts": {
-		silent: 58,
-		identities: "82d1538cf65dfac0",
+		silent: 55,
+		identities: "7acf0b33fea5b51f",
 		reason: PRE_RULE,
-	}, // :155, :192, :197, :207, :218, :231, :288, :2163, :2470, :2557, :2576, :2710, :2722, :2748, :3083, :3123, :3158, :3170, :3292, :3315, :3337, :3507, :3603, :3671, :3699, :3788, :3866, :3874, :3989, :4549, :4602, :4793, :4833, :5306, :5341, :5494, :5511, :5536, :5567, :5570, :5576, :5592, :5629, :5632, :5717, :5804, :5905, :5912, :6104, :6127, :6185, :6195, :6199, :6232, :6296, :6332, :6369, :6487, :6646, :6716
+	}, // the two raw user-base `spawn` probes and `runCommand` became `safeSpawnAsync` (#4530 r20)
 	"clients/installer/managed-tool-refresh.ts": {
 		silent: 4,
 		identities: "dbbc0961e686ccc4",
@@ -872,10 +872,10 @@ const BASELINE: Readonly<Record<string, Admission>> = {
 		reason: PRE_RULE,
 	}, // :77, :387
 	"clients/metrics-history.ts": {
-		silent: 2,
-		identities: "b02d9c45b1a0e889",
+		silent: 1,
+		identities: "27637aebe860adac",
 		reason: PRE_RULE,
-	}, // :95, :119
+	}, // `:113` — `execSync` became `safeSpawn`, whose catch is the only silent handler left (#4530 r20)
 	"clients/module-report-lsp.ts": {
 		silent: 3,
 		identities: "2482911206cf896e",
@@ -1122,10 +1122,10 @@ const BASELINE: Readonly<Record<string, Admission>> = {
 		reason: PRE_RULE,
 	}, // :393, :413, :438, :689, :738, :750, :817, :1043, :3319, :3325, :3331, :4697, :4524, :4645, :4678, :4899, :5032, :5352, :5393, :5648
 	"clients/safe-spawn.ts": {
-		silent: 18,
-		identities: "e64267868c7a0d5b",
+		silent: 19,
+		identities: "21921d96663620c4",
 		reason: PRE_RULE,
-	}, // :192, :201, :229, :465, :511, :603, :660, :674, :677, :1157, :1397, :1866, :1936, :1966, :2012, :2045, :2192, :2249
+	}, // `:1602` — the admission check's own guard block joins the population (#4530 r20)
 	"clients/search-read-registration.ts": {
 		silent: 1,
 		identities: "a37a1b3a1638df7c",
