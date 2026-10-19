@@ -1328,9 +1328,10 @@ describe("gem strategy", () => {
 
 		const installs = installSpawns().filter((line) => line.includes("rubocop"));
 		expect(installs).toHaveLength(1);
-		expect(installs[0]).toBe(
-			`${path.join(fakeBin!, process.platform === "win32" ? "gem.exe" : "gem")} install rubocop --no-document`,
-		);
+		// #4530 round 20: the RUNG no longer pre-resolves the command — the spawn
+		// seam resolves the executable and judges it — so the recorded argv[0] is
+		// the bare name `gem`, and the upgrade argv is what this case pins.
+		expect(installs[0]).toBe("gem install rubocop --no-document");
 		expect(outcome.refreshed[0]).toMatchObject({
 			toolId: "rubocop",
 			strategy: "gem",

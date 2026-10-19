@@ -261,7 +261,7 @@ const NO_CWD_EXEMPTION_ROWS: ReadonlyArray<readonly [string, string]> = [
 		"forwards the caller's SafeSpawnOptions object unchanged before adding safe-spawn defaults; the sole test-runner caller supplies no cwd",
 	],
 	[
-		"clients/metrics-history.ts#getCurrentCommit:021d92f7~df24802d",
+		"clients/metrics-history.ts#getCurrentCommit:869e2bf1~df24802d",
 		"execSync runs Git with cwd = spawnDir, an existence walk from path.resolve(startDir) (startDir = path.dirname(filePath)) up to the first directory that exists, not a walk to the repository root; the site passes that cwd, and hasCwd=false here is resolveLocalInitializer failing closed on the reassigned let; this metrics probe does not resolve project configuration from the dispatch cwd",
 	],
 	[
@@ -297,7 +297,7 @@ const NO_CWD_EXEMPTION_ROWS: ReadonlyArray<readonly [string, string]> = [
 		"`<execPath> <verificationArgs>` verification that an installed managed binary runs at all",
 	],
 	[
-		"clients/installer/index.ts#getPythonUserBaseCandidates:80bf7a4c",
+		"clients/installer/index.ts#getPythonUserBaseCandidates:5f9e0f50",
 		"`python -m site --user-base` — a Python installation query, unrelated to any project",
 	],
 	[
@@ -313,11 +313,11 @@ const NO_CWD_EXEMPTION_ROWS: ReadonlyArray<readonly [string, string]> = [
 		"`unzip -q -o <archive> -d <tmpDir>` extraction inside the global pi-lens bin directory",
 	],
 	[
-		"clients/installer/index.ts#installPipTool:4ee1108e",
+		"clients/installer/index.ts#installPipTool:8fe1bf84",
 		"`python -m site --user-base` after a pip install, to find where the binary landed",
 	],
 	[
-		"clients/installer/index.ts#installGemTool:6ab24b0f",
+		"clients/installer/index.ts#installGemTool:04641342",
 		"`gem install <package> --no-document` into the global gem path",
 	],
 	[
@@ -329,7 +329,7 @@ const NO_CWD_EXEMPTION_ROWS: ReadonlyArray<readonly [string, string]> = [
 		"`which java` / `where java` PATH lookup for the JVM language servers",
 	],
 	[
-		"clients/lsp/server.ts#runtimeInstallSpawn:e0b708ec",
+		"clients/lsp/server.ts#runtimeInstallSpawn:51b1fe63",
 		"Go, .NET install/update and gem installs share one selected-executable spawn; under unknown trust its cwd is HOME, while trusted calls retain their session cwd (#4530)",
 	],
 	[
@@ -599,15 +599,15 @@ const ORIGIN_ADMISSION_ROWS: ReadonlyArray<readonly [string, string]> = [
 		"cwd is runScan's own `cwd` parameter; `govulncheck -mode=source ./...` is relative to it by design",
 	],
 	[
-		"clients/installer/index.ts#runCommand:9e63618c~dbf27697",
+		"clients/installer/index.ts#runCommand:3edcc224~dbf27697",
 		"cwd is runCommand's own `cwd` parameter; its three call sites in this file are the checked ones",
 	],
 	[
-		"clients/installer/index.ts#installArchiveTool:fb1fa312~a938e107",
+		"clients/installer/index.ts#installArchiveTool:bb4159cc~a938e107",
 		"cwd is TOOLS_DIR, the managed-tool install directory this archive is being extracted into",
 	],
 	[
-		"clients/installer/index.ts#installNpmTool.runInstallAttempt:932ba295~a938e107",
+		"clients/installer/index.ts#installNpmTool.runInstallAttempt:fc29ee07~a938e107",
 		"cwd is TOOLS_DIR: the npm install runs in the managed-tool directory, never in the user's project",
 	],
 	[
