@@ -69,6 +69,7 @@ import {
 	tryLazyInstallForFormatter,
 } from "../../clients/dispatch/runners/utils/lazy-installer.js";
 import {
+	admitSpawnExecutable,
 	isCommandAvailableAsync,
 	isAcceptedCommandFile,
 	findCommandAsync,
@@ -1524,6 +1525,43 @@ describe.skipIf(process.platform === "win32")(
 			await installTool("mypy");
 
 			expect(project.ran()).toContain("--user-base");
+		});
+	},
+);
+
+// ==========================================================================
+// Round 21: the admission judges a LOOKUP, not a file the caller named
+// (#4530 / PR #4566)
+//
+// #4530's acceptance covers "global binary and package-manager lookups": the
+// environment's search is where a project substitutes its own bytes for a
+// system tool (PATH shadowing, an npm `prefix` redirect, a global bin dir that
+// holds a link into the tree). A caller that SPELLS a path has already chosen
+// that file, and refusing it refused the project toolchain runs pi-lens makes
+// on purpose: the stryker driver probes a project's tests through its own
+// `.bin` path, and round 20's admission turned that probe off
+// (`tests/scripts/stryker-diff.test.ts`, two cases, branch-caused).
+// ==========================================================================
+
+describe.skipIf(process.platform === "win32")(
+	"r21 the admission judges a lookup, not a named file (#4530)",
+	() => {
+		it("admits a named project binary and refuses the same bytes as a lookup", () => {
+			const project = makeProject();
+			const planted = plant(path.join(project.bin, "vitest"), project.marker);
+			process.chdir(project.root);
+			setProjectTrustState("unknown");
+
+			// The driver's own shape: a relative path the kernel resolves against the
+			// child's cwd, naming the project's binary deliberately.
+			expect(admitSpawnExecutable("node_modules/.bin/vitest")).toEqual({
+				admitted: true,
+			});
+			// The same bytes as a bare name: the environment chose them.
+			expect(
+				admitSpawnExecutable("vitest", { env: { PATH: project.bin } }),
+			).toMatchObject({ admitted: false, executable: planted });
+			expect(trustRows("global-command-target:")).toHaveLength(1);
 		});
 	},
 );

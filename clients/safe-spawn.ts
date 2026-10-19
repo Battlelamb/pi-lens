@@ -1414,6 +1414,25 @@ function isSpawnableTarget(candidate: string): boolean {
 }
 
 /**
+ * Whether `command` is a LOOKUP — a bare name the child's environment resolves
+ * (a `PATH` walk on POSIX, the same walk plus `PATHEXT` on Windows) — rather
+ * than a file the caller named by spelling a path (#4566 round 21).
+ *
+ * #4530's acceptance covers "global binary and package-manager lookups": the
+ * environment's search is where a project substitutes its own bytes for a
+ * system tool (`PATH` shadowing, an npm `prefix` redirect, a global bin dir
+ * that holds a link into the tree). A caller that spells a path has already
+ * chosen that file, and judging it refused the project toolchain runs pi-lens
+ * makes on purpose — the stryker driver's `node_modules/.bin/vitest` coverage
+ * probe, a formatter's project-local binary, the analyze worker's own
+ * `process.execPath`. The same lookup seam still refuses the same bytes when
+ * they arrive as a name the environment resolved (r21's witness).
+ */
+export function isSpawnLookup(command: string): boolean {
+	return !command.includes("/") && !command.includes("\\");
+}
+
+/**
  * The file the kernel would execute for `command` in this child's environment,
  * or `undefined` when the spawn would fail with ENOENT.
  *
@@ -1423,6 +1442,10 @@ function isSpawnableTarget(candidate: string): boolean {
  * the child cwd. Windows asks `resolveWindowsCommandForEnvironment`, the very
  * resolver `safeSpawnAsync` then uses, so the judgment and the spawn cannot
  * disagree about which `.exe`/`.cmd` wins.
+ *
+ * The RESOLUTION is truthful for both shapes; whether the trust judgment judges
+ * one is the admission's decision alone (`isSpawnLookup`), so this stays the
+ * answer to "what would run" and nothing else.
  */
 export function resolveSpawnExecutable(
 	command: string,
@@ -1434,7 +1457,7 @@ export function resolveSpawnExecutable(
 		return resolveWindowsCommandForEnvironment(command, options.cwd, env)
 			?.resolvedPath;
 	}
-	if (command.includes("/") || command.includes("\\")) {
+	if (!isSpawnLookup(command)) {
 		const absolute = path.isAbsolute(command)
 			? command
 			: path.resolve(cwd, command);
@@ -1480,7 +1503,7 @@ export function recordProjectCommandRefusal(resolvedCommand: string): void {
 }
 
 /**
- * THE chokepoint (#4530 round 20). Every process start of a command that is not
+ * THE chokepoint (#4530 round 20). Every process start of a LOOKUP that is not
  * proven to resolve outside the project passes this judgment.
  *
  * Round 19 met shape #69 nineteen times: each review found the next caller that
@@ -1490,8 +1513,11 @@ export function recordProjectCommandRefusal(resolvedCommand: string): void {
  * because a new caller is a new gate. The judgment therefore lives where the
  * spawn does.
  *
- * Three answers only:
+ * Four answers only:
  * - the project is trusted → admit, with no filesystem work at all;
+ * - the caller named a file rather than a name (#4566 r21) → admit; the
+ *   environment did not choose those bytes, and #4530's rule is about the
+ *   lookups the environment answers (see `isSpawnLookup`);
  * - nothing resolves → admit; the spawn reports ENOENT exactly as before, and
  *   absence is not project reach;
  * - the resolved target reaches the project (judged from the child's cwd AND
@@ -1504,6 +1530,7 @@ export function admitSpawnExecutable(
 ): SpawnAdmission {
 	const trust = getProjectTrustState();
 	if (trust === "trusted") return { admitted: true };
+	if (!isSpawnLookup(command)) return { admitted: true };
 	const executable = resolveSpawnExecutable(command, options);
 	if (!executable) return { admitted: true };
 	const roots = [process.cwd()];
