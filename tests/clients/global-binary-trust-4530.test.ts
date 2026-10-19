@@ -593,6 +593,21 @@ describe.skipIf(process.platform === "win32")(
 			["mypy", ["pip3", "pip", "python3", "python", "pipx"]],
 			["rubocop", ["gem"]],
 		] as const) {
+			it(`r19 ${id} install runs an outside package manager`, async () => {
+				const project = makeProject();
+				const outside = tempDir("pi-lens-4530-outside-");
+				const marker = path.join(outside, "executed.marker");
+				for (const name of commands) plant(path.join(outside, name), marker);
+				process.env.PATH = outside;
+				delete process.env.PI_LENS_DISABLE_TOOL_INSTALL;
+				process.env.PI_LENS_TEST_MODE = "0";
+				process.chdir(project.root);
+				setProjectTrustState("unknown");
+
+				await installTool(id);
+
+				expect(fs.readFileSync(marker, "utf8")).toContain("install");
+			});
 			it(`r19 ${id} install refuses project-linked package managers`, async () => {
 				const project = makeProject();
 				const target = path.join(project.root, "runtime");
@@ -655,7 +670,10 @@ describe.skipIf(process.platform === "win32")(
 					await install();
 
 					if (trust === "trusted") expect(project.ran()).toContain("install");
-					else expect(project.ran()).toBe("");
+					else {
+						expect(project.ran()).toBe("");
+						expect(trustRows("global-command-target:")).toHaveLength(1);
+					}
 				});
 			}
 			it(`runs the ${name} install from outside an untrusted project`, async () => {
