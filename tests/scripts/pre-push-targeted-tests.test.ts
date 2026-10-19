@@ -1351,6 +1351,12 @@ describe("pre-push ast-grep self-scan (#3886)", () => {
 			path.join(repoRoot, "clients/string-utils.js"),
 			path.join(root, "clients/string-utils.js"),
 		);
+		// The wrapper adopts the workspace trusted (#4530 round 21), so the
+		// module it adopts through is linked beside the seam it guards.
+		fs.symlinkSync(
+			path.join(repoRoot, "clients/project-trust.js"),
+			path.join(root, "clients/project-trust.js"),
+		);
 		fs.symlinkSync(
 			path.join(repoRoot, "rules"),
 			path.join(root, "rules"),

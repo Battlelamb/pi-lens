@@ -50,6 +50,12 @@ const ADMITTED_DATA: Record<string, string> = {
 		"this ratchet's own SEAM_MODULES row names the module it scans for",
 	'tests/config/project-trust-seam-ratchet.test.ts: "clients/project-trust.js": 1,':
 		"this ratchet's own BASELINE row, keyed by the module it scans for",
+	'tests/scripts/astgrep-self-scan.test.ts: "clients/project-trust.js",':
+		"the scan fixture links the module the copied wrapper adopts trust through (#4530 r21)",
+	'tests/scripts/pre-push-targeted-tests.test.ts: path.join(repoRoot, "clients/project-trust.js"),':
+		"the hook fixture links the module the copied self-scan wrapper adopts trust through (#4530 r21)",
+	'tests/scripts/pre-push-targeted-tests.test.ts: path.join(root, "clients/project-trust.js"),':
+		"the hook fixture links the module the copied self-scan wrapper adopts trust through (#4530 r21)",
 };
 
 /**
