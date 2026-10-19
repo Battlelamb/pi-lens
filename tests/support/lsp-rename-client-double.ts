@@ -20,6 +20,7 @@
 
 import { vi } from "vitest";
 import { LSPService } from "../../clients/lsp/index.js";
+import type { RenameTrackedSend } from "../../clients/lsp/edits.js";
 import { normalizeMapKey } from "../../clients/path-utils.js";
 
 export type RenameClientDouble = {
@@ -36,15 +37,24 @@ export type RenameClientDouble = {
 	getOperationSupport: ReturnType<typeof vi.fn>;
 	getMalformedFileOperationRegistrations: ReturnType<typeof vi.fn>;
 	didRenameFiles: ReturnType<typeof vi.fn>;
+	/** The document's last send, as `LSPService.getTrackedContent` reads it; a
+	 *  client built without one holds no record (#3601), so its files are
+	 *  judged by the unopened rule. */
+	getSentContent: ReturnType<typeof vi.fn>;
 };
 
 /**
  * A client that reports `willRenameFiles` support and answers every rename
  * request with `edit` (a `WorkspaceEdit`, or `null` for "no edits").
+ *
+ * `sent` is the send record this client holds for a path, if any. It is an
+ * explicit argument rather than a disk read: a double that always reports the
+ * current bytes would make every staleness check pass.
  */
 export function makeRenameClient(
 	root: string,
 	edit: unknown,
+	sent?: (filePath: string) => RenameTrackedSend | undefined,
 ): RenameClientDouble {
 	return {
 		root,
@@ -60,6 +70,7 @@ export function makeRenameClient(
 		})),
 		getMalformedFileOperationRegistrations: vi.fn(() => new Set()),
 		didRenameFiles: vi.fn(async () => undefined),
+		getSentContent: vi.fn((filePath: string) => sent?.(filePath)),
 	};
 }
 

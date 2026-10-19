@@ -225,7 +225,8 @@ describe("a mark outlives an edit that leaves the marked line unchanged (#3183)"
 		expect(await reconcileStaleWidgetFiles()).toBe(1);
 
 		expect(suppressedChip()).toBeUndefined();
-		expect(getFileDiagnostics(filePath)).toBeUndefined();
+		// The retired row is gone; the record stays as unfinished evidence (#4625).
+		expect(getFileDiagnostics(filePath)).toEqual([]);
 	});
 
 	it("drops the record when the marked file is deleted", async () => {

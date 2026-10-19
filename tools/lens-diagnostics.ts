@@ -366,6 +366,11 @@ export function createLensDiagnosticsTool(
 			timedOut?: boolean;
 			primaryUnavailable?: string;
 			filePath?: string;
+			validationStatus?:
+				| "inconclusive"
+				| "unverified"
+				| "findings"
+				| "no-matching-findings";
 		}>(({ details, args, isError, text }) => {
 			if (details?.source === "lsp") {
 				const count = details.totalDiagnostics ?? 0;
@@ -464,15 +469,23 @@ export function createLensDiagnosticsTool(
 			// indistinguishable from a session with zero findings at all.
 			const adv = details?.totalAdvisories ?? 0;
 			const files = details?.filesWithIssues ?? details?.filesChecked ?? 0;
+			// A final hint-only snapshot is `findings` but keeps #2414's "clean, N
+			// hints" line: the cache verdict only replaces "clean" when it is not one.
+			const cacheVerdict =
+				details?.validationStatus === "no-matching-findings"
+					? "no matching cached findings"
+					: details?.validationStatus === "findings"
+						? undefined
+						: details?.validationStatus;
 			if (b + e + w === 0) {
 				const advisorySuffix =
 					adv > 0 ? `, ${adv} hint${adv === 1 ? "" : "s"}` : "";
-				return `lens_diagnostics ${mode} — clean${advisorySuffix} (${files} files)${coldSuffix}${failedSuffix}`;
+				return `lens_diagnostics ${mode} — ${cacheVerdict ?? "clean"}${advisorySuffix} (${files} files)${coldSuffix}${failedSuffix}`;
 			}
 			const parts = [`${b} blocking`];
 			if (b === 0 && e > 0) parts.push(`${e} errors`);
 			parts.push(`${w} warnings`);
-			return `lens_diagnostics ${mode} — ${parts.join(" · ")} (${files} files)${coldSuffix}${failedSuffix}`;
+			return `lens_diagnostics ${mode} — ${parts.join(" · ")}${cacheVerdict === "inconclusive" || cacheVerdict === "unverified" ? ` · ${cacheVerdict}` : ""} (${files} files)${coldSuffix}${failedSuffix}`;
 		}),
 		parameters: Type.Object({
 			source: Type.Optional(
@@ -699,7 +712,8 @@ export function createLensDiagnosticsTool(
 			// file changed on disk afterwards / was deleted (stale, e.g. external
 			// edits). Together these stop fixed-this-session findings from lingering.
 			await flushPending();
-			const staleDropped = await reconcileStaleWidgetFiles();
+			const stalePaths: string[] = [];
+			await reconcileStaleWidgetFiles((file) => stalePaths.push(file));
 
 			if (mode === "all") {
 				// #1631 dependency-axis gate for the mode=all store. `reconcileStaleWidgetFiles`
@@ -724,14 +738,18 @@ export function createLensDiagnosticsTool(
 						surface: "mode=all",
 					},
 				});
+				const scopedStalePaths = stalePaths.filter(
+					createScopedFileFilter(cwd, pathsScope),
+				);
 				return formatAllMode(
 					cwd,
 					severity,
 					undefined,
 					undefined,
-					staleDropped,
+					scopedStalePaths.length,
 					pathsScope,
-					dependencyDemoted,
+					undefined,
+					{ stalePaths: scopedStalePaths, host: ctx.host ?? "pi" },
 				);
 			}
 			if (mode === "full") {
@@ -2816,7 +2834,6 @@ async function formatFullMode(
 		},
 		0,
 		pathsScope,
-		0,
 		{
 			dropped: dispositionDropped,
 			// #1617: the #1616 suppressed-bucket rule applied to the analyzers —
@@ -3298,7 +3315,6 @@ async function formatAllMode(
 	detailOverrides: Record<string, unknown> = { mode: "all" },
 	staleDropped = 0,
 	pathsScope?: PathsScope,
-	dependencyDemoted = 0,
 	/**
 	 * mode=full only: the rows its policy pass dropped for a mark, and what the
 	 * fresh analyzers dropped for one, per lane.
@@ -3308,32 +3324,8 @@ async function formatAllMode(
 		analyzers: number;
 		analyzersByLane: Record<string, number>;
 	} = { dropped: [], analyzers: 0, analyzersByLane: {} },
+	sessionEvidence?: { stalePaths: readonly string[]; host: LensToolHost },
 ): Promise<{ content: [{ type: "text"; text: string }]; details: object }> {
-	// #2275 review F2: the widget footer stops DRAWING a dependency-drift
-	// demotion once it hits `DEPENDENCY_DRIFT_MAX_DELIVERIES` unconfirmed
-	// deliveries, but the record stays here (dropping it would make an
-	// unconfirmed LSP error read as clean). Say so, through the same note
-	// channel as the demotion itself, so the agent knows why the footer went
-	// quiet and that a re-run can still confirm the finding.
-	const footerCapped = summaries.reduce(
-		(n, s) =>
-			n + (s.diagnostics ?? []).filter((d) => d.footerRetired === true).length,
-		0,
-	);
-	// Files changed/deleted since their diagnostics were recorded have already
-	// been dropped by reconcileStaleWidgetFiles; note them so the agent knows
-	// those aren't "clean", just un-rescanned (use mode=full to refresh).
-	const staleNote =
-		(staleDropped > 0
-			? ` (${staleDropped} changed file${staleDropped === 1 ? "" : "s"} omitted as stale — use mode=full to rescan)`
-			: "") +
-		(dependencyDemoted > 0
-			? ` (${dependencyDemoted} blocking finding${dependencyDemoted === 1 ? "" : "s"} demoted to [stale] — an imported file changed since; re-run to confirm)`
-			: "") +
-		(footerCapped > 0
-			? ` (${footerCapped} demoted finding${footerCapped === 1 ? "" : "s"} capped after ${DEPENDENCY_DRIFT_MAX_DELIVERIES} unconfirmed deliveries — no longer shown in the pi-lens footer, still listed here; re-run to confirm)`
-			: "");
-
 	// mode=full already actively scanned exactly the requested paths, so a zero
 	// result there IS a legitimate clean read — the cache-only note only applies
 	// to delta/all, which is why this is gated on detailOverrides.mode !== "full".
@@ -3407,6 +3399,27 @@ async function formatAllMode(
 		return summarizeDiagnostics(s.filePath, diagnostics, s.hasFinalSnapshot);
 	});
 	const visibleSummaries = eofGated.filter((s) => includeFile(s.filePath));
+	// Scope and policy govern evidence notes too: a suppressed or unrelated
+	// demotion must not contaminate a requested-path result.
+	const visibleDiagnostics = visibleSummaries.flatMap(
+		(s) => s.diagnostics ?? [],
+	);
+	const dependencyDemoted = visibleDiagnostics.filter(
+		(d) => d.stale && d.staleReason === "dependency-drift",
+	).length;
+	// #2275: footer-capped rows remain evidence here, after policy and scope.
+	const footerCapped = visibleDiagnostics.filter(
+		(d) => d.footerRetired === true,
+	).length;
+	// The omitted-as-stale count is part of the session verdict line below, which
+	// states the reasons once; `mode=full` passes no stale count.
+	const staleNote =
+		(dependencyDemoted > 0
+			? ` (${dependencyDemoted} blocking finding${dependencyDemoted === 1 ? "" : "s"} demoted to [stale] — an imported file changed since; re-run to confirm)`
+			: "") +
+		(footerCapped > 0
+			? ` (${footerCapped} demoted finding${footerCapped === 1 ? "" : "s"} capped after ${DEPENDENCY_DRIFT_MAX_DELIVERIES} unconfirmed deliveries — no longer shown in the pi-lens footer, still listed here; re-run to confirm)`
+			: "");
 
 	// Filter to files with actual issues. A file whose only findings were
 	// demoted by the #1641 past-EOF gate has blocking/errors/warnings at 0 —
@@ -3434,7 +3447,120 @@ async function formatAllMode(
 		);
 	});
 
-	const pathsNote = isFullMode ? "" : pathsScopeCacheOnlyNote(pathsScope);
+	let validationStatus: string | undefined;
+	let validationNote = "";
+	let evidenceDetails: Record<string, unknown> = {};
+	if (!isFullMode) {
+		// Evidence is scoped and post-policy, but intentionally PRE-severity:
+		// filtering out a past-EOF error cannot make an incomplete cache clean.
+		const pending = visibleSummaries.filter((s) => !s.hasFinalSnapshot);
+		const stale = visibleSummaries.filter((s) =>
+			(s.diagnostics ?? []).some((d) => d.stale),
+		);
+		const staleDiagnosticCount = visibleDiagnostics.filter(
+			(d) => d.stale,
+		).length;
+		const requestedFiles = [
+			...(pathsScope?.existingEntries ?? []),
+			...(pathsScope?.missing ?? []),
+		];
+		// Canonicalization stats disk; only explicit file requests need this
+		// membership check, not an unscoped session replay or directory scope.
+		const observed =
+			requestedFiles.length > 0
+				? new Set(
+						[
+							...visibleSummaries.map((s) => s.filePath),
+							...(sessionEvidence?.stalePaths ?? []),
+						].map(normalizeFilePath),
+					)
+				: new Set<string>();
+		const unverified = requestedFiles.filter(
+			(file) => !observed.has(normalizeFilePath(file)),
+		);
+		const rescanPaths = [
+			...new Set([
+				...(sessionEvidence?.stalePaths ?? []),
+				...pending.map((s) => s.filePath),
+				...stale.map((s) => s.filePath),
+				...unverified,
+			]),
+		];
+		// #4522's rule at the session layer: only a clean read reads clean. A final
+		// snapshot with nothing matching is the one `no-matching-findings` (the ✓).
+		// No final snapshot yet, or evidence that changed since it was read, is
+		// `inconclusive` (#4522's `unanswered`); a requested file with nothing cached
+		// is `unverified` (its `unchecked`); matching findings are `findings` (its
+		// `dirty`).
+		validationStatus =
+			staleDropped > 0 || staleDiagnosticCount > 0 || pending.length > 0
+				? "inconclusive"
+				: visibleSummaries.length === 0 || unverified.length > 0
+					? "unverified"
+					: withIssues.length > 0
+						? "findings"
+						: "no-matching-findings";
+		const nextTool = resolveLensToolName(
+			"lens_diagnostics",
+			sessionEvidence?.host ?? "pi",
+		);
+		const nextPaths = rescanPaths.slice(0, MAX_PATHS_ENTRIES);
+		const remainingRescanPathCount = rescanPaths.length - nextPaths.length;
+		evidenceDetails = {
+			validationStatus,
+			pendingFileCount: pending.length,
+			staleDiagnosticCount,
+			unverifiedFileCount: unverified.length,
+			remainingRescanPathCount,
+			...(nextPaths.length > 0
+				? {
+						nextCheck: {
+							tool: nextTool,
+							source: "lsp",
+							scope: "paths",
+							paths: nextPaths,
+						},
+					}
+				: {}),
+		};
+		// Name the files this call's sweep changed. A deleted one leaves no record to
+		// count in another reason; a kept one also reads pending, here and later.
+		const omittedClause =
+			staleDropped > 0
+				? `, ${staleDropped} changed file${staleDropped === 1 ? "" : "s"} omitted as stale`
+				: "";
+		validationNote =
+			validationStatus === "inconclusive" || validationStatus === "unverified"
+				? `Session cache ${validationStatus} — not a clean verdict: ${pending.length} pending file(s), ${staleDiagnosticCount} stale finding(s), ${unverified.length} requested file(s) without cached evidence${omittedClause}. Not active validation.\n` +
+					`Next check: ${nextTool ?? "diagnostics"} source=lsp scope=paths${nextPaths.length > 0 ? ` paths=${JSON.stringify(nextPaths)}` : " with the changed paths"}.` +
+					(remainingRescanPathCount > 0
+						? ` ${remainingRescanPathCount} more path(s) need a check; narrow or batch the remaining paths.`
+						: "") +
+					" LSP may not cover these files; use a file-appropriate validator for unsupported or missing files.\n"
+				: "Session cache only; not active validation.\n";
+		// One bounded decision row per call; no diagnostic content or path list.
+		logLatency({
+			type: "phase",
+			phase: "lens_diagnostics_session_evidence",
+			toolName: "lens_diagnostics",
+			filePath: cwd,
+			durationMs: 0,
+			metadata: {
+				validationStatus,
+				pendingFileCount: pending.length,
+				staleDiagnosticCount,
+				staleDropped,
+				unverifiedFileCount: unverified.length,
+				remainingRescanPathCount,
+			},
+		});
+	}
+	// The verdict's next check already names the one targeted step; the older
+	// `mode=full` advice beside it would be a second, different instruction.
+	const pathsNote =
+		isFullMode || evidenceDetails.nextCheck !== undefined
+			? ""
+			: pathsScopeCacheOnlyNote(pathsScope);
 	const suppressedLine = dispositionSuppressedLine(
 		dispositionSuppressed,
 		suppressedBreakdown,
@@ -3446,8 +3572,12 @@ async function formatAllMode(
 	if (withIssues.length === 0) {
 		const text =
 			(visibleSummaries.length === 0
-				? "No files diagnosed yet this session."
-				: `No ${severity === "all" ? "" : severity + " "}issues across ${visibleSummaries.length} file${visibleSummaries.length === 1 ? "" : "s"} diagnosed this session. ✓`) +
+				? "No files diagnosed yet this session.\n"
+				: validationStatus === "inconclusive" ||
+					  validationStatus === "unverified"
+					? ""
+					: `No ${severity === "all" ? "" : severity + " "}issues across ${visibleSummaries.length} file${visibleSummaries.length === 1 ? "" : "s"} diagnosed this session. ✓\n`) +
+			validationNote +
 			staleNote +
 			suppressedNote +
 			pathsNote;
@@ -3455,6 +3585,7 @@ async function formatAllMode(
 			content: [{ type: "text" as const, text }],
 			details: {
 				...detailOverrides,
+				...evidenceDetails,
 				filesChecked: visibleSummaries.length,
 				staleDropped,
 				...suppressedDetails,
@@ -3578,11 +3709,17 @@ async function formatAllMode(
 		content: [
 			{
 				type: "text" as const,
-				text: lines.join("\n") + summary + staleNote + suppressedNote,
+				text:
+					validationNote +
+					lines.join("\n") +
+					summary +
+					staleNote +
+					suppressedNote,
 			},
 		],
 		details: {
 			...detailOverrides,
+			...evidenceDetails,
 			filesWithIssues: withIssues.length,
 			totalBlocking,
 			totalErrors,

@@ -3018,7 +3018,8 @@ describe("computeCascadeForFile", () => {
 				const mtime = new Date(snapshotTs + 100);
 				fs.utimesSync(neighbor, mtime, mtime);
 				expect(await reconcileStaleWidgetFiles()).toBe(1);
-				expect(getFileDiagnostics(neighbor)).toBeUndefined();
+				// Shed, not vanished: the record stays as unfinished evidence (#4625).
+				expect(getFileDiagnostics(neighbor)).toEqual([]);
 			} finally {
 				vi.useRealTimers();
 				env.cleanup();

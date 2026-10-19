@@ -1108,6 +1108,19 @@
 			]
 		},
 		"lsp-rename-edit": {
+			"pins": {
+				"Rule": {
+					"value": "\"merged\"",
+					"test": "tests/tools/lsp-navigation-rename-file-staleness.test.ts",
+					"title": "an opened importer re-sent while the server computes is refused on the send stamp, although its disk equals that send",
+					"also": [
+						{
+							"test": "tests/tools/lsp-navigation-rename-staleness.test.ts",
+							"title": "an agent write made while the rename is computed is not overwritten, and the refusal names the file"
+						}
+					]
+				}
+			},
 			"notCodeChoice": [
 				{
 					"reason": "Scenario bound or actor set: it sizes the state space or picks which actors, inputs and steps TLC explores; no code branch reads it.",
@@ -1149,12 +1162,6 @@
 						"SyncCarriesRead",
 						"StampedPrepare",
 						"FirstOpenExempt"
-					]
-				},
-				{
-					"reason": "Deferred: every `expect: pass` config agrees on one value, but no existing dispatcher or entry-point test was matched to it in #4393, which pinned read-guard first.",
-					"constants": [
-						"Rule"
 					]
 				}
 			]
@@ -1923,6 +1930,23 @@
 			]
 		},
 		"store-freshness": {
+			"pins": {
+				"Retire": {
+					"value": "\"retain\"",
+					"test": "tests/clients/widget-state.test.ts",
+					"title": "keeps the record unfinished, reports it once, keeps it on the next sweep and reports a later change again",
+					"also": [
+						{
+							"test": "tests/tools/lens-diagnostics-session-evidence.test.ts",
+							"title": "stays inconclusive on a second read that rescans nothing"
+						},
+						{
+							"test": "tests/tools/lens-diagnostics-session-evidence.test.ts",
+							"title": "stays inconclusive when the footer's observer-less sweep ran first"
+						}
+					]
+				}
+			},
 			"notCodeChoice": [
 				{
 					"reason": "Scenario bound or actor set: it sizes the state space or picks which actors, inputs and steps TLC explores; no code branch reads it.",

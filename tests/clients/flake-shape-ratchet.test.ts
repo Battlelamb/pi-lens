@@ -372,6 +372,18 @@ const ADMITTED_AFTER_BASELINE: Readonly<
 			reason:
 				"the assertion is on the module-level resetLSPService call the shared teardown makes, which the shared service double does not expose as a spy; the stand-in spawns no language server",
 		},
+	// 2026-10-19 (#3734): `rename_file`'s staleness capture needs a client that
+	// answers `workspace/willRenameFiles` with chosen offsets; only the shell the
+	// tool resolves is stood in for, so the real service, the rename guard,
+	// `applyWorkspaceEdit`, pi's queue and the ledger all run, and no language
+	// server is spawned.
+	"in-process-mock:tools/lsp-navigation-rename-file-staleness.test.ts::clients/lsp/capabilities":
+		{
+			detector: "in-process-mock",
+			reason:
+				"the language-server process is the boundary; the shell the tool resolves returns a real LSPService whose only client is a willRenameFiles answer, so no server is spawned",
+		},
+
 	"never-settling-wait:scripts/mutate-fixture.test.ts": {
 		detector: "never-settling-wait",
 		reason:

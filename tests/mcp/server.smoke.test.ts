@@ -352,6 +352,29 @@ describe("pi-lens MCP server (stdio smoke)", { retry: 2 }, () => {
 		expect(typeof result.content[0].text).toBe("string");
 	}, 25_000);
 
+	it("discloses unverified session evidence on the real MCP wire", async () => {
+		// MCP strips details before delivery. The shared tool's TEXT must keep
+		// the state and a callable MCP recipe, even when no cached row exists.
+		const res = await harness.request(600, "tools/call", {
+			name: "pilens_diagnostics",
+			arguments: {
+				source: "session",
+				scope: "paths",
+				paths: [path.join(workspace.tmpDir, "unseen-session-evidence.txt")],
+			},
+		});
+		const result = res.result as {
+			content: { text: string }[];
+			details?: unknown;
+		};
+		expect(result.content[0]?.text).toContain("Session cache unverified");
+		expect(result.content[0]?.text).toContain(
+			"pilens_diagnostics source=lsp scope=paths",
+		);
+		expect(result.content[0]?.text).not.toContain("✓");
+		expect(result.details).toBeUndefined();
+	}, 25_000);
+
 	it("keeps diagnostics visible for an out-of-enum severity through MCP", async () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-lens-mcp-severity-"));
 		fs.writeFileSync(

@@ -178,7 +178,9 @@ export interface LSPWorkspaceScopeAttribution {
 import { raceToCompletion, type PromiseDescriptor } from "./aggregation.js";
 import {
 	applyWorkspaceEdit,
+	captureRenameExpectedContent,
 	mergeWorkspaceTextEditsByPriority,
+	type RenameTrackedSend,
 	summarizeWorkspaceEdit,
 	validateWorkspaceEdit,
 } from "./edits.js";
@@ -2749,15 +2751,7 @@ export class LSPService {
 	getTrackedContent(
 		filePath: string,
 		cwd: string,
-	):
-		| {
-				hash: string;
-				changedAtMs?: number | undefined;
-				openedAtMs?: number | undefined;
-				openedHash?: string | undefined;
-				clientStartedAtMs?: number | undefined;
-		  }
-		| undefined {
+	): RenameTrackedSend | undefined {
 		const priorityServerIds = getServersForFileWithConfig(filePath).map(
 			(server) => server.id,
 		);
@@ -7771,6 +7765,12 @@ export class LSPService {
 			return false;
 		});
 
+		// #3734: the instant the servers are asked. Every file a returned edit
+		// writes text to must still hold the bytes each server computed from; a
+		// write that lands from here on is refused inside pi's queue, before any
+		// write. The same instant the `rename` path takes before its request
+		// (#3601); see `captureRenameExpectedContent` for the rules.
+		const renameRequestedAtMs = Date.now();
 		const willResults = await Promise.all(
 			willRenameClients.map(async ({ serverId, client }) => {
 				try {
@@ -7820,6 +7820,17 @@ export class LSPService {
 				mutationContext: options.mutationContext,
 				observe: false,
 				watchedFileSink: this,
+				// #3734: nothing read the old path on this flow, so there is no
+				// target: every text-edited file is bound by its client's send record,
+				// else by its mtime against the instant above (`formal/lsp-rename-edit`,
+				// `Issue3734Bound`).
+				expectedContent: captureRenameExpectedContent(
+					merged.edit,
+					cwd,
+					renameRequestedAtMs,
+					(filePath: string, atCwd: string) =>
+						this.getTrackedContent(filePath, atCwd),
+				),
 			});
 		} catch (err) {
 			if (options.mutationContext) {

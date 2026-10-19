@@ -32,7 +32,11 @@ const REPO_ROOT = path.resolve(
 const CLIENTS_DIR = path.join(REPO_ROOT, "clients");
 const KERNEL_FILE = "freshness.ts";
 
-/** Files whose mtime comparisons are NOT reference-timestamp freshness. */
+/**
+ * Files whose mtime comparisons are NOT reference-timestamp freshness, or
+ * whose comparison the kernel's verdict cannot express (an inverted tolerance:
+ * a write guard that must refuse where a cache would stay fresh).
+ */
 const EXEMPT: Record<string, string> = {
 	"bounded-pid-file-lock.ts":
 		"age-based TTL staleness of a lock file (Date.now() - mtime), not comparison against a recorded scan/record timestamp",
@@ -40,6 +44,8 @@ const EXEMPT: Record<string, string> = {
 		"lock staleness is a cross-process liveness check on a foreign file, not a content-freshness read; freshnessFromMtime targets in-kernel content caches",
 	"installer/index.ts":
 		"age-based maxAge expiry of a cached install probe, same TTL-not-freshness shape",
+	"lsp/edits.ts":
+		"the rename staleness guard's compare-and-refuse bounds (#3601, #3734): it refuses AT the request instant and inside a margin BEFORE it, while freshnessFromMtime's verdict tolerates drift after the reference and treats the tie as fresh. Migrating would widen this fail-closed write guard by 50 ms and drop the tie, so the guard keeps its own comparison; the kernel's own doc comment scopes it to caches.",
 	"lsp/lombok.ts":
 		"max-selection among candidates (find newest), no reference timestamp",
 	"project-snapshot.ts":

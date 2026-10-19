@@ -1263,9 +1263,9 @@ const BASELINE: Readonly<Record<string, Admission>> = {
 	}, // :115, :245
 	"clients/widget-state.ts": {
 		silent: 3,
-		identities: "e99ef23d332bc102",
+		identities: "0627f400a0b73f7f",
 		reason: PRE_RULE,
-	}, // :1476, :1621, :1862
+	}, // :1503, :1655, :1898
 	"clients/word-index.ts": {
 		silent: 5,
 		identities: "7d9f55557f569789",
@@ -1337,10 +1337,10 @@ const BASELINE: Readonly<Record<string, Admission>> = {
 		reason: PRE_RULE,
 	}, // :371, :405, :628, :861, :1026, :1084, :1184, :1405, :1452, :2477
 	"tools/lsp-navigation.ts": {
-		silent: 10,
-		identities: "158733f8dbc9b754",
+		silent: 8,
+		identities: "7d261d33eecee18f",
 		reason: PRE_RULE,
-	}, // :531, :741, :759, :824, :838, :1334, :1703, :1808, :1842, :2030
+	}, // :529, :739, :757, :1200, :1569, :1676, :1710, :1898
 	"tools/lsp-structured-output.ts": {
 		silent: 3,
 		identities: "0460d5b535aef4a2",

@@ -118,7 +118,8 @@
     ],
     "clients/widget-state.ts": [
       "session-lifecycle",
-      "dispatch-pipeline"
+      "dispatch-pipeline",
+      "store-freshness"
     ],
     "clients/write-ordering-guard.ts": [
       "session-lifecycle",
@@ -412,7 +413,7 @@
     "clients/lsp/client-registry.ts": "ClientRegistry (#2372 slice 3) holds what moved out of index.ts: per-client retirement (retireClient, #3672), capacity and idle eviction (#3622) map to lsp-crash `Evict`, the dead-client respawn and breaker to lsp-crash `Crash`/`Acquire`, and `markDestroyed` plus the client half of shutdown to lsp-idle-reset's reset. The per-generation derived state it drops through hooks stays in index.ts.",
     "clients/lsp/index.ts": "Per-client retirement (retireClient, #3672), capacity and idle eviction (#3622) live in clients/lsp/client-registry.ts since #2372 slice 3 and map to lsp-crash `Evict`; per-generation derived state (EWMA, aux inflight, write-timeout streak) is not modelled yet (#3672, #3584). applyWorkspaceEdit callers are unmodelled (clients/lsp/edits.ts).",
     "clients/agent-nudge.ts": "The agent-advisories store (#3757, carried on /reload by #3777) belongs to session-lifecycle, which does not model it yet. The `_touched` accumulator is unscoped (#3758 class).",
-    "clients/widget-state.ts": "The widget's per-verb write guards and rows (`diagnosticsWriteGuard`, `runnerWriteGuard`, `widgetStore`): session-lifecycle's WG policy row (carry on /reload, /fork, /clone, /tree; reset on the other starts, #3589) and, in SessionLifecycleF1, the two-verb pipeline write, the tie the guards must admit (`>=`), the rows' carry across a fork and the late verb's fence (F1 of #3803).",
+    "clients/widget-state.ts": "The widget's per-verb write guards and rows (`diagnosticsWriteGuard`, `runnerWriteGuard`, `widgetStore`): session-lifecycle's WG policy row (carry on /reload, /fork, /clone, /tree; reset on the other starts, #3589) and, in SessionLifecycleF1, the two-verb pipeline write, the tie the guards must admit (`>=`), the rows' carry across a fork and the late verb's fence (F1 of #3803). What `reconcileStaleWidgetFiles` leaves of a record whose findings it shed is store-freshness' StoreRetire `Retire`: kept as unfinished evidence (`retain`, #4625), not deleted (`drop`, `dropOnce`: violated). Idle eviction and the fresh snapshot that ends the mark are not modelled.",
     "clients/write-ordering-guard.ts": "`WriteOrderingGuard.shouldWrite` drops a token below the last seen and admits a tie. SessionLifecycleF1's `MutWidgetTieDrop` (`>`) and `Pre555WidgetNoGuard` pin both directions (F1 of #3803).",
     "clients/session-lifecycle.ts": "Primary/secondary classification and the #3662 gap classification (#3668, successor-pending marker): session-lifecycle's SecStart, SecBind, SecUp and SecRoleless decline a start in a primary replacement gap unless it is the named successor (`namedSuccessor`), and `MarkerExpire` is the 60 s TTL as a nondeterministic step (`markerTtl`: an expired marker declines nothing; F1 of #3803). The `session-successor-pending` degradation record and the clock itself are not modelled.",
     "clients/dispatch/fact-store.ts": "review-graph-signatures' Extract is atomic, which assumes the #3746 private-store property; the pre-#3746 shared store is below its abstraction.",

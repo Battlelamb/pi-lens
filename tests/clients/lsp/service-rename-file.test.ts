@@ -18,6 +18,17 @@ import {
 } from "../../support/lsp-rename-client-double.js";
 import { removeTempDirSync } from "../test-utils.js";
 
+/**
+ * #3734: a file no client has open is refused when its mtime sits within 2 s
+ * of the rename request (`captureRenameExpectedContent`'s margin). These cells
+ * are about the merged edit, not staleness, so the importer stands for one the
+ * server read earlier: aging its mtime is the fixture, not a wait.
+ */
+function ageFile(file: string): void {
+	const past = new Date(Date.now() - 60_000);
+	fs.utimesSync(file, past, past);
+}
+
 describe("LSPService.renameFile", () => {
 	it("merges willRenameFiles edits by client priority, renames, and notifies all active clients", async () => {
 		const tmpDir = fs.mkdtempSync(
@@ -28,6 +39,7 @@ describe("LSPService.renameFile", () => {
 		const importPath = path.join(tmpDir, "import.ts");
 		fs.writeFileSync(oldPath, "export const value = 1;\n", "utf-8");
 		fs.writeFileSync(importPath, "import { value } from './old';\n", "utf-8");
+		ageFile(importPath);
 		const importUri = pathToFileURL(importPath).href;
 
 		const primary = makeRenameClient(tmpDir, {
@@ -207,6 +219,7 @@ describe("LSPService.renameFile", () => {
 		const importPath = path.join(tmpDir, "import.ts");
 		fs.writeFileSync(oldPath, "export const value = 1;\n", "utf-8");
 		fs.writeFileSync(importPath, "import { value } from './old';\n", "utf-8");
+		ageFile(importPath);
 		const supporting = makeRenameClient(tmpDir, {
 			changes: {
 				[pathToFileURL(importPath).href]: [
@@ -357,6 +370,7 @@ describe("LSPService.renameFile", () => {
 		const importPath = path.join(tmpDir, "import.ts");
 		fs.writeFileSync(oldPath, "export const value = 1;\n", "utf-8");
 		fs.writeFileSync(importPath, "import { value } from './old';\n", "utf-8");
+		ageFile(importPath);
 
 		const success = makeRenameClient(tmpDir, {
 			changes: {

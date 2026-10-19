@@ -773,7 +773,9 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"tools/ast-grep-outline.ts": 1,
 		"tools/effective-config.ts": 4,
 		"tools/lens-diagnostic-mark.ts": 1,
-		"tools/lens-diagnostics.ts": 37,
+		// Six array projections scope and count request-local session evidence;
+		// these are Array.prototype.filter calls, not new delivery-policy seams.
+		"tools/lens-diagnostics.ts": 43,
 		// 12 -> 13 (#4346): the batch selects its finding-bearing files to resolve.
 		// 13 -> 14 (#4322): the batch counts its files with auxiliary findings
 		// only, one `Array.prototype.filter` use, not a delivery filter.

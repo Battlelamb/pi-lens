@@ -1379,6 +1379,7 @@
 		"tools/lsp-diagnostics.test.ts::clients/lsp/wait-policy/index": 1,
 		"tools/lsp-diagnostics.test.ts::clients/warm-attach": 1,
 		"tools/lsp-diagnostics.test.ts::clients/widget-state": 1,
+		"tools/lsp-navigation-rename-file-staleness.test.ts::clients/lsp/capabilities": 1,
 		"tools/lsp-navigation-rename-first-open.test.ts::clients/lsp/capabilities": 1,
 		"tools/lsp-navigation-rename-staleness.test.ts::clients/lsp/capabilities": 1,
 		"tools/lsp-navigation-workspace-attribution.test.ts::clients/latency-logger": 1,
