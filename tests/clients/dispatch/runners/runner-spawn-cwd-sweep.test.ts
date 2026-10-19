@@ -148,7 +148,8 @@ const POPULATION_FILES = [
  * listGitHeadDelta (opaque-mutation-scan.ts, already counted).
  */
 const EXPECTED_FILES = 79;
-const EXPECTED_DIRECT_SITES = 135;
+// R19 folds four LSP runtime install spawns into their one guarded owner.
+const EXPECTED_DIRECT_SITES = 132;
 /**
  * Every same-file spawn-routing wrapper call site the scan discovers. Pinned
  * as a LIST, not a count, because the list is the part round 2 got wrong: it
@@ -316,7 +317,7 @@ const NO_CWD_EXEMPTION_ROWS: ReadonlyArray<readonly [string, string]> = [
 		"`python -m site --user-base` after a pip install, to find where the binary landed",
 	],
 	[
-		"clients/installer/index.ts#installGemTool:04641342",
+		"clients/installer/index.ts#installGemTool:6ab24b0f",
 		"`gem install <package> --no-document` into the global gem path",
 	],
 	[
@@ -328,20 +329,8 @@ const NO_CWD_EXEMPTION_ROWS: ReadonlyArray<readonly [string, string]> = [
 		"`which java` / `where java` PATH lookup for the JVM language servers",
 	],
 	[
-		"clients/lsp/server.ts#tryGoInstallGopls:9a3ebec4",
-		"`go install golang.org/x/tools/gopls@latest` — installs into the Go tool directory; under an untrusted project it runs from HOME (#4530)",
-	],
-	[
-		"clients/lsp/server.ts#tryDotnetToolInstall:d0e10ff4",
-		"`dotnet tool install --tool-path <pi-lens bin>` — installs into pi-lens's own bin directory; under an untrusted project it runs from HOME (#4530)",
-	],
-	[
-		"clients/lsp/server.ts#tryDotnetToolInstall:af993561",
-		"`dotnet tool update --tool-path <pi-lens bin>` — the update half of the same install; under an untrusted project it runs from HOME (#4530)",
-	],
-	[
-		"clients/lsp/server.ts#tryGemInstall:8f099841",
-		"`gem install <gem> --bindir <pi-lens bin>` — installs into pi-lens's own bin directory; under an untrusted project it runs from HOME (#4530)",
+		"clients/lsp/server.ts#runtimeInstallSpawn:e0b708ec",
+		"Go, .NET install/update and gem installs share one selected-executable spawn; under unknown trust its cwd is HOME, while trusted calls retain their session cwd (#4530)",
 	],
 	[
 		"clients/mcp/review.ts#analyzeFileFresh:3ac7e2fe",
@@ -618,7 +607,7 @@ const ORIGIN_ADMISSION_ROWS: ReadonlyArray<readonly [string, string]> = [
 		"cwd is TOOLS_DIR, the managed-tool install directory this archive is being extracted into",
 	],
 	[
-		"clients/installer/index.ts#installNpmTool.runInstallAttempt:fc29ee07~a938e107",
+		"clients/installer/index.ts#installNpmTool.runInstallAttempt:932ba295~a938e107",
 		"cwd is TOOLS_DIR: the npm install runs in the managed-tool directory, never in the user's project",
 	],
 	[

@@ -139,6 +139,31 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 	return { ...mocked, default: mocked };
 });
 
+// The newly real PATH candidates must not turn the user-base follow-up into
+// a real process. Its failure branch intentionally preserves the user install.
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	return {
+		...actual,
+		spawn: (
+			command: string,
+			args: readonly string[],
+			options?: import("node:child_process").SpawnOptions,
+		) => {
+			if (args.includes("--user-base")) {
+				const child = Object.assign(new EventEmitter(), {
+					stdout: new EventEmitter(),
+					stderr: new EventEmitter(),
+				});
+				queueMicrotask(() => child.emit("exit", 1));
+				// SAFETY: the user-base probe only consumes streams and exit/error events.
+				return child as unknown as ReturnType<typeof actual.spawn>;
+			}
+			return actual.spawn(command, args, options ?? {});
+		},
+	};
+});
+
 vi.mock("../../../clients/safe-spawn.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../../clients/safe-spawn.js")>()),
 	safeSpawn: vi.fn(() => ({ stdout: "", stderr: "", status: 0 })),
@@ -492,6 +517,14 @@ beforeEach(() => {
 	fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "pi-lens-1747-java-"));
 	for (const name of ["java", "java.exe"]) {
 		fs.writeFileSync(path.join(fakeBin, name), "x");
+	}
+	// R19: candidate admission needs real files; the process stays mocked.
+	for (const command of ["pip", "pip3", "python", "python3", "py", "gem"]) {
+		for (const suffix of ["", ".exe", ".cmd"]) {
+			fs.writeFileSync(path.join(fakeBin, command + suffix), "fixture", {
+				mode: 0o755,
+			});
+		}
 	}
 	// Availability probes must see only fixture binaries. In particular, an
 	// ambient pipx must not redirect pip refreshes to the pipx strategy.
@@ -1295,7 +1328,9 @@ describe("gem strategy", () => {
 
 		const installs = installSpawns().filter((line) => line.includes("rubocop"));
 		expect(installs).toHaveLength(1);
-		expect(installs[0]).toMatch(/^gem install rubocop --no-document$/);
+		expect(installs[0]).toBe(
+			`${path.join(fakeBin!, process.platform === "win32" ? "gem.exe" : "gem")} install rubocop --no-document`,
+		);
 		expect(outcome.refreshed[0]).toMatchObject({
 			toolId: "rubocop",
 			strategy: "gem",
