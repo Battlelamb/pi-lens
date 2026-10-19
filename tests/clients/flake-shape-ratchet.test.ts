@@ -616,7 +616,10 @@ const ADMITTED_AFTER_BASELINE: Readonly<
 	},
 	// 2026-10-19 (#4530 round 20): the governance sweep plants raw `spawn(` and
 	// `execFileSync(` spellings as fixture SOURCE TEXT, then drives its scanner
-	// over them; nothing here starts a process, so no lane or bound applies.
+	// over them; nothing here starts a process. It is still admitted here because
+	// the detector cannot tell planted text from a real start, and its lane
+	// membership (`wallClockBudgetInclude`) is the ratchet's requirement for
+	// every `real-process-spawn` admission.
 	"real-process-spawn:config/spawn-chokepoint-sweep.test.ts": {
 		detector: "real-process-spawn",
 		reason:

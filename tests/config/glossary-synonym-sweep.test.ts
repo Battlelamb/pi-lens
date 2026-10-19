@@ -455,7 +455,10 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/lsp/jvm-runtime.ts": 1,
 		"clients/lsp/server.ts": 13,
 		"clients/mcp/ipc.ts": 8,
-		"clients/mcp/review.ts": 9,
+		// 9 -> 8 (#4530 round 21): the analyze worker's dead admission call and its
+		// refusal message (both carried `error`) are gone; the site is admitted by
+		// the spawn sweep's reasoned allowance instead.
+		"clients/mcp/review.ts": 8,
 		"clients/metrics-history.ts": 1,
 		"clients/mcp/session.ts": 1,
 		"clients/module-report.ts": 27,

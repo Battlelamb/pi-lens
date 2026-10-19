@@ -1557,6 +1557,14 @@ describe.skipIf(process.platform === "win32")(
 			expect(admitSpawnExecutable("node_modules/.bin/vitest")).toEqual({
 				admitted: true,
 			});
+			// A path spelling that a PATH walk would ALSO find stays admitted: the
+			// rule is about who chose the bytes, not only about what the walk returns
+			// (the mutation that judges every spelling refuses this one).
+			expect(
+				admitSpawnExecutable("node_modules/.bin/vitest", {
+					env: { PATH: project.root },
+				}),
+			).toEqual({ admitted: true });
 			// The same bytes as a bare name: the environment chose them.
 			expect(
 				admitSpawnExecutable("vitest", { env: { PATH: project.bin } }),

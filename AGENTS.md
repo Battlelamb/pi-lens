@@ -894,8 +894,12 @@ file-scoped worklist and receives no project-wide scanner output.
   `commandResolvesIntoProject` in `clients/project-reach.ts` whether that real
   target reaches the untrusted project, and refuses with a typed
   `trust-refused` result plus one bounded `trust-refusal` row per distinct
-  target. A trusted project costs no filesystem work, and an unresolved name is
-  admitted so absence keeps reporting ENOENT. A raw `node:child_process` start
+  target. The judgment covers a LOOKUP, a bare name the child's environment
+  resolves; a caller that spells a path has already chosen that file, and the
+  discovery sites that select one (`findGlobalBinary`,
+  `resolveTrustScopedCommand`) keep their own target judgment. A trusted
+  project costs no filesystem work, and an unresolved name is admitted so
+  absence keeps reporting ENOENT. A raw `node:child_process` start
   in the runtime trees is a hole by construction:
   `tests/config/spawn-chokepoint-sweep.test.ts` enumerates them from the module
   binding and requires each to be routed, or admitted with a reason, liveness

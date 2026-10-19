@@ -1520,9 +1520,9 @@ export function recordProjectCommandRefusal(resolvedCommand: string): void {
  *   lookups the environment answers (see `isSpawnLookup`);
  * - nothing resolves → admit; the spawn reports ENOENT exactly as before, and
  *   absence is not project reach;
- * - the resolved target reaches the project (judged from the child's cwd AND
- *   the session cwd, because an adopted or served root is not always either)
- *   → refuse and record once.
+ * - the resolved target reaches the session project (plus any `projectRoot` a
+ *   caller serves, because an adopted root is not the session project) → refuse
+ *   and record once.
  */
 export function admitSpawnExecutable(
 	command: string,

@@ -18,7 +18,7 @@ import {
 	runScriptArgs,
 } from "../package-manager.js";
 import { incrementDegradationCount } from "../degradation-ledger.js";
-import { admitSpawnExecutable, safeSpawnAsync } from "../safe-spawn.js";
+import { safeSpawnAsync } from "../safe-spawn.js";
 import {
 	createBoundedOutputSink,
 	DEFAULT_MAX_OUTPUT_BYTES,
@@ -69,19 +69,13 @@ export function analyzeFileFresh(
 		const args = [workerPath, `--file=${file}`, `--cwd=${cwd}`];
 		if (options.flags) args.push(`--flags=${JSON.stringify(options.flags)}`);
 
-		// #4530 round 20: the worker is started through the spawn seam's
-		// admission, so an interpreter that resolves into an untrusted project
-		// never runs. The fork keeps its own pipe handling below — this fork
-		// needs the worker's live stream, not a buffered result — so only the
-		// judgment comes from the seam.
-		const admission = admitSpawnExecutable(process.execPath, { cwd });
-		if (!admission.admitted) {
-			resolve({
-				error: `refusing to fork the analyze worker: ${admission.executable} resolves inside the project, which pi has not trusted (${admission.trust})`,
-			});
-			return;
-		}
-
+		// #4530: the fork keeps its own pipe handling below because it needs the
+		// worker's live stream, not a buffered result. The interpreter is
+		// `process.execPath` — the running node, named by absolute path, never an
+		// environment-resolved lookup — so the spawn seam's admission (round 21)
+		// admits it and this site carries that reason in
+		// `tests/config/spawn-chokepoint-sweep.test.ts`. The worker script operand
+		// is project configuration by design and is outside the executable rule.
 		let child: ChildProcessByStdio<null, Readable, Readable>;
 		try {
 			child = spawn(process.execPath, args, {

@@ -124,8 +124,8 @@ const ADMITTED: Record<string, Allowance> = {
 	},
 	"clients/mcp/review.ts#spawn": {
 		reason:
-			"the analyze worker keeps its own live-stream pipe handling and admits the interpreter at entry through the chokepoint",
-		evidence: "admitSpawnExecutable(process.execPath",
+			"the analyze worker keeps its own live-stream pipe handling, and its interpreter is the running node (`process.execPath`), a fixed absolute binary, never an environment-resolved lookup; the worker script is a project operand by design",
+		evidence: "spawn(process.execPath, args",
 	},
 };
 
