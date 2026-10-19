@@ -42,7 +42,9 @@ describe("LSP server install actions (#197)", () => {
 	const runtimePath = (name: string) =>
 		path.join(runtimeBin, process.platform === "win32" ? `${name}.exe` : name);
 	beforeEach(() => {
-		// R18-R1: real candidate files reach admission; only the child is mocked.
+		// R18-R1: real candidate files reach the seam's resolution; only the child
+		// is mocked. Round 20 still needs them present, because the seam resolves
+		// the executable before it mocks nothing — the spawn itself is the mock.
 		runtimeBin = setupTestEnvironment("pi-lens-install-actions-").tmpDir;
 		for (const name of ["go", "dotnet", "gem"])
 			fs.writeFileSync(runtimePath(name), "fixture", { mode: 0o755 });
@@ -55,7 +57,9 @@ describe("LSP server install actions (#197)", () => {
 		expect(await tryGoInstallGopls()).toBe(true);
 
 		const [cmd, args, opts] = mockSafeSpawnAsync.mock.calls[0];
-		expect(cmd).toBe(runtimePath("go"));
+		// #4530 round 20: the rung no longer pre-resolves the command; the spawn
+		// seam resolves and judges the executable, so argv[0] is the bare name.
+		expect(cmd).toBe("go");
 		expect(args).toEqual(["install", "golang.org/x/tools/gopls@latest"]);
 		expect(opts).toMatchObject({ ignoreAmbientSignal: true });
 	});
@@ -79,7 +83,7 @@ describe("LSP server install actions (#197)", () => {
 		expect(await tryDotnetToolInstall("csharp-ls")).toBe(true);
 		expect(mockSafeSpawnAsync).toHaveBeenCalledTimes(1);
 		const [cmd, args, opts] = mockSafeSpawnAsync.mock.calls[0];
-		expect(cmd).toBe(runtimePath("dotnet"));
+		expect(cmd).toBe("dotnet");
 		expect(args.slice(0, 2)).toEqual(["tool", "install"]);
 		expect(args).toContain("csharp-ls");
 		expect(opts).toMatchObject({ ignoreAmbientSignal: true });
@@ -122,7 +126,7 @@ describe("LSP server install actions (#197)", () => {
 
 			expect(await tryGemInstall("ruby-lsp")).toBe(true);
 			const [cmd, args, opts] = mockSafeSpawnAsync.mock.calls[0];
-			expect(cmd).toBe(runtimePath("gem"));
+			expect(cmd).toBe("gem");
 			expect(args.slice(0, 2)).toEqual(["install", "ruby-lsp"]);
 			expect(opts).toMatchObject({ ignoreAmbientSignal: true });
 			// Asserts against the actual machine-global root (respects #525's
