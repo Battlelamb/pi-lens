@@ -53,7 +53,6 @@ import {
 import * as installer from "../installer/index.js";
 import {
 	commandSearchReachesProject,
-	resolveTrustScopedCommand,
 	normalizeSearchPath,
 	trustScopedSpawnEnv,
 } from "../package-manager.js";
@@ -2020,10 +2019,13 @@ function isOnPath(command: string, root?: string): Promise<boolean> {
  * does not steer it.
  */
 async function runtimeInstallSpawn(command: string, args: string[]) {
-	const admitted = resolveTrustScopedCommand(command);
-	if (!admitted) return undefined;
+	// #4530 round 20: no pre-admission here. The spawn seam resolves the
+	// executable from the scoped environment and refuses a project-linked one,
+	// judged from BOTH this call's cwd (HOME, so project configuration cannot
+	// steer the runtime) and the session cwd, which is where an adopted or
+	// served root's project actually lives.
 	const env = trustScopedSpawnEnv();
-	return safeSpawnAsync(admitted, args, {
+	return safeSpawnAsync(command, args, {
 		timeout: 180000,
 		ignoreAmbientSignal: true,
 		...(env && { env, cwd: os.homedir() }),
@@ -2056,7 +2058,6 @@ export async function tryDotnetToolInstall(tool: string): Promise<boolean> {
 		PI_LENS_BIN_DIR,
 		tool,
 	]);
-	if (!result) return false;
 	if (!result.error && result.status === 0) return true;
 
 	const stderr = result.stderr ?? "";

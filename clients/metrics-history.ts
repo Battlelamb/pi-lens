@@ -7,11 +7,11 @@
  * Storage: <project-data>/metrics-history.json
  */
 
-import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getProjectDataDir } from "./file-utils.js";
 import { writeFileAtomic } from "./atomic-write.js";
+import { safeSpawn } from "./safe-spawn.js";
 
 // --- Types ---
 
@@ -78,23 +78,17 @@ function getCurrentCommit(startDir: string): string {
 		spawnDir = parent;
 	}
 
-	try {
-		// #2095: execSync inherits the child's stderr to THIS process by
-		// default (only stdout is captured for the return value), so a
-		// failing `git rev-parse` prints its raw "fatal: ..." line straight
-		// into the pi TUI — the catch below only ever sees the thrown
-		// non-zero-exit error, never the already-inherited stream. The
-		// explicit stdio array pipes stderr instead, so a failure is fully
-		// contained: silent here, same as the "unknown" fallback it feeds.
-		return execSync("git rev-parse --short HEAD", {
-			encoding: "utf-8",
-			timeout: 5000,
-			stdio: ["ignore", "pipe", "ignore"],
-			cwd: spawnDir,
-		}).trim();
-	} catch {
-		return "unknown";
-	}
+	// #4530 round 20: through the spawn seam, which captures both streams (so a
+	// failing `git` never prints its raw "fatal: ..." line into the pi TUI) and
+	// refuses a `git` that resolves into an untrusted project (#2095 kept).
+	const result = safeSpawn("git", ["rev-parse", "--short", "HEAD"], {
+		timeout: 5000,
+		cwd: spawnDir,
+		ignoreAmbientSignal: true,
+	});
+	return result.status === 0 && !result.error
+		? result.stdout.trim()
+		: "unknown";
 }
 
 // --- History Management ---

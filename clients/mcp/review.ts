@@ -18,7 +18,7 @@ import {
 	runScriptArgs,
 } from "../package-manager.js";
 import { incrementDegradationCount } from "../degradation-ledger.js";
-import { safeSpawnAsync } from "../safe-spawn.js";
+import { admitSpawnExecutable, safeSpawnAsync } from "../safe-spawn.js";
 import {
 	createBoundedOutputSink,
 	DEFAULT_MAX_OUTPUT_BYTES,
@@ -68,6 +68,19 @@ export function analyzeFileFresh(
 	return new Promise((resolve) => {
 		const args = [workerPath, `--file=${file}`, `--cwd=${cwd}`];
 		if (options.flags) args.push(`--flags=${JSON.stringify(options.flags)}`);
+
+		// #4530 round 20: the worker is started through the spawn seam's
+		// admission, so an interpreter that resolves into an untrusted project
+		// never runs. The fork keeps its own pipe handling below — this fork
+		// needs the worker's live stream, not a buffered result — so only the
+		// judgment comes from the seam.
+		const admission = admitSpawnExecutable(process.execPath, { cwd });
+		if (!admission.admitted) {
+			resolve({
+				error: `refusing to fork the analyze worker: ${admission.executable} resolves inside the project, which pi has not trusted (${admission.trust})`,
+			});
+			return;
+		}
 
 		let child: ChildProcessByStdio<null, Readable, Readable>;
 		try {

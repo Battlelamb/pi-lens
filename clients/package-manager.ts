@@ -33,6 +33,7 @@ import {
 	safeSpawnAsync,
 	getPathExts,
 	isAcceptedCommandFile,
+	recordProjectCommandRefusal,
 } from "./safe-spawn.js";
 import { probeToolAsync } from "./tool-probe.js";
 import { createAvailabilityProbeFlight } from "./availability-probe-flight.js";
@@ -42,14 +43,31 @@ import {
 } from "./generation-guard.js";
 import {
 	isAtOrAboveHomeDir,
-	isUnderCanonicalDir,
-	isUnderDir,
 	normalizeFilePath,
 	pathsEqual,
 	realpathOrResolve,
 	walkUpDirs,
 } from "./path-utils.js";
 import { getProjectTrustState } from "./project-trust.js";
+import {
+	NODE_MODULES_BIN_DIRS,
+	commandResolvesIntoProject,
+	projectReach,
+} from "./project-reach.js";
+
+// #4530 round 20: the project-reach rule has one owner, `clients/project-reach.ts`,
+// because the spawn chokepoint (`clients/safe-spawn.ts`) asks it too and cannot
+// import this module (this module spawns). These names stay exported from here
+// so the existing importers keep their seam.
+export {
+	NODE_MODULES_BIN_DIRS,
+	PROJECT_LOCAL_BIN_DIRS,
+	VENDOR_BIN_DIRS,
+	VENV_BIN_DIRS,
+	commandResolvesIntoProject,
+	commandSearchReachesProject,
+	isProjectLocalBinPath,
+} from "./project-reach.js";
 import {
 	getDegradationLedgerGeneration,
 	recordDegradationOnce,
@@ -556,7 +574,7 @@ export async function findGlobalBinary(
 				// server, say), and `isAcceptedCommandFile` follows that link. The
 				// trust verdict therefore belongs to the target, not the directory.
 				if (commandResolvesIntoProject(full, cwd)) {
-					refuseGlobalCommandTarget(full);
+					recordProjectCommandRefusal(full);
 					continue;
 				}
 				return full;
@@ -568,40 +586,6 @@ export async function findGlobalBinary(
 	}
 	return undefined;
 }
-
-/**
- * The three project-local bin-directory shapes in this repo, most-preferred
- * first. Exported so every caller passes the SAME constant instead of
- * re-listing the directory names next to its own copy of the walk — the venv
- * list alone had three independent spellings before #2544 review F1
- * (`formatters.ts`, `runner-helpers.ts`'s `createVenvFinder`,
- * `dead-code-client.ts`'s `venvCandidates`).
- *
- * `VENV_BIN_DIRS` lists BOTH the POSIX (`bin`) and Windows (`Scripts`) layouts
- * unconditionally rather than branching on `process.platform` at module load:
- * a module-load platform constant cannot be forced per test, so the other
- * branch is never exercised on the ubuntu lane (defect shape 30). The extra
- * two `existsSync` calls per directory are the price of a testable list, and
- * a `.venv/Scripts` on Linux (or `.venv/bin` under msys) resolves correctly
- * instead of being invisible.
- */
-export const NODE_MODULES_BIN_DIRS: readonly string[] = [
-	path.join("node_modules", ".bin"),
-];
-export const VENDOR_BIN_DIRS: readonly string[] = [path.join("vendor", "bin")];
-export const VENV_BIN_DIRS: readonly string[] = [
-	path.join(".venv", "bin"),
-	path.join("venv", "bin"),
-	path.join(".venv", "Scripts"),
-	path.join("venv", "Scripts"),
-];
-
-/** Every project-local bin layout supported by the canonical resolver above. */
-export const PROJECT_LOCAL_BIN_DIRS: readonly string[] = [
-	...NODE_MODULES_BIN_DIRS,
-	...VENDOR_BIN_DIRS,
-	...VENV_BIN_DIRS,
-];
 
 /** A local candidate was present, but pi's trust policy refused its use. */
 export interface LocalBinTrustRefusal {
@@ -651,87 +635,6 @@ function refuseLocalBin(tool: string, root: string): LocalBinTrustRefusal {
 	return { kind: "refused-by-trust", tool, root: resolvedRoot, trust };
 }
 
-/** Every project-local bin dir of `cwd` and its ancestors below HOME. */
-function* projectLocalBinDirs(cwd: string): Generator<string> {
-	for (const ancestor of walkUpDirs(cwd)) {
-		if (isAtOrAboveHomeDir(ancestor, os.homedir())) return;
-		for (const binDir of PROJECT_LOCAL_BIN_DIRS)
-			yield path.join(ancestor, binDir);
-	}
-}
-
-/** Keep trust classification beside the resolver's canonical directory set. */
-export function isProjectLocalBinPath(
-	resolvedCommand: string,
-	cwd: string,
-): boolean {
-	for (const binDir of projectLocalBinDirs(cwd)) {
-		if (isUnderDir(resolvedCommand, binDir)) return true;
-	}
-	return false;
-}
-
-/**
- * #4515: a test for whether one PATH entry (or a global bin dir) can resolve
- * a bare command into the project at `cwd`. It counts when it is a
- * project-local bin dir of `cwd` or an ancestor, lies at or under `cwd`, or is
- * relative: a relative entry follows each spawn's cwd, and on POSIX an empty
- * entry is the cwd. A `cwd` at or above HOME is no project, the ceiling the
- * project-local walk already stops at (#4530), so HOME's own tool dirs stay
- * usable there. Each directory is filesystem-resolved once per test, not per entry.
- */
-function projectReach(cwd: string): (entry: string) => boolean {
-	const posix = process.platform !== "win32";
-	const dirs = [
-		...(isAtOrAboveHomeDir(cwd, os.homedir()) ? [] : [cwd]),
-		...projectLocalBinDirs(cwd),
-	].map((dir) => normalizeFilePath(realpathOrResolve(dir)));
-	return (entry) => {
-		if (entry === "") return posix;
-		if (!path.isAbsolute(entry)) return true;
-		const canonical = normalizeFilePath(realpathOrResolve(entry));
-		return dirs.some((dir) => isUnderCanonicalDir(canonical, dir));
-	};
-}
-
-/** #4515: whether a bare command spawned with this process's PATH can resolve into `cwd`. */
-export function commandSearchReachesProject(cwd: string): boolean {
-	return (process.env.PATH ?? "").split(path.delimiter).some(projectReach(cwd));
-}
-
-/**
- * #4530 round 9: whether a RESOLVED command's real target lies in the project
- * pi has not trusted. A trust check on the directory that holds the command
- * answers a different question: a global bin dir outside the project (or an
- * outside PATH entry) can hold a link into it — an npm-linked language server
- * is the ordinary case — and the resolver follows that link when it spawns.
- * The target is what runs, so the target is what the trust gate judges
- * (#4566 round 9). Launch admission opts into trust-independent classification
- * because session trust does not grant ownership of an adopted root (#4566 r13).
- */
-export function commandResolvesIntoProject(
-	resolvedCommand: string,
-	cwd: string = process.cwd(),
-	classifyRegardlessOfTrust = false,
-): boolean {
-	if (!classifyRegardlessOfTrust && getProjectTrustState() === "trusted")
-		return false;
-	// Preserve the spelling until the filesystem resolves symlinks and `..`.
-	const commandPath = path.isAbsolute(resolvedCommand)
-		? resolvedCommand
-		: `${cwd}${path.sep}${resolvedCommand}`;
-	try {
-		return projectReach(cwd)(fs.realpathSync.native(commandPath));
-	} catch {
-		recordDegradationOnce({
-			kind: "trust-refusal",
-			subject: `global-command-realpath:${commandPath}`,
-			reason: "resolved command realpath unavailable",
-		});
-		return true;
-	}
-}
-
 /** Resolve and judge the executable selected by a scoped PATH walk. */
 export function resolveTrustScopedCommand(
 	command: string,
@@ -754,38 +657,13 @@ export function resolveTrustScopedCommand(
 				: `${cwd}${path.sep}${candidate}`;
 			if (!isAcceptedCommandFile(absolute, executable)) continue;
 			if (commandResolvesIntoProject(absolute, cwd)) {
-				refuseGlobalCommandTarget(absolute);
+				recordProjectCommandRefusal(absolute);
 				continue;
 			}
 			return absolute;
 		}
 	}
 	return undefined;
-}
-
-/**
- * One bounded record per (target, session) for a global command that resolves
- * into the project; the link's own spelling is kept in the metadata so the
- * global directory that holds it stays identifiable.
- */
-function refuseGlobalCommandTarget(resolvedCommand: string): void {
-	const trust = getProjectTrustState() as "untrusted" | "unknown";
-	const target = normalizeFilePath(realpathOrResolve(resolvedCommand));
-	if (
-		recordDegradationOnce({
-			kind: "trust-refusal",
-			subject: `global-command-target:${target}`,
-			reason: `global command target could not be admitted outside the project: pi project trust is ${trust}`,
-		})
-	) {
-		logExtension({
-			subsystem: "project-trust",
-			level: "warn",
-			message:
-				"global command target could not be admitted outside the project: mark the project trusted in pi or upgrade pi",
-			metadata: { command: resolvedCommand, target, trust },
-		});
-	}
 }
 
 /**

@@ -47,7 +47,6 @@
  * - GitHub releases (platform-specific binaries → ~/.pi-lens/bin/)
  */
 
-import { spawn } from "node:child_process";
 import {
 	existsSync,
 	readFileSync,
@@ -111,17 +110,36 @@ import {
 	resetSafeSpawnWindowsCommandCache,
 	safeSpawnAsync,
 } from "../safe-spawn.js";
-import {
-	type BoundedOutputSink,
-	createBoundedOutputSink,
-	DEFAULT_MAX_OUTPUT_BYTES,
-} from "../spawn-output-cap.js";
 import { probeToolAsync } from "../tool-probe.js";
 import { logSessionStart } from "../sessionstart-logger.js";
 import { resolveGitHubToken } from "../zizmor-config.js";
 
 // Global installation directory for pi-lens tools
 const TOOLS_DIR = path.join(getGlobalPiLensDir(), "tools");
+
+/**
+ * #4530 round 20: bounded budgets for the two best-effort probes that now run
+ * through the spawn seam. Both were raw `spawn` calls with NO timeout at all —
+ * an interpreter whose `site` import stalls parked the installer's promise
+ * forever. 5 s matches the other interpreter/version probes; 120 s matches the
+ * install budget an archive extraction needs on a cold, large asset.
+ */
+const USER_BASE_PROBE_TIMEOUT_MS = 5_000;
+const CMD_TIMEOUT_MS = 120_000;
+
+/**
+ * `{ env }` for a spawn option list, or `{}` when the project is trusted.
+ *
+ * Written once because the shape is easy to get wrong: `...(env ?? {})` spreads
+ * the ENVIRONMENT's own keys into the options object instead of passing it as
+ * `env`, so the child keeps the ambient PATH and the trust scope silently does
+ * nothing. That mistake makes a scoped spawn look scoped.
+ */
+function trustScopedEnvOption(cwd?: string): { env?: NodeJS.ProcessEnv } {
+	const env =
+		cwd === undefined ? trustScopedSpawnEnv() : trustScopedSpawnEnv(cwd);
+	return env ? { env } : {};
+}
 const INSTALL_LOCK_PATH = path.join(TOOLS_DIR, ".install.lock");
 const INSTALL_LOCK_GENERATIONS = `${INSTALL_LOCK_PATH}s`;
 const activeInstallLocks = new Set<InstallLockHold>();
@@ -3749,44 +3767,6 @@ async function findPipUserToolPath(
 	return undefined;
 }
 
-/**
- * The verdict of one `<interpreter> -m site --user-base` probe (#3383).
- *
- * Both probes accumulate through {@link createBoundedOutputSink} instead of
- * `stdout += data`: the concatenation ran inside a `data` handler, where V8's
- * `RangeError: Invalid string length` is an uncaught exception rather than this
- * promise's value, and nothing bounded an interpreter that decides to write
- * forever. A TRUNCATED probe resolves EMPTY rather than trimming a prefix,
- * because the prefix of a path is a different path: `addBinToPath` would put a
- * plausible-looking wrong directory on PATH. Empty is the value both probes
- * already resolve when an interpreter is missing, and every caller handles it.
- *
- * Exported for `tests/clients/off-seam-output-bounds.test.ts`: both `data`
- * handlers that feed it sit inside module-private probe loops that only a real
- * `python3` on PATH can drive, so this is the seam the bound is pinned at.
- */
-export function userBaseProbeResult(
-	command: string,
-	code: number | null,
-	stdout: BoundedOutputSink,
-): string {
-	if (stdout.truncated) {
-		recordDegradationOnce({
-			kind: "spawn-output-cap-truncated",
-			subject: `user-base-probe:${command}`,
-			reason: `\`${command} -m site --user-base\` reached the ${DEFAULT_MAX_OUTPUT_BYTES}-byte default cap after ${stdout.observedBytes} bytes; the probed user base is unusable`,
-			metadata: {
-				capBytes: DEFAULT_MAX_OUTPUT_BYTES,
-				capSource: "default",
-				observedBytes: stdout.observedBytes,
-				killed: false,
-			},
-		});
-		return "";
-	}
-	return code === 0 ? stdout.text.trim() : "";
-}
-
 async function getPythonUserBaseCandidates(): Promise<string[]> {
 	const candidates: string[] = [];
 	const seen = new Set<string>();
@@ -3816,35 +3796,21 @@ async function getPythonUserBaseCandidates(): Promise<string[]> {
 				];
 
 	for (const probe of probes) {
-		const userBase = await new Promise<string>((resolve) => {
-			const isWin = process.platform === "win32";
-			// Bake args into command string when shell:true on Windows to avoid DEP0190.
-			const spawnCmd = isWin
-				? [probe.command, ...probe.args].join(" ")
-				: probe.command;
-			let proc: ReturnType<typeof spawn>;
-			const env = trustScopedSpawnEnv();
-			try {
-				proc = spawn(spawnCmd, isWin ? [] : probe.args, {
-					...(env && { env }),
-					stdio: ["ignore", "pipe", "pipe"],
-					shell: isWin,
-				});
-			} catch {
-				// SYNCHRONOUS spawn throw (Windows `spawn UNKNOWN`/EINVAL, the
-				// pidusage bug class, #533) — best-effort probe, resolve empty.
-				resolve("");
-				return;
-			}
-
-			const stdout = createBoundedOutputSink();
-			proc.stdout?.on("data", (data: Buffer | string) => stdout.append(data));
-			proc.on("exit", (code) =>
-				resolve(userBaseProbeResult(probe.command, code, stdout)),
-			);
-			proc.on("error", () => resolve(""));
+		// #4530 round 20: the probe runs through the spawn seam, so the
+		// interpreter is admitted against project trust like every other spawn.
+		// The hand-rolled promise this replaces (raw `spawn`, its own bounded
+		// sink, its own exit/error wiring) skipped that judgment entirely, and an
+		// outside PATH entry holding a link to a project interpreter was enough
+		// to run project bytes.
+		const result = await safeSpawnAsync(probe.command, probe.args, {
+			timeout: USER_BASE_PROBE_TIMEOUT_MS,
+			ignoreAmbientSignal: true,
+			lifetimeCoupled: true,
+			...trustScopedEnvOption(),
 		});
-		add(userBase);
+		add(
+			result.error || result.status !== 0 ? "" : result.stdout.trim(), // bounded by the seam's output cap
+		);
 	}
 
 	return candidates;
@@ -4018,29 +3984,25 @@ async function httpsGet(
 /**
  * Run a shell command and return true on exit code 0.
  */
-function runCommand(
+async function runCommand(
 	command: string,
 	args: string[],
 	cwd: string,
 ): Promise<boolean> {
-	return new Promise((resolve) => {
-		let proc: ReturnType<typeof spawn>;
-		try {
-			proc = spawn(command, args, {
-				cwd,
-				env: trustScopedSpawnEnv(cwd),
-				stdio: "ignore",
-				shell: process.platform === "win32",
-			});
-		} catch {
-			// SYNCHRONOUS spawn throw (Windows `spawn UNKNOWN`/EINVAL, the pidusage
-			// bug class, #533) — resolve false rather than reject/crash.
-			resolve(false);
-			return;
-		}
-		proc.on("exit", (code) => resolve(code === 0));
-		proc.on("error", () => resolve(false));
+	// #4530 round 20: extraction utilities (`tar`, `unzip`, `powershell`) are
+	// ordinary PATH lookups, so they take the same admission as every other
+	// spawn. The hand-rolled promise this replaces resolved false on its own
+	// error paths but never asked whether the utility it started was the
+	// project's.
+	const env = trustScopedSpawnEnv(cwd);
+	const result = await safeSpawnAsync(command, args, {
+		cwd,
+		timeout: CMD_TIMEOUT_MS,
+		ignoreAmbientSignal: true,
+		lifetimeCoupled: true,
+		...(env && { env }),
 	});
+	return !result.error && result.status === 0;
 }
 
 /**
@@ -5519,11 +5481,17 @@ async function installArchiveTool(
 					: isWindows
 						? `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\tar.exe`
 						: "tar";
+		// #4530 round 20: the extraction utility resolves through the trust-scoped
+		// PATH, like every other spawn. It used to inherit the ambient one, so a
+		// project `node_modules/.bin/tar` answered for the system tar; now the
+		// outside utility answers while the project is untrusted, and the seam's
+		// admission is the one judgment over both.
 		const extractionResult = await safeSpawnAsync(extractor, extractionArgs, {
 			cwd: TOOLS_DIR,
 			timeout: 120_000,
 			ignoreAmbientSignal: true,
 			lifetimeCoupled: true,
+			...trustScopedEnvOption(TOOLS_DIR),
 		});
 		const extracted = {
 			ok: extractionResult.status === 0,
@@ -5797,10 +5765,10 @@ async function installNpmTool(
 		const runInstallAttempt = async (
 			args: string[],
 		): Promise<{ ok: boolean; stderr: string }> => {
+			// #4530 round 20: the spawn seam owns the trust judgment (see the pip
+			// ladder's `run` above for why the caller no longer repeats it).
 			const env = trustScopedSpawnEnv();
-			const admitted = resolveTrustScopedCommand(pmCommand);
-			if (!admitted) throw new Error(`project trust refused ${pmCommand}`);
-			const result = await safeSpawnAsync(admitted, args, {
+			const result = await safeSpawnAsync(pmCommand, args, {
 				...(env && { env }),
 				cwd: TOOLS_DIR,
 				timeout: INSTALL_TIMEOUT_MS,
@@ -6150,14 +6118,11 @@ async function installPipTool(
 				Object.keys(pipConstraintEnv).length > 0
 					? { ...(baseEnv ?? process.env), ...pipConstraintEnv }
 					: baseEnv;
-			const admitted = resolveTrustScopedCommand(command);
-			if (!admitted)
-				return {
-					status: 1,
-					stdout: "",
-					stderr: `project trust refused ${command}`,
-				};
-			return safeSpawnAsync(admitted, args, {
+			// #4530 round 20: no pre-admission here. The spawn seam resolves the
+			// executable from `spawnEnv` and refuses a project-linked target with
+			// the same record and the same typed failure, so a second judgment at
+			// this caller could only disagree with it.
+			return safeSpawnAsync(command, args, {
 				timeout: 120_000,
 				ignoreAmbientSignal: true,
 				lifetimeCoupled: true,
@@ -6297,26 +6262,24 @@ async function installPipTool(
 			const result = await run(candidate.command, args);
 			const error = (result.error?.message ?? result.stderr).trim();
 			if (result.status === 0) {
-				const base = await new Promise<string>((resolve) => {
-					let probe: ReturnType<typeof spawn>;
-					try {
-						const env = trustScopedSpawnEnv();
-						probe = spawn(candidate.command, ["-m", "site", "--user-base"], {
-							...(env && { env }),
-							stdio: ["ignore", "pipe", "pipe"],
-							shell: isWindows,
-						});
-					} catch {
-						resolve("");
-						return;
-					}
-					const stdout = createBoundedOutputSink();
-					probe.stdout?.on("data", (data) => stdout.append(data));
-					probe.on("exit", (code) =>
-						resolve(userBaseProbeResult(candidate.command, code, stdout)),
-					);
-					probe.on("error", () => resolve(""));
-				});
+				// #4530 round 20: the follow-up user-base probe runs through the
+				// spawn seam like the install rung above it. A raw `spawn` here
+				// re-derived the interpreter lookup the chokepoint already judged,
+				// and skipped the judgment while doing it.
+				const probeResult = await safeSpawnAsync(
+					candidate.command,
+					["-m", "site", "--user-base"],
+					{
+						timeout: USER_BASE_PROBE_TIMEOUT_MS,
+						ignoreAmbientSignal: true,
+						lifetimeCoupled: true,
+						...trustScopedEnvOption(),
+					},
+				);
+				const base =
+					probeResult.error || probeResult.status !== 0
+						? ""
+						: probeResult.stdout.trim();
 				const binaryPath = base
 					? await addBinToPath(pipScriptsDir(base, installerPlatform()))
 					: undefined;
@@ -6392,11 +6355,10 @@ async function installGemTool(
 	packageName: string,
 ): Promise<string | undefined> {
 	try {
+		// #4530 round 20: the spawn seam owns the trust judgment.
 		const env = trustScopedSpawnEnv();
-		const admitted = resolveTrustScopedCommand("gem");
-		if (!admitted) throw new Error("project trust refused gem");
 		const gemResult = await safeSpawnAsync(
-			admitted,
+			"gem",
 			["install", packageName, "--no-document"],
 			{
 				...(env && { env }),

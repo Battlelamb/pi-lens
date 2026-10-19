@@ -44,8 +44,6 @@ vi.mock("node:child_process", async (importOriginal) => {
 const { analyzeFileFresh } = await import("../../clients/mcp/review.js");
 const { spawnCollectStdoutResult } =
 	await import("../../clients/child-unref.js");
-const { userBaseProbeResult } =
-	await import("../../clients/installer/index.js");
 const { getDegradationSummary, resetDegradationLedger } =
 	await import("../../clients/degradation-ledger.js");
 
@@ -185,24 +183,5 @@ describe("spawnCollectStdoutResult output bound (#3383)", () => {
 		await vi.advanceTimersByTimeAsync(10);
 		const result = await pending;
 		expect(result).toEqual({ stdout: "  PID\n 1234\n", status: "ok" });
-	});
-});
-
-describe("userBaseProbeResult (#3383)", () => {
-	it("resolves empty and records the trip when an interpreter floods the probe", () => {
-		const sink = createBoundedOutputSink(10);
-		sink.append("/home/u/.local");
-		expect(userBaseProbeResult("python3", 0, sink)).toBe("");
-		const row = ledgerRow("spawn-output-cap-truncated");
-		expect(row?.count).toBe(1);
-		expect(row?.latestReasons[0]?.subject).toBe("user-base-probe:python3");
-	});
-
-	it("returns the trimmed path from a healthy probe", () => {
-		const sink = createBoundedOutputSink();
-		sink.append("/home/u/.local\n");
-		expect(userBaseProbeResult("python3", 0, sink)).toBe("/home/u/.local");
-		expect(userBaseProbeResult("python3", 1, sink)).toBe("");
-		expect(ledgerRow("spawn-output-cap-truncated")).toBeUndefined();
 	});
 });

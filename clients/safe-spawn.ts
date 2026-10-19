@@ -31,7 +31,16 @@ import {
 	recordDegradationOnce,
 } from "./degradation-ledger.js";
 import { logExtension } from "./extension-log.js";
-import { isFullyQualifiedWin32 } from "./path-utils.js";
+import {
+	isFullyQualifiedWin32,
+	normalizeFilePath,
+	realpathOrResolve,
+} from "./path-utils.js";
+import {
+	type ProjectTrustState,
+	getProjectTrustState,
+} from "./project-trust.js";
+import { commandResolvesIntoProject } from "./project-reach.js";
 import { startSpawnUsageSampler } from "./resource-sampler.js";
 import { DEFAULT_MAX_OUTPUT_BYTES } from "./spawn-output-cap.js";
 import { compareOrdinal } from "./string-utils.js";
@@ -1351,6 +1360,183 @@ function getSpawnEnvironment(
 	return stripped;
 }
 
+// ============================================================================
+// SPAWN ADMISSION CHOKEPOINT (#4530 round 20)
+// ============================================================================
+
+/**
+ * Where a spawn's trust admission landed.
+ *
+ * `admitted: false` names the executable the kernel would have run, so a
+ * caller's own record can quote it. Nothing has been spawned when this is
+ * returned: the seam refuses before it resolves or starts anything.
+ */
+export type SpawnAdmission =
+	| { readonly admitted: true }
+	| {
+			readonly admitted: false;
+			readonly executable: string;
+			readonly trust: ProjectTrustState;
+	  };
+
+export interface SpawnAdmissionOptions {
+	/** The child's cwd; defaults to this process's. */
+	cwd?: string;
+	/** The child's EFFECTIVE environment (already merged with `process.env`). */
+	env?: NodeJS.ProcessEnv;
+	/**
+	 * Classify even when pi says the project is trusted. For a launcher that
+	 * owns a root pi did not admit (`clients/lsp/launch.ts`): session trust
+	 * grants the session's project, never an adopted root's executables
+	 * (#4566 r13). Default `false` — the trust question is the ordinary one.
+	 */
+	regardlessOfTrust?: boolean;
+}
+
+/**
+ * A file the kernel would exec for `candidate`: a regular file, executable on
+ * POSIX. Deliberately silent — a PATH walk passes over non-executable files as
+ * ordinary misses, and recording each one would fill the ledger with noise the
+ * executable-access seam (`isAcceptedCommandFile`) already covers for the files
+ * a caller actually selects.
+ */
+function isSpawnableTarget(candidate: string): boolean {
+	if (!statIsFile(candidate)) return false;
+	if (process.platform === "win32") return true;
+	try {
+		fs.accessSync(candidate, fs.constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The file the kernel would execute for `command` in this child's environment,
+ * or `undefined` when the spawn would fail with ENOENT.
+ *
+ * POSIX mirrors the kernel's own rule: a spelling with a separator is a path
+ * (relative to the child cwd), otherwise each `PATH` entry is searched in
+ * order, an EMPTY entry is the child cwd, and a relative entry is relative to
+ * the child cwd. Windows asks `resolveWindowsCommandForEnvironment`, the very
+ * resolver `safeSpawnAsync` then uses, so the judgment and the spawn cannot
+ * disagree about which `.exe`/`.cmd` wins.
+ */
+export function resolveSpawnExecutable(
+	command: string,
+	options: SpawnAdmissionOptions = {},
+): string | undefined {
+	const cwd = options.cwd ?? process.cwd();
+	const env = options.env ?? process.env;
+	if (process.platform === "win32") {
+		return resolveWindowsCommandForEnvironment(command, options.cwd, env)
+			?.resolvedPath;
+	}
+	if (command.includes("/") || command.includes("\\")) {
+		const absolute = path.isAbsolute(command)
+			? command
+			: path.resolve(cwd, command);
+		return isSpawnableTarget(absolute) ? absolute : undefined;
+	}
+	for (const entry of (env.PATH ?? "").split(path.delimiter)) {
+		const dir = entry === "" ? cwd : path.resolve(cwd, entry);
+		const candidate = path.join(dir, command);
+		if (isSpawnableTarget(candidate)) return candidate;
+	}
+	return undefined;
+}
+
+/**
+ * One bounded `trust-refusal` record per distinct project target per session.
+ *
+ * The subject is the RESOLVED target, not the spelling: one link into the
+ * project reached through several PATH entries or several callers is one
+ * refusal, and the link's own spelling goes in the metadata so the directory
+ * that holds it stays identifiable. Exported because
+ * `resolveTrustScopedCommand` (`clients/package-manager.ts`) selects a candidate
+ * before the spawn seam sees it, and both sites must write the SAME record:
+ * one writer per refusal, not one per caller (#4530 rounds 9 and 20).
+ */
+export function recordProjectCommandRefusal(resolvedCommand: string): void {
+	const trust = getProjectTrustState() as "untrusted" | "unknown";
+	const target = normalizeFilePath(realpathOrResolve(resolvedCommand));
+	if (
+		recordDegradationOnce({
+			kind: "trust-refusal",
+			subject: `global-command-target:${target}`,
+			reason: `global command target could not be admitted outside the project: pi project trust is ${trust}`,
+		})
+	) {
+		logExtension({
+			subsystem: "project-trust",
+			level: "warn",
+			message:
+				"global command target could not be admitted outside the project: mark the project trusted in pi or upgrade pi",
+			metadata: { command: resolvedCommand, target, trust },
+		});
+	}
+}
+
+/**
+ * THE chokepoint (#4530 round 20). Every process start of a command that is not
+ * proven to resolve outside the project passes this judgment.
+ *
+ * Round 19 met shape #69 nineteen times: each review found the next caller that
+ * started a resolved, project-linked executable without a trust judgment (a
+ * lazy `gem install`, `rustup component add`, an interpreter's
+ * `-m site --user-base` probe). Guarding callers one by one cannot converge,
+ * because a new caller is a new gate. The judgment therefore lives where the
+ * spawn does.
+ *
+ * Three answers only:
+ * - the project is trusted → admit, with no filesystem work at all;
+ * - nothing resolves → admit; the spawn reports ENOENT exactly as before, and
+ *   absence is not project reach;
+ * - the resolved target reaches the project (judged from the child's cwd AND
+ *   the session cwd, because an adopted or served root is not always either)
+ *   → refuse and record once.
+ */
+export function admitSpawnExecutable(
+	command: string,
+	options: SpawnAdmissionOptions = {},
+): SpawnAdmission {
+	const trust = getProjectTrustState();
+	if (trust === "trusted" && !options.regardlessOfTrust)
+		return { admitted: true };
+	const executable = resolveSpawnExecutable(command, options);
+	if (!executable) return { admitted: true };
+	const roots = [options.cwd ?? process.cwd()];
+	if (!roots.includes(process.cwd())) roots.push(process.cwd());
+	for (const root of roots) {
+		if (
+			!commandResolvesIntoProject(executable, root, options.regardlessOfTrust)
+		)
+			continue;
+		recordProjectCommandRefusal(executable);
+		return { admitted: false, executable, trust };
+	}
+	return { admitted: true };
+}
+
+/** The `SpawnResult` a refused spawn settles with: typed, never thrown. */
+function trustRefusalResult(
+	command: string,
+	admission: Extract<SpawnAdmission, { admitted: false }>,
+): SpawnResult {
+	const message =
+		`Refusing to run "${command}": ${admission.executable} resolves inside the ` +
+		`project, which pi has not trusted (${admission.trust})`;
+	const cause = Object.assign(new Error(message), { code: "EACCES" });
+	return {
+		stdout: "",
+		stderr: message,
+		status: null,
+		error: cause,
+		failure: "spawn",
+		spawnFailure: new SpawnFailureError("trust-refused", message, cause),
+	};
+}
+
 /**
  * Characters that make a cmd.exe `/c` command line unsound to build from
  * caller-tainted input: `%`/`!` expand even inside double quotes and cannot
@@ -1797,6 +1983,20 @@ export async function safeSpawnAsync(
 		const spawnCwd = isWindows
 			? (resolveEffectiveWindowsCwd(options?.cwd, spawnEnv) ?? options?.cwd)
 			: options?.cwd;
+		// #4530 round 20: the admission chokepoint. Placed after the environment
+		// is effective (so a scoped PATH or an explicit removal is what gets
+		// resolved) and before anything resolves or starts, so no later branch can
+		// reach `spawn` with the judgment skipped. A refusal settles the promise
+		// with the typed `trust-refused` result instead of throwing, which is the
+		// same contract as every other failure kind here.
+		const admission = admitSpawnExecutable(command, {
+			cwd: options?.cwd,
+			env: spawnEnv,
+		});
+		if (!admission.admitted) {
+			resolve(trustRefusalResult(command, admission));
+			return;
+		}
 		let spawnCmd = command;
 		let spawnArgs = args;
 		let windowsVerbatimArguments = false;
@@ -2670,6 +2870,13 @@ export function safeSpawn(
 	options?: SafeSpawnOptions,
 ): SpawnResult {
 	const spawnEnv = getSpawnEnvironment(options?.env, options?.stripNpmConfig);
+	// #4530 round 20: the same admission chokepoint the async seam runs, before
+	// either platform branch, so the sync path cannot be the one that skips it.
+	const admission = admitSpawnExecutable(command, {
+		cwd: options?.cwd,
+		env: spawnEnv,
+	});
+	if (!admission.admitted) return trustRefusalResult(command, admission);
 	if (process.platform === "win32") {
 		// See the matching comment in safeSpawnAsync: the child's cwd doesn't
 		// need OUR validation (Windows resolves it natively), so an unprovable
