@@ -1452,7 +1452,8 @@ const PINS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 		"clients/govulncheck-client.ts": 5,
 		"clients/grammar-source.ts": 2,
 		"clients/host-ports.ts": 2,
-		"clients/installer/index.ts": 42,
+		// SpawnResult.status classifies an unadmitted pip candidate.
+		"clients/installer/index.ts": 43,
 		"clients/installer/managed-tool-refresh.ts": 9,
 		"clients/instance-reaper.ts": 15,
 		"clients/jscpd-client.ts": 3,

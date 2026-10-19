@@ -12,6 +12,9 @@
  * `safeSpawnAsync` is mocked so nothing actually shells out.
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { setupTestEnvironment } from "./test-utils.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockSafeSpawnAsync = vi.fn();
@@ -35,13 +38,24 @@ beforeEach(() => {
 });
 
 describe("LSP server install actions (#197)", () => {
+	let runtimeBin: string;
+	const runtimePath = (name: string) =>
+		path.join(runtimeBin, process.platform === "win32" ? `${name}.exe` : name);
+	beforeEach(() => {
+		// R18-R1: real candidate files reach admission; only the child is mocked.
+		runtimeBin = setupTestEnvironment("pi-lens-install-actions-").tmpDir;
+		for (const name of ["go", "dotnet", "gem"])
+			fs.writeFileSync(runtimePath(name), "fixture", { mode: 0o755 });
+		vi.stubEnv("PATH", runtimeBin);
+	});
+	afterEach(() => vi.unstubAllEnvs());
 	it("tryGoInstallGopls: spawns `go install …`, runs uncancellable, true on exit 0", async () => {
 		const { tryGoInstallGopls } = await import("../../clients/lsp/server.js");
 
 		expect(await tryGoInstallGopls()).toBe(true);
 
 		const [cmd, args, opts] = mockSafeSpawnAsync.mock.calls[0];
-		expect(cmd === "go" || cmd === "go.exe").toBe(true);
+		expect(cmd).toBe(runtimePath("go"));
 		expect(args).toEqual(["install", "golang.org/x/tools/gopls@latest"]);
 		expect(opts).toMatchObject({ ignoreAmbientSignal: true });
 	});
@@ -65,7 +79,7 @@ describe("LSP server install actions (#197)", () => {
 		expect(await tryDotnetToolInstall("csharp-ls")).toBe(true);
 		expect(mockSafeSpawnAsync).toHaveBeenCalledTimes(1);
 		const [cmd, args, opts] = mockSafeSpawnAsync.mock.calls[0];
-		expect(cmd).toBe("dotnet");
+		expect(cmd).toBe(runtimePath("dotnet"));
 		expect(args.slice(0, 2)).toEqual(["tool", "install"]);
 		expect(args).toContain("csharp-ls");
 		expect(opts).toMatchObject({ ignoreAmbientSignal: true });
@@ -108,7 +122,7 @@ describe("LSP server install actions (#197)", () => {
 
 			expect(await tryGemInstall("ruby-lsp")).toBe(true);
 			const [cmd, args, opts] = mockSafeSpawnAsync.mock.calls[0];
-			expect(cmd).toBe("gem");
+			expect(cmd).toBe(runtimePath("gem"));
 			expect(args.slice(0, 2)).toEqual(["install", "ruby-lsp"]);
 			expect(opts).toMatchObject({ ignoreAmbientSignal: true });
 			// Asserts against the actual machine-global root (respects #525's

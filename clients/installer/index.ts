@@ -106,6 +106,7 @@ import {
 	trustScopedSpawnEnv,
 } from "../package-manager.js";
 import {
+	type SpawnResult,
 	isAcceptedCommandFile,
 	resetSafeSpawnWindowsCommandCache,
 	safeSpawnAsync,
@@ -6135,7 +6136,7 @@ async function installPipTool(
 			command: string,
 			args: string[],
 			env?: NodeJS.ProcessEnv,
-		) => {
+		): Promise<SpawnResult> => {
 			// `pipConstraintEnv` is empty unless the entry declares
 			// `pipConstraints`, and it is applied HERE — the single spawn seam every
 			// rung of the ladder (pipx, venv, --user, private-prefix) goes through —
@@ -6155,7 +6156,6 @@ async function installPipTool(
 					status: 1,
 					stdout: "",
 					stderr: `project trust refused ${command}`,
-					error: new Error(`project trust refused ${command}`),
 				};
 			return safeSpawnAsync(admitted, args, {
 				timeout: 120_000,
