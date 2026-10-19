@@ -53,6 +53,7 @@ import {
 import * as installer from "../installer/index.js";
 import {
 	commandSearchReachesProject,
+	resolveTrustScopedCommand,
 	normalizeSearchPath,
 	trustScopedSpawnEnv,
 } from "../package-manager.js";
@@ -2018,13 +2019,15 @@ function isOnPath(command: string, root?: string): Promise<boolean> {
  * through the trust-scoped PATH and runs from HOME, so project configuration
  * does not steer it.
  */
-function runtimeInstallSpawnOptions() {
+async function runtimeInstallSpawn(command: string, args: string[]) {
+	const admitted = resolveTrustScopedCommand(command);
+	if (!admitted) return undefined;
 	const env = trustScopedSpawnEnv();
-	return {
+	return safeSpawnAsync(admitted, args, {
 		timeout: 180000,
 		ignoreAmbientSignal: true,
 		...(env && { env, cwd: os.homedir() }),
-	};
+	});
 }
 
 /**
@@ -2037,21 +2040,23 @@ function runtimeInstallSpawnOptions() {
  */
 export async function tryGoInstallGopls(): Promise<boolean> {
 	const isWindows = process.platform === "win32";
-	const result = await safeSpawnAsync(
-		isWindows ? "go.exe" : "go",
-		["install", "golang.org/x/tools/gopls@latest"],
-		runtimeInstallSpawnOptions(),
-	);
-	return !result.error && result.status === 0;
+	const result = await runtimeInstallSpawn(isWindows ? "go.exe" : "go", [
+		"install",
+		"golang.org/x/tools/gopls@latest",
+	]);
+	return !!result && !result.error && result.status === 0;
 }
 
 export async function tryDotnetToolInstall(tool: string): Promise<boolean> {
 	mkdirSync(PI_LENS_BIN_DIR, { recursive: true });
-	const result = await safeSpawnAsync(
-		"dotnet",
-		["tool", "install", "--tool-path", PI_LENS_BIN_DIR, tool],
-		runtimeInstallSpawnOptions(),
-	);
+	const result = await runtimeInstallSpawn("dotnet", [
+		"tool",
+		"install",
+		"--tool-path",
+		PI_LENS_BIN_DIR,
+		tool,
+	]);
+	if (!result) return false;
 	if (!result.error && result.status === 0) return true;
 
 	const stderr = result.stderr ?? "";
@@ -2063,12 +2068,14 @@ export async function tryDotnetToolInstall(tool: string): Promise<boolean> {
 		return false;
 	}
 
-	const updateResult = await safeSpawnAsync(
-		"dotnet",
-		["tool", "update", "--tool-path", PI_LENS_BIN_DIR, tool],
-		runtimeInstallSpawnOptions(),
-	);
-	return !updateResult.error && updateResult.status === 0;
+	const updateResult = await runtimeInstallSpawn("dotnet", [
+		"tool",
+		"update",
+		"--tool-path",
+		PI_LENS_BIN_DIR,
+		tool,
+	]);
+	return !!updateResult && !updateResult.error && updateResult.status === 0;
 }
 
 /**
@@ -2518,12 +2525,14 @@ export async function tryGemInstall(gem: string): Promise<boolean> {
 	const { mkdir } = await import("node:fs/promises");
 	await mkdir(binDir, { recursive: true });
 
-	const result = await safeSpawnAsync(
-		"gem",
-		["install", gem, "--bindir", binDir, "--no-document"],
-		runtimeInstallSpawnOptions(),
-	);
-	const ok = !result.error && result.status === 0;
+	const result = await runtimeInstallSpawn("gem", [
+		"install",
+		gem,
+		"--bindir",
+		binDir,
+		"--no-document",
+	]);
+	const ok = !!result && !result.error && result.status === 0;
 	// Add binDir to PATH so subsequent lookups find the installed gem
 	if (ok) {
 		const sep = process.platform === "win32" ? ";" : ":";

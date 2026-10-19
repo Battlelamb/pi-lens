@@ -609,6 +609,24 @@ describe.skipIf(process.platform === "win32")(
 	"LSP runtime installs honour project trust (#4530)",
 	() => {
 		for (const [name, install] of RUNTIME_INSTALLS) {
+			for (const trust of ["unknown", "untrusted", "trusted"] as const) {
+				it(`r19 ${name} install judges a project-linked runtime under ${trust} trust`, async () => {
+					// R18-R1: an outside PATH directory can link to project bytes.
+					const project = makeProject();
+					const target = path.join(project.root, name);
+					plant(target, project.marker);
+					const outside = tempDir("pi-lens-4530-outside-");
+					fs.symlinkSync(target, path.join(outside, name));
+					process.env.PATH = [outside, dirOf("sh")].join(path.delimiter);
+					process.chdir(project.root);
+					setProjectTrustState(trust);
+
+					await install();
+
+					if (trust === "trusted") expect(project.ran()).toContain("install");
+					else expect(project.ran()).toBe("");
+				});
+			}
 			it(`runs the ${name} install from outside an untrusted project`, async () => {
 				const project = makeProject();
 				const direnvBin = path.join(project.root, "bin");
