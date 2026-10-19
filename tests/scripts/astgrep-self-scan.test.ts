@@ -29,6 +29,14 @@ import {
 	runSelfScan,
 	selfScanRuleIds,
 } from "../../scripts/lib/astgrep-self-scan.mjs";
+import { setProjectTrustState } from "../../clients/project-trust.js";
+
+// #4530 round 21: this file is the scan's in-process host (the CLI wrapper
+// adopts the workspace trusted at startup; the lib-level and stub cases here
+// run the same spawn seam). Without the adoption the chokepoint refuses a bare
+// lookup that resolves inside the checkout, including the fixture's own stub,
+// under unknown trust — and a dead scan must not read as a clean one.
+setProjectTrustState("trusted");
 
 const WRAPPER_PATH = path.join(
 	repoRoot(),
@@ -503,7 +511,14 @@ describe("self-scan argv and tracked filter (#3886 r3)", () => {
 		// The helper resolves the maintenance policy relative to its own module, so
 		// the policy file is copied with it (#4552 R2).
 		copyFixtureGitHelper(root);
-		for (const rel of ["clients/safe-spawn.js", "clients/string-utils.js"]) {
+		// The wrapper adopts the workspace trusted (#4530 round 21), so its
+		// project-trust module is linked beside the spawn seam it guards; the
+		// linked files' own relative imports resolve in the real checkout.
+		for (const rel of [
+			"clients/safe-spawn.js",
+			"clients/string-utils.js",
+			"clients/project-trust.js",
+		]) {
 			fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
 			fs.symlinkSync(path.join(repoRoot(), rel), path.join(root, rel));
 		}

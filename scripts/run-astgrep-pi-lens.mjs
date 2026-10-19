@@ -34,6 +34,15 @@ import {
 	trackedSelfScanFileSet,
 	writeBaseline,
 } from "./lib/astgrep-self-scan.mjs";
+import { setProjectTrustState } from "../clients/project-trust.js";
+
+// #4530 round 21: the scan drives pi-lens's own registry dispatch over the
+// checkout's ast-grep devDependency. With project trust left "unknown" the
+// spawn seam refuses a bare lookup that resolves inside the checkout, so this
+// maintenance host declares the workspace trusted once, exactly as the non-pi
+// process entry points do (mcp/cli.ts, mcp/server.ts): workspace trust belongs
+// to the caller that runs the scan, and pi is not consulted here.
+setProjectTrustState("trusted");
 
 const args = process.argv.slice(2);
 const updateBaseline = args.includes("--update-baseline");
