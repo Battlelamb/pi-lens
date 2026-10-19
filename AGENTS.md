@@ -888,6 +888,19 @@ file-scoped worklist and receives no project-wide scanner output.
 - `safeSpawnAsync` is the subprocess seam. It carries ambient abort behavior,
   process-tree cleanup, output caps, typed failure kinds, and bounded timeouts.
   Installs pass `ignoreAmbientSignal: true` and remain trust-gated.
+  It is also the admission chokepoint (#4530 round 20): `admitSpawnExecutable`
+  resolves the executable the kernel would run (the spawn's own Windows
+  resolver, or a POSIX `PATH` walk in kernel order), asks
+  `commandResolvesIntoProject` in `clients/project-reach.ts` whether that real
+  target reaches the untrusted project, and refuses with a typed
+  `trust-refused` result plus one bounded `trust-refusal` row per distinct
+  target. A trusted project costs no filesystem work, and an unresolved name is
+  admitted so absence keeps reporting ENOENT. A raw `node:child_process` start
+  in the runtime trees is a hole by construction:
+  `tests/config/spawn-chokepoint-sweep.test.ts` enumerates them from the module
+  binding and requires each to be routed, or admitted with a reason, liveness
+  evidence, and a pinned site count. Do not add a per-caller executable guard;
+  extend the seam.
 - Global binary lookups honour project trust. Until pi trusts the project,
   the installer's and the LSP launcher's lookups, and the spawns they make,
   use `trustScopedPath`/`trustScopedSpawnEnv` (`clients/package-manager.ts`):

@@ -1385,12 +1385,14 @@ export interface SpawnAdmissionOptions {
 	/** The child's EFFECTIVE environment (already merged with `process.env`). */
 	env?: NodeJS.ProcessEnv;
 	/**
-	 * Classify even when pi says the project is trusted. For a launcher that
-	 * owns a root pi did not admit (`clients/lsp/launch.ts`): session trust
-	 * grants the session's project, never an adopted root's executables
-	 * (#4566 r13). Default `false` — the trust question is the ordinary one.
+	 * A project root the caller serves, when it is not this process's session
+	 * project (an adopted or served root). The judgment always includes the
+	 * session project; this adds another. It is NOT the child's cwd: pi-lens
+	 * installs tools into its own data directory and runs them there, so a cwd
+	 * taken as a project root would refuse every managed tool it installed
+	 * (measured: the pip ladder's `PI_LENS_HOME` rungs).
 	 */
-	regardlessOfTrust?: boolean;
+	projectRoot?: string;
 }
 
 /**
@@ -1501,17 +1503,14 @@ export function admitSpawnExecutable(
 	options: SpawnAdmissionOptions = {},
 ): SpawnAdmission {
 	const trust = getProjectTrustState();
-	if (trust === "trusted" && !options.regardlessOfTrust)
-		return { admitted: true };
+	if (trust === "trusted") return { admitted: true };
 	const executable = resolveSpawnExecutable(command, options);
 	if (!executable) return { admitted: true };
-	const roots = [options.cwd ?? process.cwd()];
-	if (!roots.includes(process.cwd())) roots.push(process.cwd());
+	const roots = [process.cwd()];
+	if (options.projectRoot && !roots.includes(options.projectRoot))
+		roots.push(options.projectRoot);
 	for (const root of roots) {
-		if (
-			!commandResolvesIntoProject(executable, root, options.regardlessOfTrust)
-		)
-			continue;
+		if (!commandResolvesIntoProject(executable, root)) continue;
 		recordProjectCommandRefusal(executable);
 		return { admitted: false, executable, trust };
 	}
