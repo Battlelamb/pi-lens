@@ -40,33 +40,189 @@ export function parseActionPins(text, file = "<fixture>") {
 // `--only-binary=:all:` refuses the sdist, and the advisory yamllint row
 // installed nothing while the workflow still read green. Shape 69: ONE positive
 // test decides what is a pin, so no list of known-bad spellings can pass an
-// unlisted one, and every form the reader cannot see fails closed.
+// unlisted one, and every form the walker cannot fully read is refused: a YAML
+// escape, text after a scalar's closing quote, a `uses:` value on another line,
+// a step written as a flow mapping.
+//
+// The reader is dependency-free on purpose: .github/workflows/action-pins.yml
+// runs `node scripts/check-action-pins.mjs` with no `npm install`, so js-yaml is
+// not available here.
 const CONCRETE_PYTHON = /^\d+\.\d+(?:\.\d+)?$/;
 const SETUP_PYTHON = "actions/setup-python";
-// A `uses:` key in block form: `- uses:` or `uses:`, quoted or not.
-const STEP_USES = /^([ \t]*)(?:-[ \t]+)?(["']?)uses\2[ \t]*:[ \t]*(.*)$/;
-const STEP_KEY = /^([A-Za-z0-9_-]+)[ \t]*:[ \t]*(.*)$/;
+// A block-mapping entry: `key: value`, `- key: value`, a quoted key accepted.
+// In block context `key:"value"` with no space is one plain scalar, not a key.
+const KEY_LINE =
+	/^(?:(-)[ \t]+)?(["']?)([A-Za-z0-9_-]+)\2[ \t]*:(?:[ \t]+(.*))?$/;
+// A value that opens a block scalar: the lines more indented below it are
+// literal text — shell or prose, never workflow structure (shape 43).
+const BLOCK_SCALAR = /^[|>][+-]?[0-9]?$/;
 
-// A key's scalar value: quotes stripped and a trailing comment dropped. A value
-// the reader cannot close is returned as written, so it fails the rule instead
-// of passing as something the walker guessed.
+// A key's scalar value: quotes stripped and a trailing comment dropped. `read`
+// is false for a value this walker does not fully read, and the value returned
+// is then the text as written, so the rule reports what the file holds instead
+// of a prefix of it (shape 69).
 function scalar(raw) {
 	const trimmed = raw.trim();
-	if (!trimmed) return "";
+	if (!trimmed || trimmed.startsWith("#")) return { text: "", read: true };
 	const quote = trimmed[0];
 	if (quote === '"' || quote === "'") {
 		const end = trimmed.indexOf(quote, 1);
-		return end > 0 ? trimmed.slice(1, end) : trimmed;
+		if (end < 0) return { text: trimmed, read: false };
+		const rest = trimmed.slice(end + 1).trim();
+		if (rest && !rest.startsWith("#")) return { text: trimmed, read: false };
+		const text = trimmed.slice(1, end);
+		// `"\u0061"` spells `a`, and a single-quoted `''` is a literal quote: a
+		// reader that does not decode YAML escapes knows neither value.
+		return { text, read: !(quote === '"' && text.includes("\\")) };
 	}
-	return trimmed.replace(/[ \t]+#.*$/, "").trim();
+	const comment = trimmed.search(/[ \t]#/);
+	return {
+		text: comment < 0 ? trimmed : trimmed.slice(0, comment).trim(),
+		read: true,
+	};
 }
 
+// The action and ref of a `uses:` value, or that the walker did not read it. A
+// read value with no `@` names a local action or a container, which no pin rule
+// governs.
 function usesTarget(raw) {
-	const value = scalar(raw);
-	const at = value.lastIndexOf("@");
+	const { text, read } = scalar(raw);
+	if (!read || !text || BLOCK_SCALAR.test(text)) return { read: false, text };
+	const at = text.lastIndexOf("@");
 	return at < 1
-		? null
-		: { action: value.slice(0, at), ref: value.slice(at + 1) };
+		? { read: true, action: null, ref: "" }
+		: { read: true, action: text.slice(0, at), ref: text.slice(at + 1) };
+}
+
+/**
+ * The block structure of one workflow or composite action: for every line,
+ * whether it is a mapping entry the walker may read (`key`), the literal body of
+ * a block scalar (`literal`), a comment, blank, or a line it does not read as a
+ * key (`other`, which is where a flow mapping lands). A block scalar's body is
+ * shell or prose, so no scan below reads a step or an input out of it: marking
+ * which lines carry structure is what keeps `echo "uses: …"` from failing CI
+ * (shape 43).
+ */
+function readBlock(text) {
+	const entries = [];
+	let literal = null;
+	for (const [index, raw] of String(text).split(/\r?\n/).entries()) {
+		const indent = raw.length - raw.trimStart().length;
+		const trimmed = raw.trim();
+		const entry = {
+			index,
+			raw,
+			indent,
+			kind: "blank",
+			key: "",
+			value: "",
+			column: 0,
+		};
+		entries.push(entry);
+		if (literal !== null) {
+			// A blank line belongs to the open scalar; the first line at or
+			// above the key that opened it ends the scalar.
+			if (!trimmed || indent > literal) {
+				entry.kind = "literal";
+				continue;
+			}
+			literal = null;
+		}
+		if (!trimmed) continue;
+		if (trimmed.startsWith("#")) {
+			entry.kind = "comment";
+			continue;
+		}
+		const key = KEY_LINE.exec(trimmed);
+		if (!key) {
+			entry.kind = "other";
+			continue;
+		}
+		entry.kind = "key";
+		entry.key = key[3].toLowerCase();
+		entry.value = key[4] ?? "";
+		// The key token's column, past a list marker: sibling keys of a step
+		// (`with:`) sit at it, and anything shallower ends the step.
+		entry.column =
+			indent +
+			(key[1] ? key[0].length - key[0].replace(/^-[\t ]+/, "").length : 0);
+		if (BLOCK_SCALAR.test(entry.value.trim())) literal = entry.column;
+	}
+	return entries;
+}
+
+// Where a flow value ends: the first `,`, `}` or `]` outside quotes.
+function flowValueEnd(raw, start) {
+	let quote = "";
+	for (let at = start; at < raw.length; at += 1) {
+		const char = raw[at];
+		if (quote) {
+			if (char === "\\" && quote === '"') {
+				at += 1;
+				continue;
+			}
+			if (char === quote) quote = "";
+			continue;
+		}
+		if (char === '"' || char === "'") {
+			quote = char;
+			continue;
+		}
+		if (char === "," || char === "}" || char === "]") return at;
+	}
+	return raw.length;
+}
+
+/**
+ * The `uses:` values written as keys inside a flow collection on one line, such
+ * as `- {uses: x, with: {python-version: "3.x"}}`. A `uses` token counts only
+ * where a key can stand — straight after `{`, `[` or `,` inside brackets — so
+ * the prose in `run: echo uses: a/b@c` is text, not a step (shape 43).
+ */
+function flowUsesValues(raw) {
+	const values = [];
+	let depth = 0;
+	let quote = "";
+	let keyNext = false;
+	for (let at = 0; at < raw.length; at += 1) {
+		const char = raw[at];
+		if (quote) {
+			if (char === "\\" && quote === '"') {
+				at += 1;
+				continue;
+			}
+			if (char === quote) quote = "";
+			continue;
+		}
+		if (char === '"' || char === "'") {
+			quote = char;
+			continue;
+		}
+		if (char === "#" && (at === 0 || /[ \t]/.test(raw[at - 1]))) break;
+		if (char === "{" || char === "[") {
+			depth += 1;
+			keyNext = true;
+			continue;
+		}
+		if (char === "}" || char === "]") {
+			depth -= 1;
+			keyNext = false;
+			continue;
+		}
+		if (char === "," && depth > 0) {
+			keyNext = true;
+			continue;
+		}
+		if (!keyNext || depth < 1) continue;
+		const key = /^(["']?)([A-Za-z0-9_-]+)\1[ \t]*:[ \t]*/.exec(raw.slice(at));
+		if (!key) continue;
+		keyNext = false;
+		const start = at + key[0].length;
+		if (key[2].toLowerCase() === "uses")
+			values.push(raw.slice(start, flowValueEnd(raw, start)).trim());
+		at = start - 1;
+	}
+	return values;
 }
 
 /**
@@ -78,42 +234,44 @@ function usesTarget(raw) {
  */
 export function checkInterpreterPins(text, file = "<fixture>") {
 	const errors = [];
-	const lines = String(text).split(/\r?\n/);
-	const read = new Set();
-	for (const [index, line] of lines.entries()) {
-		const uses = STEP_USES.exec(line);
-		const target = uses && usesTarget(uses[3]);
-		if (!target || target.action !== SETUP_PYTHON) continue;
-		read.add(index);
+	const entries = readBlock(text);
+	for (const entry of entries) {
+		if (entry.kind !== "key" || entry.key !== "uses") continue;
+		const target = usesTarget(entry.value);
+		if (!target.read) {
+			errors.push(
+				`${file}:${entry.index + 1}: uses: "${target.text}" is not a value this walker reads; the python-version pin cannot be read`,
+			);
+			continue;
+		}
+		// GitHub owner and repository names are case-insensitive, so the
+		// spelling a workflow uses is not the identity of the action.
+		if (!target.action || target.action.toLowerCase() !== SETUP_PYTHON)
+			continue;
 		const step = `${target.action}@${target.ref}`;
-		// The `uses` key's column: a sibling key of the step sits at it, and
-		// anything shallower ends the step.
-		const keyIndent = line.search(/["']?uses["']?[ \t]*:/);
 		let sawWith = false;
 		let inWith = false;
 		let unreadable = null;
 		const values = [];
-		for (let at = index + 1; at < lines.length; at += 1) {
-			const raw = lines[at];
-			const trimmed = raw.trim();
-			if (!trimmed || trimmed.startsWith("#")) continue;
-			const indent = raw.length - raw.trimStart().length;
-			if (indent < keyIndent) break;
-			if (indent === keyIndent && trimmed.startsWith("- ")) break;
-			const key = STEP_KEY.exec(trimmed);
-			if (!key) continue;
-			const name = key[1].toLowerCase();
-			if (indent === keyIndent) {
-				inWith = name === "with";
+		for (let at = entry.index + 1; at < entries.length; at += 1) {
+			const next = entries[at];
+			// A block scalar's body is shell or prose, and a comment is copy:
+			// neither is one of the step's keys (shape 43).
+			if (next.kind !== "key") continue;
+			if (next.indent < entry.column) break;
+			if (next.indent === entry.column) {
+				if (next.raw.trimStart().startsWith("- ")) break;
+				inWith = next.key === "with";
 				if (inWith) {
 					sawWith = true;
-					// An inline flow mapping: the block reader cannot see its keys.
-					if (key[2].trim()) unreadable ??= at + 1;
+					// An inline flow mapping: the block reader cannot see its
+					// keys. A comment after `with:` is copy, not a value.
+					if (scalar(next.value).text) unreadable ??= next.index + 1;
 				}
 				continue;
 			}
-			if (inWith && name === "python-version")
-				values.push({ line: at + 1, value: scalar(key[2]) });
+			if (inWith && next.key === "python-version")
+				values.push({ line: next.index + 1, ...scalar(next.value) });
 		}
 		if (unreadable !== null) {
 			errors.push(
@@ -123,26 +281,37 @@ export function checkInterpreterPins(text, file = "<fixture>") {
 		}
 		if (!sawWith || values.length === 0) {
 			errors.push(
-				`${file}:${index + 1}: ${step} has no with: python-version; the interpreter channel must be a concrete x.y release`,
+				`${file}:${entry.index + 1}: ${step} has no with: python-version; the interpreter channel must be a concrete x.y release`,
 			);
 			continue;
 		}
-		for (const { line: valueLine, value } of values)
+		// A value the walker did not fully read arrives as the text written,
+		// quotes and all, so it does not match the concrete form either: one
+		// positive test answers for both (`'3.12''x'` is not `3.12`).
+		for (const { line: valueLine, text: value } of values)
 			if (!CONCRETE_PYTHON.test(value))
 				errors.push(
 					`${file}:${valueLine}: ${step} python-version "${value}" is not a concrete x.y or x.y.z release`,
 				);
 	}
-	// A `setup-python` mention the block reader did not parse (a flow-map step,
-	// a quoted key it cannot follow) is refused rather than passed: an unread
-	// spelling is never a green one.
-	for (const [index, line] of lines.entries()) {
-		if (read.has(index) || line.trimStart().startsWith("#")) continue;
-		const bare = line.replace(/#.*$/, "");
-		if (!bare.includes(SETUP_PYTHON) || !/\buses\b/.test(bare)) continue;
-		errors.push(
-			`${file}:${index + 1}: ${SETUP_PYTHON} uses: is not a block-mapping step; the python-version pin cannot be read`,
-		);
+	// A step written as a flow mapping (`- {uses: …}`) is not the block form
+	// this walker reads, so its pin is refused rather than passed: an unread
+	// spelling is never a green one. A block step is a `key` line and never
+	// reaches this pass, and the scan looks only where a `uses` key can stand,
+	// so a `run:` body that prints one is left alone (shape 43).
+	for (const entry of entries) {
+		if (entry.kind !== "other") continue;
+		for (const value of flowUsesValues(entry.raw)) {
+			const target = usesTarget(value);
+			if (!target.read)
+				errors.push(
+					`${file}:${entry.index + 1}: uses: "${target.text}" is not a value this walker reads; the python-version pin cannot be read`,
+				);
+			else if ((target.action || "").toLowerCase() === SETUP_PYTHON)
+				errors.push(
+					`${file}:${entry.index + 1}: ${SETUP_PYTHON} uses: is not a block-mapping step; the python-version pin cannot be read`,
+				);
+		}
 	}
 	return errors;
 }

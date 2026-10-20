@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import {
+	checkActionPins,
 	checkInterpreterPins,
 	parseActionPins,
 	resolveGithubMatchingTags,
@@ -9,6 +10,13 @@ import {
 	validatePins,
 	workflowFiles,
 } from "../../scripts/check-action-pins.mjs";
+import {
+	setupTestEnvironment,
+	useTrackedTempDirs,
+} from "../clients/test-utils.js";
+
+// The entry-point case builds a one-file workflow root of its own.
+useTrackedTempDirs("pi-lens-action-pins-entry-");
 
 const GOOD = "0057852bfaa89a56745cba8c7296529d2fc39830";
 const BAD = "6849a6489940f00c2f30c0fb92c6274307ccb58a";
@@ -373,6 +381,192 @@ describe("check-action-pins interpreter pins (#4666, shape 69)", () => {
 		]);
 	});
 
+	// PRRT_kwDORt8rec6uV23n: a value the walker has not fully read is not a
+	// value it read. Shape 69 refuses the form instead of listing spellings.
+	it("refuses a uses: value whose spelling it does not decode", () => {
+		// `"\u0061ctions/setup-python"` is the action name; the walker decodes
+		// no YAML escape, so neither pass could name the action and a floating
+		// pin under it read green.
+		const escaped = `"\\u0061ctions/setup-python@${SETUP_PYTHON_REF}"`;
+		expect(
+			checkInterpreterPins(
+				workflow(`- uses: ${escaped}\n  with:\n    python-version: "3.x"`),
+				"fixture.yml",
+			),
+		).toEqual([
+			`fixture.yml:5: uses: ${escaped} is not a value this walker reads; the python-version pin cannot be read`,
+		]);
+	});
+
+	it("refuses a python-version value it has not fully read", () => {
+		// `'3.12''x'` closes and reopens the quote, so the value is `3.12'x`
+		// and the prefix `3.12` is not the pin. The escape spelling is the same
+		// gap in the value reader.
+		expect(checkInterpreterPins(pinned(`'3.12''x'`), "fixture.yml")).toEqual([
+			notConcrete(`'3.12''x'`),
+		]);
+		expect(checkInterpreterPins(pinned(`"\\u0033.12"`), "fixture.yml")).toEqual(
+			[notConcrete("\\u0033.12")],
+		);
+		expect(checkInterpreterPins(pinned(`"3.12" 'x'`), "fixture.yml")).toEqual([
+			notConcrete(`"3.12" 'x'`),
+		]);
+	});
+
+	// A `uses:` value on another line is the same unread spelling: the walker
+	// cannot name the action, so it must not pass the step.
+	it.each([
+		["no inline value", `- uses:\n  with:\n    python-version: "3.12"`, ""],
+		[
+			"a block scalar value",
+			`- uses: |\n    ${USE}\n  with:\n    python-version: "3.x"`,
+			"|",
+		],
+	])("refuses a uses: key with %s", (_label, steps, shown) => {
+		expect(checkInterpreterPins(workflow(steps), "fixture.yml")).toEqual([
+			`fixture.yml:5: uses: "${shown}" is not a value this walker reads; the python-version pin cannot be read`,
+		]);
+	});
+
+	// PRRT_kwDORt8rec6uV19K: GitHub owner and repository names are
+	// case-insensitive, so the spelling is not the action's identity.
+	it("matches the action name in any case, in both passes", () => {
+		const mixed = `Actions/Setup-Python@${SETUP_PYTHON_REF}`;
+		expect(
+			checkInterpreterPins(
+				workflow(`- uses: ${mixed}\n  with:\n    python-version: "3.x"`),
+				"fixture.yml",
+			),
+		).toEqual([
+			`fixture.yml:7: ${mixed} python-version "3.x" is not a concrete x.y or x.y.z release`,
+		]);
+		// The fail-closed pass reads the same identity.
+		expect(
+			checkInterpreterPins(
+				workflow(`- {uses: ${mixed}, with: {python-version: "3.x"}}`),
+				"fixture.yml",
+			),
+		).toEqual([
+			`fixture.yml:5: ${SETUP_PYTHON} uses: is not a block-mapping step; the python-version pin cannot be read`,
+		]);
+		expect(
+			checkInterpreterPins(
+				workflow(`- uses: ${mixed}\n  with:\n    python-version: "3.12"`),
+				"fixture.yml",
+			),
+		).toEqual([]);
+	});
+
+	// PRRT_kwDORt8rec6uV23r, shape 43: a `run:` body is shell or prose. A
+	// printed `uses:` line is text — even a whole step-shaped heredoc body — and
+	// only lines that carry YAML structure are read.
+	it("leaves a block scalar's body alone", () => {
+		expect(
+			checkInterpreterPins(
+				workflow(
+					[
+						`- run: |`,
+						`    echo "uses: ${USE}"`,
+						`    uses: ${USE}`,
+						`    with:`,
+						`      python-version: "3.x"`,
+						`  shell: bash`,
+					].join("\n"),
+				),
+				"fixture.yml",
+			),
+		).toEqual([]);
+		// A one-line `run:` is prose too: `uses:` there is not a key.
+		expect(
+			checkInterpreterPins(
+				workflow(`- run: echo uses: ${USE}\n  shell: bash`),
+				"fixture.yml",
+			),
+		).toEqual([]);
+	});
+
+	it("leaves a block scalar inside a with: block alone", () => {
+		expect(
+			checkInterpreterPins(
+				workflow(
+					[
+						`- uses: ${USE}`,
+						`  with:`,
+						`    python-version: "3.12"`,
+						`    args: |`,
+						`      python-version: "3.x"`,
+					].join("\n"),
+				),
+				"fixture.yml",
+			),
+		).toEqual([]);
+	});
+
+	// A blank line and a comment are not the step's keys, and a blank line's
+	// column is not the step's indent: the classification is what keeps the
+	// reader from ending a step at either (shape 43).
+	it("reads a step whose keys are separated by a comment and a blank line", () => {
+		expect(
+			checkInterpreterPins(
+				workflow(
+					[
+						`- name: Set up Python`,
+						`  # the interpreter this row's install needs`,
+						`  uses: ${USE}`,
+						``,
+						`  with:`,
+						`    python-version: "3.12"`,
+					].join("\n"),
+				),
+				"fixture.yml",
+			),
+		).toEqual([]);
+	});
+
+	// PRRT_kwDORt8rec6uV230: `with: # Keep this pinned` is copy, not an inline
+	// mapping, so the value below it still decides.
+	it("reads a with: key that carries only a comment", () => {
+		expect(
+			checkInterpreterPins(
+				workflow(
+					`- uses: ${USE}\n  with: # Keep this pinned\n    python-version: "3.12"`,
+				),
+				"fixture.yml",
+			),
+		).toEqual([]);
+		expect(
+			checkInterpreterPins(
+				workflow(
+					`- uses: ${USE}\n  with: # Keep this pinned\n    python-version: "3.x"`,
+				),
+				"fixture.yml",
+			),
+		).toEqual([notConcrete("3.x")]);
+	});
+
+	// PRRT_kwDORt8rec6uV236: the rule must run where CI runs it — the walker's
+	// entry point — and not only when a test calls the rule itself.
+	it("runs the interpreter rule through checkActionPins", async () => {
+		const root = setupTestEnvironment("pi-lens-action-pins-entry-").tmpDir;
+		mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+		// A tag ref, so parseActionPins pins nothing and no tag is resolved:
+		// the only error this root can produce is the interpreter pin.
+		const tagUse = `actions/setup-python@v7.0.0`;
+		writeFileSync(
+			join(root, ".github", "workflows", "lint.yml"),
+			workflow(`- uses: ${tagUse}\n  with:\n    python-version: "3.x"`),
+		);
+		const errors = await checkActionPins({
+			root,
+			fetchImpl: async () => {
+				throw new Error("the probe pins no tag, so the resolver must not run");
+			},
+		});
+		expect(errors).toEqual([
+			`.github/workflows/lint.yml:7: ${tagUse} python-version "3.x" is not a concrete x.y or x.y.z release`,
+		]);
+	});
+
 	it("reads every python-version spelling in a step, whatever its case", () => {
 		// GitHub passes action inputs as an upper-cased `INPUT_*` variable, so
 		// the key is case-insensitive for the action too. A concrete value in
@@ -446,6 +640,8 @@ describe("check-action-pins interpreter pins (#4666, shape 69)", () => {
 		// Four `setup-python` uses, all concrete after this PR.
 		expect(uses).toBe(4);
 		expect(errors).toEqual([]);
+		// The population the rule reads: every workflow and composite action.
+		expect(files.length).toBe(26);
 		// The composite actions are inside the walk the rule runs over.
 		expect(files.map(repoPath)).toContain(
 			".github/actions/tool-tree-cache/action.yml",

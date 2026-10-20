@@ -421,6 +421,7 @@ jobs:
           # #4666: the floating "3.x" channel reached an interpreter with no
           # pyyaml wheel under --only-binary=:all:, so this advisory row's lint
           # stopped silently while the workflow still reported success.
+          # scripts/check-action-pins.mjs fails a non-concrete pin here.
           python-version: "3.12"
       - name: Install yamllint
         run: "python -m pip install --disable-pip-version-check --only-binary=:all: yamllint==1.37.1"
