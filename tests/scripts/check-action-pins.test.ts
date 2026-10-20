@@ -265,6 +265,15 @@ function workflow(steps: string): string {
 		.join("\n")}\n`;
 }
 
+// A whole workflow whose `steps:` value is the flow list `list` on its own
+// line: the sibling shape a step list written in flow style has. PRRT_kwDORt8rec6uYkEO
+// (round 6): the round-5 rows passed `steps: …` and `jobs: …` bodies to
+// `workflow()`, so they landed *inside* `steps:` — a step list holding a
+// `steps` key — and proved the rule on a workflow no runner accepts.
+function flowSteps(list: string): string {
+	return `jobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps: ${list}\n`;
+}
+
 // A one-step workflow whose setup-python pin is `raw`, unsplit value included.
 function pinned(raw: string): string {
 	return workflow(`- uses: ${USE}\n  with:\n    python-version: ${raw}`);
@@ -280,7 +289,9 @@ const inFlow = (line: number) =>
 	`fixture.yml:${line}: ${SETUP_PYTHON} appears in a flow collection, which this walker does not read; write the step as a block mapping`;
 const flowEscape = (line: number) =>
 	`fixture.yml:${line}: a flow-collection token carries a YAML escape this walker does not decode; the python-version pin cannot be read`;
-const unreadFlowUses = (line: number, shown: string) =>
+// The unread-value message: one spelling for both passes, because the block
+// pass and the flow pass both refuse a `uses:` value they could not read.
+const unreadUses = (line: number, shown: string) =>
 	`fixture.yml:${line}: uses: "${shown}" is not a value this walker reads; the python-version pin cannot be read`;
 
 describe("check-action-pins interpreter pins (#4666, shape 69)", () => {
@@ -423,48 +434,94 @@ describe("check-action-pins interpreter pins (#4666, shape 69)", () => {
 	// next element's opener, so the next element's `uses` was skipped as an
 	// input and a floating pin passed CI silently. Round 5 stopped deciding
 	// the question at all (see `flowRefusal`), so every sibling shape below is
-	// refused whether the floating step stands first or second.
+	// refused whether the floating step stands first or second. Round 6
+	// rebuilds each row on a real `jobs:` root (PRRT_kwDORt8rec6uYkEO): a flow
+	// list as the `steps:` value, a block list of flow-mapped steps, and a job
+	// graph — every one a workflow a runner accepts, and every one red at the
+	// round-4 reader.
 	it.each([
 		[
 			"a with:-only sibling first",
-			`steps: [{uses: ${CHECKOUT}, with: {}}, {uses: ${USE}, with: {python-version: "3.x"}}]`,
+			flowSteps(
+				`[{uses: ${CHECKOUT}, with: {}}, {uses: ${USE}, with: {python-version: "3.x"}}]`,
+			),
+			4,
 		],
 		[
 			"a uses:-only sibling first",
-			`steps: [{uses: ${CHECKOUT}}, {uses: ${USE}, with: {python-version: "3.x"}}]`,
+			flowSteps(
+				`[{uses: ${CHECKOUT}}, {uses: ${USE}, with: {python-version: "3.x"}}]`,
+			),
+			4,
 		],
 		[
 			"an unrelated key first",
-			`steps: [{name: Checkout}, {uses: ${USE}, with: {python-version: "3.x"}}]`,
+			flowSteps(
+				`[{name: Checkout}, {uses: ${USE}, with: {python-version: "3.x"}}]`,
+			),
+			4,
 		],
 		[
-			"a with:-only sibling inside a list-item flow sequence",
-			`- [{uses: ${CHECKOUT}, with: {}}, {uses: ${USE}, with: {python-version: "3.x"}}]`,
+			"a with:-only sibling first in a block list of flow steps",
+			workflow(
+				`- {uses: ${CHECKOUT}, with: {}}\n- {uses: ${USE}, with: {python-version: "3.x"}}`,
+			),
+			6,
 		],
 		[
-			"a uses:-only sibling inside a list-item flow sequence",
-			`- [{uses: ${CHECKOUT}}, {uses: ${USE}, with: {python-version: "3.x"}}]`,
+			"a uses:-only sibling first in a block list of flow steps",
+			workflow(
+				`- {uses: ${CHECKOUT}}\n- {uses: ${USE}, with: {python-version: "3.x"}}`,
+			),
+			6,
 		],
 		[
-			"an unrelated key inside a list-item flow sequence",
-			`- [{name: Checkout}, {uses: ${USE}, with: {python-version: "3.x"}}]`,
+			"an unrelated key first in a block list of flow steps",
+			workflow(
+				`- {name: Checkout}\n- {uses: ${USE}, with: {python-version: "3.x"}}`,
+			),
+			6,
 		],
 		[
 			"a with:-only sibling under a job graph",
-			`jobs: {lint: {steps: [{uses: ${CHECKOUT}, with: {}}, {uses: ${USE}, with: {python-version: "3.x"}}]}}`,
+			`jobs: {lint: {steps: [{uses: ${CHECKOUT}, with: {}}, {uses: ${USE}, with: {python-version: "3.x"}}]}}\n`,
+			1,
 		],
 		[
 			"a floating step first, then a with:-only sibling",
-			`steps: [{uses: ${USE}, with: {python-version: "3.x"}}, {uses: ${CHECKOUT}, with: {}}]`,
+			flowSteps(
+				`[{uses: ${USE}, with: {python-version: "3.x"}}, {uses: ${CHECKOUT}, with: {}}]`,
+			),
+			4,
 		],
 		[
 			"a cache-key sibling first",
-			`steps: [{uses: ${CHECKOUT}, with: {cache: pip}}, {uses: ${USE}, with: {python-version: "3.x"}}]`,
+			flowSteps(
+				`[{uses: ${CHECKOUT}, with: {cache: pip}}, {uses: ${USE}, with: {python-version: "3.x"}}]`,
+			),
+			4,
 		],
-	])("refuses a floating step after %s", (_label, body) => {
-		expect(checkInterpreterPins(workflow(body), "fixture.yml")).toEqual([
-			inFlow(5),
-		]);
+		[
+			"a cache-key sibling first in a block list of flow steps",
+			workflow(
+				`- {uses: ${CHECKOUT}, with: {cache: pip}}\n- {uses: ${USE}, with: {python-version: "3.x"}}`,
+			),
+			6,
+		],
+		[
+			"an unrelated key first under a job graph",
+			`jobs: {lint: {steps: [{name: Checkout}, {uses: ${USE}, with: {python-version: "3.x"}}]}}\n`,
+			1,
+		],
+		[
+			"a floating step first in a block list of flow steps",
+			workflow(
+				`- {uses: ${USE}, with: {python-version: "3.x"}}\n- {uses: ${CHECKOUT}, with: {}}`,
+			),
+			5,
+		],
+	])("refuses a floating step after %s", (_label, text, line) => {
+		expect(checkInterpreterPins(text, "fixture.yml")).toEqual([inFlow(line)]);
 	});
 
 	it("refuses a flow step whose floating sibling is a block step", () => {
@@ -478,6 +535,299 @@ describe("check-action-pins interpreter pins (#4666, shape 69)", () => {
 				"fixture.yml",
 			),
 		).toEqual([notConcrete("3.x", 8)]);
+	});
+
+	// F-4671-R5-1, round 6. A YAML node property prefixes the node it stands
+	// on: `&anchor`, `!tag`, `!!seq`, `!<tag:…>`, and a chain of them. The
+	// block reader keeps `key: value` lines, and round 5's flow pass handed on
+	// only a value that *started* with `{` or `[` — so `steps: &x [{…}]` was
+	// neither read as a key's flow value nor as an unread line, and a floating
+	// interpreter pin passed CI silently. Anchors are live in this repository's
+	// own workflows (`cache-prune.yml`'s `paths: &prune-paths` and its
+	// `*prune-paths` use, `install-smoke.yml`), so the spelling is a real one.
+	// The property is stripped before the line is classified, so each row is
+	// refused as the flow collection it is.
+	it.each([
+		[
+			"an anchor",
+			`jobs:\n  j:\n    steps: &x [{uses: ${USE}, with: {python-version: "3.x"}}]`,
+			3,
+		],
+		[
+			"a shorthand sequence tag",
+			`jobs:\n  j:\n    steps: !!seq [{uses: ${USE}, with: {python-version: "3.x"}}]`,
+			3,
+		],
+		[
+			"a verbatim sequence tag",
+			`jobs:\n  j:\n    steps: !<tag:yaml.org,2002:seq> [{uses: ${USE}, with: {python-version: "3.x"}}]`,
+			3,
+		],
+		[
+			"a tag then an anchor",
+			`jobs:\n  j:\n    steps: !s &x [{uses: ${USE}, with: {python-version: "3.x"}}]`,
+			3,
+		],
+		[
+			"an anchor before a flow mapping",
+			`jobs:\n  j:\n    steps: &x {0: {uses: ${USE}, with: {python-version: "3.x"}}}`,
+			3,
+		],
+		[
+			"an anchor and a trailing comment",
+			`jobs:\n  j:\n    steps: &x [{uses: ${USE}, with: {python-version: "3.x"}}] # pinned`,
+			3,
+		],
+		[
+			"an anchor in front of the steps key",
+			`jobs:\n  j:\n    &x steps: [{uses: ${USE}, with: {python-version: "3.x"}}]`,
+			3,
+		],
+		[
+			"an anchor on the list item",
+			workflow(`- &x [{uses: ${USE}, with: {python-version: "3.x"}}]`),
+			5,
+		],
+		[
+			"a tag on the list item",
+			workflow(`- !tag [{uses: ${USE}, with: {python-version: "3.x"}}]`),
+			5,
+		],
+		[
+			"an anchor alone, its flow body on the next line",
+			`jobs:\n  j:\n    steps: &x\n      [{uses: ${USE}, with: {python-version: "3.x"}}]`,
+			4,
+		],
+	])("refuses a flow step behind %s", (_label, text, line) => {
+		expect(checkInterpreterPins(text, "fixture.yml")).toEqual([inFlow(line)]);
+	});
+
+	// F-4671-R5-2, round 6. The same prefix on a `uses:` *value*: an anchor and
+	// a tag make the action unreadable to a reader that does not resolve YAML
+	// node properties, and `*ref` names a value defined on another line — the
+	// pin this step carries is then not on this line at all. One refusal in
+	// `usesTarget` covers the block pass and the flow pass, because both ask it.
+	it.each([
+		[
+			"an anchored action",
+			workflow(`- uses: &a ${USE}\n  with:\n    python-version: "3.x"`),
+			5,
+			`&a ${USE}`,
+		],
+		[
+			"a tagged action",
+			workflow(`- uses: !action ${USE}\n  with:\n    python-version: "3.x"`),
+			5,
+			`!action ${USE}`,
+		],
+		[
+			"an alias",
+			workflow(`- uses: *ref\n  with:\n    python-version: "3.x"`),
+			5,
+			"*ref",
+		],
+		[
+			"an alias on a step beside its anchor",
+			`jobs:\n  j:\n    steps:\n      - env:\n          PY: &ref ${USE}\n      - uses: *ref\n        with:\n          python-version: "3.x"`,
+			6,
+			"*ref",
+		],
+		[
+			"an alias in a flow step",
+			`jobs:\n  j:\n    steps:\n      - env:\n          PY: &ref ${USE}\n      - {uses: *ref, with: {python-version: "3.x"}}`,
+			6,
+			"*ref",
+		],
+	])("refuses a uses: value written as %s", (_label, text, line, shown) => {
+		expect(checkInterpreterPins(text, "fixture.yml")).toEqual([
+			unreadUses(line, shown),
+		]);
+	});
+
+	// The block pass keeps reading a step whose *mapping* carries the anchor:
+	// the property belongs to the mapping, not to the value, so the pin below
+	// it is read and named. Refusing here would be refusing nothing.
+	it("reads a block step whose mapping carries an anchor", () => {
+		expect(
+			checkInterpreterPins(
+				workflow(`- &a uses: ${USE}\n  with:\n    python-version: "3.x"`),
+				"fixture.yml",
+			),
+		).toEqual([notConcrete("3.x", 7)]);
+	});
+
+	// F-4671-R6-1, round 6. A flow collection is not one line. `steps: [` opens
+	// one, and the tokens after it — including a `uses:` that names the action
+	// — are on the following lines, where the block reader sees a `name:` or
+	// `uses:` key and round 5's "a value starts with `{` or `[`" test saw a
+	// value that does not. Both spellings passed the walker at `8f7242da7`
+	// silently, so the reader now carries the collection's open depth and
+	// refuses every line that stands inside one.
+	it.each([
+		[
+			"its uses: on the next line of a steps: list",
+			`jobs:\n  j:\n    steps: [\n      uses: ${USE}, with: {python-version: "3.x"}]`,
+		],
+		[
+			"its uses: after a name: on the next line of a steps: list",
+			`jobs:\n  j:\n    steps: [\n      name: x, uses: ${USE}, with: {python-version: "3.x"}]`,
+		],
+		[
+			"its uses: on the next line of a flow mapping",
+			`jobs:\n  j:\n    x: {\n      uses: ${USE}, with: {python-version: "3.x"}}`,
+		],
+		[
+			"a quoted uses: on the next line of a steps: list",
+			`jobs:\n  j:\n    steps: [\n      {"uses": ${USE}, with: {python-version: "3.x"}}]`,
+		],
+	])("refuses a flow step with %s", (_label, text) => {
+		expect(checkInterpreterPins(text, "fixture.yml")).toEqual([inFlow(4)]);
+	});
+
+	// A flow collection can also stand inside a step's `with:` block, and its
+	// own `python-version` line is that collection's text, not the step's pin:
+	// the walk over a step's siblings skips the lines a collection holds open.
+	it("reads no pin out of a flow value inside a with: block", () => {
+		expect(
+			checkInterpreterPins(
+				[
+					`jobs:`,
+					`  j:`,
+					`    steps:`,
+					`      - uses: ${USE}`,
+					`        with:`,
+					`          python-version: "3.12"`,
+					`          args: [x,`,
+					`            python-version: "3.x"]`,
+				].join("\n"),
+				"fixture.yml",
+			),
+		).toEqual([]);
+	});
+
+	// The other half of that state: a brace in prose never opens a collection,
+	// and a multi-line flow collection that names no action stays silent, so
+	// the depth above is a reader of structure and not of any `{` it meets.
+	it("keeps prose out of flow after a brace in a value", () => {
+		expect(
+			checkInterpreterPins(
+				[
+					`jobs:`,
+					`  j:`,
+					`    steps:`,
+					`      - run: echo "{"`,
+					`        shell: bash`,
+					`      - run: echo ${SETUP_PYTHON} is prose`,
+				].join("\n"),
+				"fixture.yml",
+			),
+		).toEqual([]);
+		expect(
+			checkInterpreterPins(
+				`jobs:\n  j:\n    strategy:\n      matrix: {\n        include: [{python: "3.12"}]}\n    steps:\n      - run: echo ${SETUP_PYTHON} is prose`,
+				"fixture.yml",
+			),
+		).toEqual([]);
+		// The depth closes on the line that closes it, so the prose below a
+		// finished flow collection is outside it: the closing line here starts
+		// with a key, not with `}` or `]`.
+		expect(
+			checkInterpreterPins(
+				[
+					`jobs:`,
+					`  j:`,
+					`    steps: [`,
+					`      name: x, run: y]`,
+					`    env: {a: b}`,
+					`    x: ${SETUP_PYTHON} is prose`,
+				].join("\n"),
+				"fixture.yml",
+			),
+		).toEqual([]);
+		// A brace in a comment opens nothing either: the depth is counted from
+		// the line's code, not from the copy a `#` starts.
+		expect(
+			checkInterpreterPins(
+				`jobs:\n  j:\n    env: {MODE: test} # [${SETUP_PYTHON} is not needed\n    steps:\n      - run: echo ${SETUP_PYTHON} is prose`,
+				"fixture.yml",
+			),
+		).toEqual([]);
+	});
+
+	// not prose (shape 43): a trailing comment is copy, so an action named in
+	// one is not a step, and a plain scalar continued on its next line is one
+	// value, not a flow collection. Every row here is a workflow a runner
+	// accepts, and every one returned no errors before the refusal landed.
+	it.each([
+		[
+			"a comment after a flow-valued key",
+			`jobs:\n  j:\n    env: {MODE: test} # ${SETUP_PYTHON} is not needed\n    steps:\n      - run: echo hi`,
+		],
+		[
+			"a comment after a flow-valued matrix",
+			`jobs:\n  j:\n    strategy:\n      matrix: {include: [a]} # ${SETUP_PYTHON} prose\n    steps:\n      - run: echo hi`,
+		],
+		[
+			"a `uses:` inside a comment",
+			`jobs:\n  j:\n    env: {uses: x} # uses: ${USE}\n    steps:\n      - run: echo hi`,
+		],
+		[
+			"a YAML escape inside a comment",
+			`jobs:\n  j:\n    env: {a: b} # "a\\\\b"\n    steps:\n      - run: echo hi`,
+		],
+		[
+			"a plain run: scalar continued on its next line",
+			`jobs:\n  j:\n    steps:\n      - run: echo hi\n          ${SETUP_PYTHON} is the action we used before\n        shell: bash`,
+		],
+		["an anchored plain run: value", workflow(`- run: echo &x {uses: ${USE}}`)],
+	])("leaves prose alone: %s", (_label, text) => {
+		expect(checkInterpreterPins(text, "fixture.yml")).toEqual([]);
+	});
+
+	// The controls for those rows: the same shapes naming another action, and
+	// a continued plain scalar. A reader that ignored the action's name could
+	// pass both halves; these pin that the silence above is about prose, not
+	// about not looking.
+	it("leaves prose naming another action alone", () => {
+		expect(
+			checkInterpreterPins(
+				`jobs:\n  j:\n    env: {MODE: test} # actions/cache is not needed\n    steps:\n      - run: echo hi`,
+				"fixture.yml",
+			),
+		).toEqual([]);
+		expect(
+			checkInterpreterPins(
+				`jobs:\n  j:\n    steps:\n      - run: echo hi\n          actions/checkout is the action we used before\n        shell: bash`,
+				"fixture.yml",
+			),
+		).toEqual([]);
+	});
+
+	// The over-refusals this seam admits, pinned so they stay visible rather
+	// than silent: a flow collection that names the action is refused whatever
+	// its pin, a YAML escape on such a line is refused wherever it stands, and
+	// an anchored or aliased `uses:` value is refused even when its pin is
+	// concrete. All are live-population 0 in this tree; each is the visible
+	// half of the shape-69 trade, where a silent pass is the thing not to have.
+	it("refuses a flow line or a uses: value it cannot prove, whatever the pin", () => {
+		expect(
+			checkInterpreterPins(
+				`jobs:\n  j:\n    steps: [{uses: ${USE}, with: {python-version: "3.12"}}]`,
+				"fixture.yml",
+			),
+		).toEqual([inFlow(3)]);
+		expect(
+			checkInterpreterPins(
+				workflow(`- {uses: ${CHECKOUT}, with: {path: "a\\\\b"}}`),
+				"fixture.yml",
+			),
+		).toEqual([flowEscape(5)]);
+		expect(
+			checkInterpreterPins(
+				workflow(`- uses: &a ${USE}\n  with:\n    python-version: "3.12"`),
+				"fixture.yml",
+			),
+		).toEqual([unreadUses(5, `&a ${USE}`)]);
 	});
 
 	// Shape 69, round 5: a YAML escape in a flow token names an action the
@@ -506,7 +856,7 @@ describe("check-action-pins interpreter pins (#4666, shape 69)", () => {
 				),
 				"fixture.yml",
 			),
-		).toEqual([unreadFlowUses(5, `'actions/checkout@${SETUP_PYTHON_REF}''x'`)]);
+		).toEqual([unreadUses(5, `'actions/checkout@${SETUP_PYTHON_REF}''x'`)]);
 	});
 
 	// PRRT_kwDORt8rec6uXCpP, re-decided in round 5 (F-4671-R4-2). An input

@@ -42,17 +42,29 @@ export function parseActionPins(text, file = "<fixture>") {
 // test decides what is a pin, so no list of known-bad spellings can pass an
 // unlisted one, and every form the walker cannot fully read is refused: a YAML
 // escape, text after a scalar's closing quote, a `uses:` value on another line,
-// a step written as a flow mapping.
+// a step written as a flow mapping, an action reached through an anchor or an
+// alias, and a line a flow collection holds open across lines.
 //
 // The reader is dependency-free on purpose: .github/workflows/action-pins.yml
 // runs `node scripts/check-action-pins.mjs` with no `npm install`, so js-yaml is
 // not available here.
 const CONCRETE_PYTHON = /^\d+\.\d+(?:\.\d+)?$/;
 const SETUP_PYTHON = "actions/setup-python";
-// A block-mapping entry: `key: value`, `- key: value`, a quoted key accepted.
+// A block-mapping entry: `key: value`, a quoted key accepted. The list marker
+// and any node property in front of the key are stripped first, so this reads
+// the key the line actually holds.
 // In block context `key:"value"` with no space is one plain scalar, not a key.
-const KEY_LINE =
-	/^(?:(-)[ \t]+)?(["']?)([A-Za-z0-9_-]+)\2[ \t]*:(?:[ \t]+(.*))?$/;
+const KEY_LINE = /^(["']?)([A-Za-z0-9_-]+)\1[ \t]*:(?:[ \t]+(.*))?$/;
+// A list marker in front of a block mapping's key, one per nesting level.
+const LIST_MARKER = /^-(?:[ \t]+|$)/;
+// A YAML node property in front of a node: an anchor (`&name`), an alias
+// (`*name`), or a tag (`!tag`, `!!seq`, `!<tag:yaml.org,2002:seq>`). It
+// prefixes the node it stands on and changes nothing about where that node
+// stands or what it ultimately holds, so the reader strips it before deciding
+// either question (F-4671-R5-1). A `uses:` value it prefixes is refused rather
+// than read: an anchored or aliased action reference is not a value this
+// walker can follow (F-4671-R5-2).
+const NODE_PROPERTY = /^(?:[&*][^ \t,[\]{}]+|!(?:<[^>\n]*>|[^ \t,[\]{}]*))/;
 // A value that opens a block scalar: the lines more indented below it are
 // literal text — shell or prose, never workflow structure (shape 43). Its
 // header carries an optional indentation and chomping indicator, in either
@@ -67,6 +79,90 @@ function blockHeader(value) {
 	const trimmed = value.trim();
 	const comment = trimmed.search(/[ \t]#/);
 	return (comment < 0 ? trimmed : trimmed.slice(0, comment)).trim();
+}
+
+// Everything in front of a node's own text: the list markers a block entry
+// stands on and the node properties that prefix it. What remains is the text
+// the line's meaning is decided from, and it is also what a line the block
+// reader does not classify as a key is scanned as — so `- &a uses: …` is read
+// as a `uses:` entry (F-4671-R5-1) while a plain scalar's continuation line,
+// which is neither, stays prose (shape 43).
+function nodeText(trimmed) {
+	let rest = trimmed;
+	let marker = 0;
+	for (;;) {
+		const listItem = LIST_MARKER.exec(rest);
+		if (!listItem) break;
+		marker += listItem[0].length;
+		rest = rest.slice(listItem[0].length);
+	}
+	return { text: stripNodeProperties(rest).text, marker };
+}
+
+// A value with its leading node properties removed. `stripped` reports that
+// the value carried one, which is what a `uses:` value is refused for.
+function stripNodeProperties(text) {
+	let rest = text;
+	let stripped = false;
+	for (;;) {
+		const property = NODE_PROPERTY.exec(rest);
+		if (!property) return { text: rest, stripped };
+		stripped = true;
+		rest = rest.slice(property[0].length).trimStart();
+	}
+}
+
+// A value up to its trailing comment, or as written when it carries none. A
+// `#` opens a comment only at the start of the text or after whitespace, and
+// never inside a quoted scalar, so a `"a #b"` value keeps its text (shape 43:
+// the action's name in a comment is prose, not a step).
+function withoutComment(text) {
+	let quote = "";
+	for (let at = 0; at < text.length; at += 1) {
+		const char = text[at];
+		if (quote) {
+			if (char === "\\" && quote === '"') {
+				at += 1;
+				continue;
+			}
+			if (char === quote) quote = "";
+			continue;
+		}
+		if (char === '"' || char === "'") {
+			quote = char;
+			continue;
+		}
+		if (char === "#" && (at === 0 || /[ \t]/.test(text[at - 1])))
+			return text.slice(0, at).trimEnd();
+	}
+	return text;
+}
+
+// How many flow collections a line leaves open, counted outside quotes: `{[`
+// open one and `}]` close one. A flow collection may hold its next tokens on
+// following lines, so the count is the lexical state that decides whether the
+// next line stands inside one (shape 43).
+function flowDelta(text) {
+	let quote = "";
+	let delta = 0;
+	for (let at = 0; at < text.length; at += 1) {
+		const char = text[at];
+		if (quote) {
+			if (char === "\\" && quote === '"') {
+				at += 1;
+				continue;
+			}
+			if (char === quote) quote = "";
+			continue;
+		}
+		if (char === '"' || char === "'") {
+			quote = char;
+			continue;
+		}
+		if (char === "{" || char === "[") delta += 1;
+		else if (char === "}" || char === "]") delta -= 1;
+	}
+	return delta;
 }
 
 // A key's scalar value: quotes stripped and a trailing comment dropped. `read`
@@ -100,6 +196,13 @@ function scalar(raw) {
 function usesTarget(raw) {
 	const { text, read } = scalar(raw);
 	if (!read || !text || BLOCK_SCALAR.test(text)) return { read: false, text };
+	// An anchored, aliased or tagged action reference is not one this walker
+	// can follow: `&a actions/setup-python@…` prefixes the action with a node
+	// property, and `*ref` names a value defined on another line, so the pin
+	// this step carries is not on this line at all (F-4671-R5-2). Refused as
+	// written rather than resolved, because resolving a YAML alias is exactly
+	// the kind of second reader this rule has already failed to write.
+	if (NODE_PROPERTY.test(text)) return { read: false, text };
 	const at = text.lastIndexOf("@");
 	return at < 1
 		? { read: true, action: null, ref: "" }
@@ -118,6 +221,11 @@ function usesTarget(raw) {
 function readBlock(text) {
 	const entries = [];
 	let literal = null;
+	// How many flow collections are still open at the start of the line: the
+	// lexical state a flow collection spanning lines has (shape 43). It is set
+	// only by a line this walker already reads as holding one, so a brace in
+	// prose never puts the lines below it in flow.
+	let flowDepth = 0;
 	for (const [index, raw] of String(text).split(/\r?\n/).entries()) {
 		const indent = raw.length - raw.trimStart().length;
 		const trimmed = raw.trim();
@@ -128,6 +236,8 @@ function readBlock(text) {
 			kind: "blank",
 			key: "",
 			value: "",
+			body: "",
+			inFlow: flowDepth > 0,
 			column: 0,
 		};
 		entries.push(entry);
@@ -145,20 +255,33 @@ function readBlock(text) {
 			entry.kind = "comment";
 			continue;
 		}
-		const key = KEY_LINE.exec(trimmed);
-		if (!key) {
-			entry.kind = "other";
-			continue;
-		}
-		entry.kind = "key";
-		entry.key = key[3].toLowerCase();
-		entry.value = key[4] ?? "";
-		// The key token's column, past a list marker: sibling keys of a step
-		// (`with:`) sit at it, and anything shallower ends the step.
-		entry.column =
-			indent +
-			(key[1] ? key[0].length - key[0].replace(/^-[\t ]+/, "").length : 0);
-		if (BLOCK_SCALAR.test(blockHeader(entry.value))) literal = entry.column;
+		// The line past its list markers and node properties. A property
+		// prefixes the node the line holds, so `- &a uses: …` names a `uses:`
+		// entry and `steps: &x [{…}]` a `steps:` entry (F-4671-R5-1), and a
+		// line with nothing of its own left is not a key.
+		const node = nodeText(trimmed);
+		entry.body = node.text;
+		const key = KEY_LINE.exec(node.text);
+		if (key) {
+			entry.kind = "key";
+			entry.key = key[2].toLowerCase();
+			entry.value = key[3] ?? "";
+			// The key token's column, past the list markers: sibling keys of a
+			// step (`with:`) sit at it, and anything shallower ends the step.
+			entry.column = indent + node.marker;
+			if (BLOCK_SCALAR.test(blockHeader(entry.value))) literal = entry.column;
+		} else entry.kind = "other";
+		// The part of the line a flow collection can open in: a key's value, or
+		// a line's own text with its comment dropped.
+		const span = withoutComment(
+			entry.kind === "key"
+				? stripNodeProperties(entry.value).text
+				: entry.kind === "other"
+					? entry.body
+					: "",
+		);
+		if (entry.inFlow || span.startsWith("{") || span.startsWith("["))
+			flowDepth = Math.max(0, flowDepth + flowDelta(span));
 	}
 	return entries;
 }
@@ -209,18 +332,24 @@ const FLOW_ESCAPE = /"[^"]*\\/;
  * the precise one. Cost, at live population 0: a wrapper action whose input is
  * literally named `uses` is refused rather than read — visible, where a silent
  * pass is not.
+ *
+ * Prose stays text: the trailing comment is copy, so a `#` explaining why the
+ * action is not needed is not a step (shape 43), and only a node that *is* a
+ * flow collection reaches here at all (see `flowText`).
  */
 function flowRefusal(line, at, file) {
-	if (FLOW_ESCAPE.test(line))
+	const text = withoutComment(line);
+	if (FLOW_ESCAPE.test(text))
 		return `${file}:${at}: a flow-collection token carries a YAML escape this walker does not decode; the python-version pin cannot be read`;
-	if (line.toLowerCase().includes(SETUP_PYTHON))
+	if (text.toLowerCase().includes(SETUP_PYTHON))
 		return `${file}:${at}: ${SETUP_PYTHON} appears in a flow collection, which this walker does not read; write the step as a block mapping`;
-	const key = FLOW_USES.exec(line);
+	const key = FLOW_USES.exec(text);
 	if (key) {
 		const start = key.index + key[0].length;
-		const target = usesTarget(line.slice(start, flowValueEnd(line, start)));
-		// A flow value the scalar reader did not fully decode is refused too:
-		// it may name an action this walker cannot read.
+		const target = usesTarget(text.slice(start, flowValueEnd(text, start)));
+		// A flow value the scalar reader did not fully decode, or one that
+		// names its action through an anchor or an alias, is refused too: it
+		// may name an action this walker cannot read.
 		if (!target.read)
 			return `${file}:${at}: uses: "${target.text}" is not a value this walker reads; the python-version pin cannot be read`;
 	}
@@ -229,15 +358,25 @@ function flowRefusal(line, at, file) {
 
 /**
  * The text of one line that can hold a flow mapping: a line the block reader
- * did not read as a key, or a key whose own value opens a flow collection
- * (`steps: [{uses: …}]`). A flow value starts with `{` or `[`; anywhere else a
- * brace is prose, so `run: echo {uses: …}` stays text (shape 43). The owning
- * key is not handed on: `flowRefusal` attributes nothing.
+ * did not read as a key, a key whose own value opens a flow collection
+ * (`steps: [{uses: …}]`), or either kind standing inside a flow collection
+ * that a previous line left open (a flow list may carry its next tokens on
+ * following lines, F-4671-R6-1). What is handed on is the node's own text,
+ * past its list markers and node properties, and — outside an open collection —
+ * only when it *starts* with `{` or `[`: a brace anywhere else, or on a line
+ * that is really a plain scalar's continuation, is prose, so `run: echo
+ * {uses: …}` stays text and a `run:` value continued on the next line is not a
+ * step (shape 43). The owning key is not handed on: `flowRefusal` attributes
+ * nothing.
  */
 function flowText(entry) {
-	if (entry.kind === "other") return entry.raw;
-	if (entry.kind !== "key") return "";
-	const value = entry.value.trimStart();
+	if (entry.kind !== "other" && entry.kind !== "key") return "";
+	// Inside an open flow collection the whole line is that collection's text,
+	// however it starts and whatever key it happens to spell.
+	if (entry.inFlow) return withoutComment(entry.body);
+	const text = entry.kind === "other" ? entry.body : entry.value;
+	if (!text) return "";
+	const value = stripNodeProperties(text).text;
 	return value.startsWith("{") || value.startsWith("[") ? value : "";
 }
 
@@ -252,7 +391,10 @@ export function checkInterpreterPins(text, file = "<fixture>") {
 	const errors = [];
 	const entries = readBlock(text);
 	for (const entry of entries) {
-		if (entry.kind !== "key" || entry.key !== "uses") continue;
+		// A line inside an open flow collection is that collection's text, not
+		// a block mapping entry: the flow pass below refuses it, and reading it
+		// here would attribute a step the line does not spell (round 6).
+		if (entry.kind !== "key" || entry.inFlow || entry.key !== "uses") continue;
 		const target = usesTarget(entry.value);
 		if (!target.read) {
 			errors.push(
@@ -271,9 +413,10 @@ export function checkInterpreterPins(text, file = "<fixture>") {
 		const values = [];
 		for (let at = entry.index + 1; at < entries.length; at += 1) {
 			const next = entries[at];
-			// A block scalar's body is shell or prose, and a comment is copy:
-			// neither is one of the step's keys (shape 43).
-			if (next.kind !== "key") continue;
+			// A block scalar's body is shell or prose, a comment is copy, and a
+			// line inside an open flow collection is that collection's text:
+			// none is one of the step's keys (shape 43).
+			if (next.kind !== "key" || next.inFlow) continue;
 			if (next.indent < entry.column) break;
 			if (next.indent === entry.column) {
 				if (next.raw.trimStart().startsWith("- ")) break;
