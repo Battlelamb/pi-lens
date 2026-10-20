@@ -12,6 +12,7 @@ export interface MatchingTag {
 }
 
 export function parseActionPins(text: string, file?: string): ActionPin[];
+export function checkInterpreterPins(text: string, file?: string): string[];
 export function validatePins(
 	pins: ActionPin[],
 	resolveTag: (action: string, tag: string) => Promise<string | MatchingTag[]>,

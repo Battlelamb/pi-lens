@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import {
+	checkInterpreterPins,
 	parseActionPins,
 	resolveGithubMatchingTags,
 	resolveGithubTag,
 	validatePins,
+	workflowFiles,
 } from "../../scripts/check-action-pins.mjs";
 
 const GOOD = "0057852bfaa89a56745cba8c7296529d2fc39830";
@@ -231,5 +233,222 @@ describe("check-action-pins parser (#4043)", () => {
 			await resolveGithubTag("actions/cache", "v4.3.0", fetchImpl, env);
 			expect(seen[0].Authorization).toBe(header);
 		});
+	});
+});
+
+// #4666: `python-version: "3.x"` resolved to a CPython with no pyyaml wheel
+// under `--only-binary=:all:`, so the advisory yamllint row installed nothing
+// and the workflow still read green. The precondition was static text, so the
+// rule lives in the walker that already reads every workflow and composite
+// action. Shape 69: one positive test decides (a concrete `x.y` or `x.y.z`),
+// so no list of known-bad spellings can pass an unlisted one.
+const SETUP_PYTHON = "actions/setup-python";
+const SETUP_PYTHON_REF = "5fda3b95a4ea91299a34e894583c3862153e4b97";
+const TREE_ROOT = process.cwd();
+const USE = `actions/setup-python@${SETUP_PYTHON_REF}`;
+
+// Steps written at the repository workflows' own step indent (six spaces).
+function workflow(steps: string): string {
+	return `jobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n${steps
+		.split("\n")
+		.map((line) => `      ${line}`)
+		.join("\n")}\n`;
+}
+
+// A one-step workflow whose setup-python pin is `raw`, unsplit value included.
+function pinned(raw: string): string {
+	return workflow(`- uses: ${USE}\n  with:\n    python-version: ${raw}`);
+}
+
+// Line 7 is the python-version line of `pinned()`; line 5 is its uses line.
+const notConcrete = (value: string, line = 7) =>
+	`fixture.yml:${line}: ${USE} python-version "${value}" is not a concrete x.y or x.y.z release`;
+const noPin = `${USE} has no with: python-version; the interpreter channel must be a concrete x.y release`;
+
+describe("check-action-pins interpreter pins (#4666, shape 69)", () => {
+	// Every non-concrete spelling, including the ones a list of known-bad
+	// strings would not carry: an unlisted float, an expression, a matrix
+	// reference, an empty value, a block scalar.
+	it.each([
+		["the floating channel", '"3.x"', "3.x"],
+		["a bare major", "3", "3"],
+		["a bare minor-only float", "3.12.x", "3.12.x"],
+		["the latest channel", "latest", "latest"],
+		["an unquoted channel", "3.x", "3.x"],
+		["a range specifier", '">=3.12"', ">=3.12"],
+		["a pre-release", '"3.12-rc1"', "3.12-rc1"],
+		["a wildcard", '"*"', "*"],
+		["a matrix expression", "${{ matrix.python }}", "${{ matrix.python }}"],
+		[
+			"a matrix reference through a hyphenated key",
+			"${{ matrix.python-version }}",
+			"${{ matrix.python-version }}",
+		],
+		["an env expression", "${{ env.PYTHON }}", "${{ env.PYTHON }}"],
+		[
+			"a composite input expression",
+			"${{ inputs.python }}",
+			"${{ inputs.python }}",
+		],
+		["a quoted empty value", '""', ""],
+		["an absent value", "", ""],
+		["a block scalar", "|", "|"],
+		["an unterminated quote", '"3.12', '"3.12'],
+	])("refuses %s", (_label, raw, value) => {
+		expect(checkInterpreterPins(pinned(raw), "fixture.yml")).toEqual([
+			notConcrete(value),
+		]);
+	});
+
+	// The controls: the two concrete forms the rule admits, in every spelling
+	// a workflow uses for them, and a trailing comment after the value.
+	it.each([
+		["a quoted x.y", '"3.12"'],
+		["a single-quoted x.y", "'3.12'"],
+		["a bare x.y", "3.12"],
+		["a quoted x.y.z", '"3.12.15"'],
+		["a single-quoted x.y.z", "'3.12.15'"],
+		["a bare x.y.z", "3.12.15"],
+		["a quoted x.y with a trailing comment", '"3.12" # #4666: the pin'],
+	])("accepts %s", (_label, raw) => {
+		expect(checkInterpreterPins(pinned(raw), "fixture.yml")).toEqual([]);
+	});
+
+	it("reads the pin under a comment block and a preceding name key", () => {
+		// The shape the fixed .github/workflows/lint.yml has: `- name:`, `uses:`
+		// on its own line, then a three-line comment above the value.
+		expect(
+			checkInterpreterPins(
+				workflow(
+					[
+						`- name: Set up Python`,
+						`  uses: ${USE}`,
+						`  with:`,
+						`    # #4666: the floating channel reached an interpreter with`,
+						`    # no cp315 pyyaml wheel under --only-binary=:all:.`,
+						`    python-version: "3.x"`,
+					].join("\n"),
+				),
+				"fixture.yml",
+			),
+		).toEqual([notConcrete("3.x", 10)]);
+	});
+
+	it("reports a setup-python step that has no with: block", () => {
+		expect(
+			checkInterpreterPins(workflow(`- uses: ${USE}`), "fixture.yml"),
+		).toEqual([`fixture.yml:5: ${noPin}`]);
+	});
+
+	it("reports a with: block that carries no python-version", () => {
+		expect(
+			checkInterpreterPins(
+				workflow(`- uses: ${USE}\n  with:\n    cache: pip`),
+				"fixture.yml",
+			),
+		).toEqual([`fixture.yml:5: ${noPin}`]);
+	});
+
+	it("refuses a with: it cannot read as a block mapping", () => {
+		expect(
+			checkInterpreterPins(
+				workflow(`- uses: ${USE}\n  with: {python-version: "3.12"}`),
+				"fixture.yml",
+			),
+		).toEqual([
+			`fixture.yml:6: ${USE} with: is not a block mapping; the python-version pin cannot be read`,
+		]);
+	});
+
+	it("refuses a setup-python step shape it cannot read", () => {
+		// A flow-map step is not the block form the walker reads. It fails
+		// closed rather than passing an unread pin (shape 69).
+		expect(
+			checkInterpreterPins(
+				workflow(`- {uses: ${USE}, with: {python-version: "3.12"}}`),
+				"fixture.yml",
+			),
+		).toEqual([
+			`fixture.yml:5: ${SETUP_PYTHON} uses: is not a block-mapping step; the python-version pin cannot be read`,
+		]);
+	});
+
+	it("reads every python-version spelling in a step, whatever its case", () => {
+		// GitHub passes action inputs as an upper-cased `INPUT_*` variable, so
+		// the key is case-insensitive for the action too. A concrete value in
+		// the canonical spelling does not cover a floating one beside it.
+		expect(
+			checkInterpreterPins(
+				workflow(
+					`- uses: ${USE}\n  with:\n    python-version: "3.12"\n    Python-Version: "3.x"`,
+				),
+				"fixture.yml",
+			),
+		).toEqual([notConcrete("3.x", 8)]);
+	});
+
+	it("leaves every other action's version input alone", () => {
+		expect(
+			checkInterpreterPins(
+				workflow(
+					[
+						`- uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0`,
+						`  with:`,
+						`    node-version: "22"`,
+						`- uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1`,
+						`  with:`,
+						`    otp-version: latest`,
+					].join("\n"),
+				),
+				"fixture.yml",
+			),
+		).toEqual([]);
+	});
+
+	it("reads the steps of a composite action under .github/actions/", () => {
+		expect(
+			checkInterpreterPins(
+				`runs:\n  using: composite\n  steps:\n    - run: echo hi\n      shell: bash\n    - uses: ${USE}\n      with:\n        python-version: "3.x"\n`,
+				".github/actions/tool-tree-cache/action.yml",
+			),
+		).toEqual([
+			notConcrete("3.x", 8).replace(
+				"fixture.yml",
+				".github/actions/tool-tree-cache/action.yml",
+			),
+		]);
+	});
+
+	it("passes every setup-python step in the tree, and counts four of them", async () => {
+		const files = await workflowFiles(TREE_ROOT);
+		const repoPath = (file: string) =>
+			relative(TREE_ROOT, file).split(sep).join("/");
+		const errors: string[] = [];
+		let uses = 0;
+		for (const file of files) {
+			const text = readFileSync(file, "utf8");
+			errors.push(...checkInterpreterPins(text, repoPath(file)));
+			// Counted here, not through the rule: an empty walk or a parser
+			// change must not pass this vacously.
+			for (const line of text.split(/\r?\n/))
+				if (/^\s*(?:-\s+)?uses:\s*["']?actions\/setup-python@/.test(line))
+					uses += 1;
+		}
+		// The fixed lint.yml is the population member this PR repairs.
+		const lint = readFileSync(
+			join(TREE_ROOT, ".github/workflows/lint.yml"),
+			"utf8",
+		);
+		expect(checkInterpreterPins(lint, ".github/workflows/lint.yml")).toEqual(
+			[],
+		);
+		expect(lint).toContain('python-version: "3.12"');
+		// Four `setup-python` uses, all concrete after this PR.
+		expect(uses).toBe(4);
+		expect(errors).toEqual([]);
+		// The composite actions are inside the walk the rule runs over.
+		expect(files.map(repoPath)).toContain(
+			".github/actions/tool-tree-cache/action.yml",
+		);
 	});
 });

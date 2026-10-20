@@ -34,6 +34,119 @@ export function parseActionPins(text, file = "<fixture>") {
 	return pins;
 }
 
+// #4666: a `setup-python` step's `python-version` is an interpreter pin, and
+// its precondition is static text: a concrete `x.y` release, never a floating
+// channel. `"3.x"` resolved to CPython 3.15, pyyaml publishes no cp315 wheel,
+// `--only-binary=:all:` refuses the sdist, and the advisory yamllint row
+// installed nothing while the workflow still read green. Shape 69: ONE positive
+// test decides what is a pin, so no list of known-bad spellings can pass an
+// unlisted one, and every form the reader cannot see fails closed.
+const CONCRETE_PYTHON = /^\d+\.\d+(?:\.\d+)?$/;
+const SETUP_PYTHON = "actions/setup-python";
+// A `uses:` key in block form: `- uses:` or `uses:`, quoted or not.
+const STEP_USES = /^([ \t]*)(?:-[ \t]+)?(["']?)uses\2[ \t]*:[ \t]*(.*)$/;
+const STEP_KEY = /^([A-Za-z0-9_-]+)[ \t]*:[ \t]*(.*)$/;
+
+// A key's scalar value: quotes stripped and a trailing comment dropped. A value
+// the reader cannot close is returned as written, so it fails the rule instead
+// of passing as something the walker guessed.
+function scalar(raw) {
+	const trimmed = raw.trim();
+	if (!trimmed) return "";
+	const quote = trimmed[0];
+	if (quote === '"' || quote === "'") {
+		const end = trimmed.indexOf(quote, 1);
+		return end > 0 ? trimmed.slice(1, end) : trimmed;
+	}
+	return trimmed.replace(/[ \t]+#.*$/, "").trim();
+}
+
+function usesTarget(raw) {
+	const value = scalar(raw);
+	const at = value.lastIndexOf("@");
+	return at < 1
+		? null
+		: { action: value.slice(0, at), ref: value.slice(at + 1) };
+}
+
+/**
+ * The interpreter pins of every `actions/setup-python` step in one file: a
+ * workflow or a composite action. `python-version` must be a concrete `x.y` or
+ * `x.y.z`; a step with no readable pin is reported. Messages carry the file,
+ * the step (`actions/setup-python@<ref>`) and the value read, in the same
+ * `${file}:${line}: ` shape the action-pin messages use.
+ */
+export function checkInterpreterPins(text, file = "<fixture>") {
+	const errors = [];
+	const lines = String(text).split(/\r?\n/);
+	const read = new Set();
+	for (const [index, line] of lines.entries()) {
+		const uses = STEP_USES.exec(line);
+		const target = uses && usesTarget(uses[3]);
+		if (!target || target.action !== SETUP_PYTHON) continue;
+		read.add(index);
+		const step = `${target.action}@${target.ref}`;
+		// The `uses` key's column: a sibling key of the step sits at it, and
+		// anything shallower ends the step.
+		const keyIndent = line.search(/["']?uses["']?[ \t]*:/);
+		let sawWith = false;
+		let inWith = false;
+		let unreadable = null;
+		const values = [];
+		for (let at = index + 1; at < lines.length; at += 1) {
+			const raw = lines[at];
+			const trimmed = raw.trim();
+			if (!trimmed || trimmed.startsWith("#")) continue;
+			const indent = raw.length - raw.trimStart().length;
+			if (indent < keyIndent) break;
+			if (indent === keyIndent && trimmed.startsWith("- ")) break;
+			const key = STEP_KEY.exec(trimmed);
+			if (!key) continue;
+			const name = key[1].toLowerCase();
+			if (indent === keyIndent) {
+				inWith = name === "with";
+				if (inWith) {
+					sawWith = true;
+					// An inline flow mapping: the block reader cannot see its keys.
+					if (key[2].trim()) unreadable ??= at + 1;
+				}
+				continue;
+			}
+			if (inWith && name === "python-version")
+				values.push({ line: at + 1, value: scalar(key[2]) });
+		}
+		if (unreadable !== null) {
+			errors.push(
+				`${file}:${unreadable}: ${step} with: is not a block mapping; the python-version pin cannot be read`,
+			);
+			continue;
+		}
+		if (!sawWith || values.length === 0) {
+			errors.push(
+				`${file}:${index + 1}: ${step} has no with: python-version; the interpreter channel must be a concrete x.y release`,
+			);
+			continue;
+		}
+		for (const { line: valueLine, value } of values)
+			if (!CONCRETE_PYTHON.test(value))
+				errors.push(
+					`${file}:${valueLine}: ${step} python-version "${value}" is not a concrete x.y or x.y.z release`,
+				);
+	}
+	// A `setup-python` mention the block reader did not parse (a flow-map step,
+	// a quoted key it cannot follow) is refused rather than passed: an unread
+	// spelling is never a green one.
+	for (const [index, line] of lines.entries()) {
+		if (read.has(index) || line.trimStart().startsWith("#")) continue;
+		const bare = line.replace(/#.*$/, "");
+		if (!bare.includes(SETUP_PYTHON) || !/\buses\b/.test(bare)) continue;
+		errors.push(
+			`${file}:${index + 1}: ${SETUP_PYTHON} uses: is not a block-mapping step; the python-version pin cannot be read`,
+		);
+	}
+	return errors;
+}
+
 export function validatePins(pins, resolveTag, exemptions = {}) {
 	return Promise.all(
 		pins.map(async (pin) => {
@@ -200,15 +313,18 @@ export async function checkActionPins({
 		if (error.code !== "ENOENT") throw error;
 	}
 	const files = await workflowFiles(root);
-	const pins = (
-		await Promise.all(
-			files.map(async (file) =>
-				parseActionPins(await readFile(file, "utf8"), relative(root, file)),
-			),
-		)
-	).flat();
+	const texts = await Promise.all(
+		files.map(async (file) => ({
+			file: relative(root, file),
+			text: await readFile(file, "utf8"),
+		})),
+	);
+	const pins = texts.flatMap(({ file, text }) => parseActionPins(text, file));
+	const interpreter = texts.flatMap(({ file, text }) =>
+		checkInterpreterPins(text, file),
+	);
 	const resolved = new Map();
-	return validatePins(
+	const errors = await validatePins(
 		pins,
 		async (action, tag) => {
 			const key = `${action}@${tag}`;
@@ -223,6 +339,7 @@ export async function checkActionPins({
 		},
 		exemptions,
 	);
+	return [...errors, ...interpreter];
 }
 
 export async function main() {
