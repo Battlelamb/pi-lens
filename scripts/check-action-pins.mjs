@@ -185,76 +185,54 @@ function flowValueEnd(raw, start) {
 	return raw.length;
 }
 
-// A key inside a flow collection: a quoted or bare name and its colon.
-const FLOW_KEY = /^(["']?)([A-Za-z0-9_-]+)\1[ \t]*:[ \t]*/;
+// A `uses` key standing where a key can: after `{`, `[`, `,` or the line's
+// start, quoted or bare, so prose is not a key (shape 43).
+const FLOW_USES = /(?:^|[{,[])[ \t]*(["']?)uses\1[ \t]*:/i;
+// A double-quoted token carrying a backslash: a YAML escape, which this walker
+// decodes nowhere (`"\u0061ctions/…"` spells `actions/…`). Single quotes are
+// left out because YAML processes no escape inside them.
+const FLOW_ESCAPE = /"[^"]*\\/;
 
 /**
- * The `uses:` values named as keys of a flow mapping on one line, such as
- * `- {uses: x, with: {…}}` or `steps: [{uses: x}]`. A `uses` token counts only
- * where a key can stand — straight after `{`, `[` or `,` inside a collection —
- * so the prose in `run: echo uses: a/b@c` is text, not a step (shape 43). A
- * mapping opened by a `with:` key holds that step's inputs, where `uses` is one
- * of the action's input names, so it is not the step's action
- * (PRRT_kwDORt8rec6uXCpP); every other mapping's `uses` is, wherever the step is
- * written, so no depth is left unread.
+ * Why one line's flow collection is refused, or null when it holds none. The
+ * block reader reads `key: value` lines, so a step written as a flow mapping
+ * (`- {uses: …}`, `steps: [{…}]`, or a `with:` whose value is one) is not a
+ * form this walker reads.
+ *
+ * Shape 69: nothing here decides what a `uses` token *means*. Telling a step's
+ * `uses` from an input named `uses` needs the key that opened the mapping, and
+ * three rounds of that ownership rule each left one valid workflow able to pass
+ * a floating pin silently: a quoted key consumed as a string (round 3), a
+ * sibling's opener taken from the previous mapping's trailing `with:` (round
+ * 4), and an escaped key no key regex matched (round 5, this file). So a flow
+ * collection that names the action is refused whole, and the block path stays
+ * the precise one. Cost, at live population 0: a wrapper action whose input is
+ * literally named `uses` is refused rather than read — visible, where a silent
+ * pass is not.
  */
-function flowUsesValues(raw) {
-	const values = [];
-	// The key that opened each open mapping. A `[` opens none of its own, so a
-	// step written as `steps: [{uses: …}]` carries its keys at the same level a
-	// list-item step `- {uses: …}` does.
-	const openers = [];
-	let lastKey = "";
-	let quote = "";
-	let keyNext = false;
-	for (let at = 0; at < raw.length; at += 1) {
-		const char = raw[at];
-		if (quote) {
-			if (char === "\\" && quote === '"') {
-				at += 1;
-				continue;
-			}
-			if (char === quote) quote = "";
-			continue;
-		}
-		if (char === "#" && (at === 0 || /[ \t]/.test(raw[at - 1]))) break;
-		// A key may be quoted, so at a key position the key is read before the
-		// quote opens a string: `{"uses": x}` names the action as `{uses: x}`
-		// does (PRRT_kwDORt8rec6uW1l7 / PRRT_kwDORt8rec6uXCpF).
-		if (keyNext && openers.length > 0) {
-			const key = FLOW_KEY.exec(raw.slice(at));
-			if (key) {
-				keyNext = false;
-				lastKey = key[2].toLowerCase();
-				const start = at + key[0].length;
-				if (lastKey === "uses" && !openers.includes("with"))
-					values.push(raw.slice(start, flowValueEnd(raw, start)).trim());
-				at = start - 1;
-				continue;
-			}
-		}
-		if (char === '"' || char === "'") {
-			quote = char;
-			continue;
-		}
-		if (char === "{" || char === "[" || (char === "," && openers.length > 0)) {
-			if (char === "{") openers.push(lastKey);
-			keyNext = true;
-			continue;
-		}
-		if (char === "}" || char === "]" || char === ",") {
-			if (char === "}") openers.pop();
-			keyNext = false;
-		}
+function flowRefusal(line, at, file) {
+	if (FLOW_ESCAPE.test(line))
+		return `${file}:${at}: a flow-collection token carries a YAML escape this walker does not decode; the python-version pin cannot be read`;
+	if (line.toLowerCase().includes(SETUP_PYTHON))
+		return `${file}:${at}: ${SETUP_PYTHON} appears in a flow collection, which this walker does not read; write the step as a block mapping`;
+	const key = FLOW_USES.exec(line);
+	if (key) {
+		const start = key.index + key[0].length;
+		const target = usesTarget(line.slice(start, flowValueEnd(line, start)));
+		// A flow value the scalar reader did not fully decode is refused too:
+		// it may name an action this walker cannot read.
+		if (!target.read)
+			return `${file}:${at}: uses: "${target.text}" is not a value this walker reads; the python-version pin cannot be read`;
 	}
-	return values;
+	return null;
 }
 
 /**
  * The text of one line that can hold a flow mapping: a line the block reader
  * did not read as a key, or a key whose own value opens a flow collection
  * (`steps: [{uses: …}]`). A flow value starts with `{` or `[`; anywhere else a
- * brace is prose, so `run: echo {uses: …}` stays text (shape 43).
+ * brace is prose, so `run: echo {uses: …}` stays text (shape 43). The owning
+ * key is not handed on: `flowRefusal` attributes nothing.
  */
 function flowText(entry) {
 	if (entry.kind === "other") return entry.raw;
@@ -336,22 +314,13 @@ export function checkInterpreterPins(text, file = "<fixture>") {
 	// not the block form this walker reads, so its pin is refused rather than
 	// passed: an unread spelling is never a green one. A block step reaches this
 	// pass only through a flow collection held by one of its keys, and the scan
-	// looks only where a `uses` key can stand, so a `run:` body that prints one
-	// is left alone (shape 43).
+	// looks only at lines that hold one, so a `run:` body that prints a `uses:`
+	// line is left alone (shape 43).
 	for (const entry of entries) {
 		const line = flowText(entry);
 		if (!line) continue;
-		for (const value of flowUsesValues(line)) {
-			const target = usesTarget(value);
-			if (!target.read)
-				errors.push(
-					`${file}:${entry.index + 1}: uses: "${target.text}" is not a value this walker reads; the python-version pin cannot be read`,
-				);
-			else if ((target.action || "").toLowerCase() === SETUP_PYTHON)
-				errors.push(
-					`${file}:${entry.index + 1}: ${SETUP_PYTHON} uses: is not a block-mapping step; the python-version pin cannot be read`,
-				);
-		}
+		const refusal = flowRefusal(line, entry.index + 1, file);
+		if (refusal) errors.push(refusal);
 	}
 	return errors;
 }
