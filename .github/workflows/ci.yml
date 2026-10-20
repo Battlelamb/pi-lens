@@ -180,12 +180,18 @@ jobs:
   # scripts/check-tla-models.mjs partitions the sorted config list round-robin,
   # and tests/config/tla-models-shard-workflow.test.ts pins that every config
   # lands in exactly one shard. Measured per-shard times on master run
-  # 39380875926: 268 s, 349 s, 494 s and 726 s, so the round-robin split is
-  # unbalanced by ~2.7x and shard 4 owns the tail. That shard hit the 12-minute
-  # cap twice (735 s, then 726 s after a rerun) while every step of it had
-  # concluded success, which reded the required `TLA+ models` check with no
-  # model violation. #4672 carries the real fix (one aggregate verdict seam,
-  # a measured cap or a cost-weighted partition); until it lands, the cap
+  # 39380875926: 268 s, 349 s, 494 s and the tail. Which shard is the tail is
+  # a property of the config list and of the runner the job lands on:
+  # `selectShard` indexes the *sorted* list, so inserting a config re-deals
+  # the slot, and the pool is CPU-sized, so a slower runner stretches it.
+  # Under the 808-config list it was shard 1 (674, 682, 687 s); three configs
+  # landed under `formal/store-freshness/`, the list went 808 -> 811, and
+  # shard 4 now carries the heaviest slot (398-735 s). That tail hit the
+  # 12-minute cap three times (735 s; 726 s after a rerun; 724 s on run
+  # 39313757764) while every step of it had concluded success, which reded
+  # the required `TLA+ models` check with no model violation. #4672 carries
+  # the real fix (one aggregate verdict seam, a cap re-measured with its
+  # margin recorded, or a count-based extra shard); until it lands, the cap
   # follows that tail as a stopgap, the way #3591 raised it 10 -> 20.
   tla-shards:
     name: TLA+ models (shard ${{ matrix.shard }}/${{ strategy.job-total }})
@@ -204,10 +210,18 @@ jobs:
     # refs #3572, #3517: each shard runs its configs through the CPU-sized
     # concurrency pool in scripts/check-tla-models.mjs, one TLC worker per
     # config (deterministic first violation).
-    # Stopgap (#4672): the tail shard needs 726 s measured and this cap sat at
-    # 720 s, so it was cancelled after finishing its model check. 20 minutes is
-    # the floor of the next whole step above that tail, matching #3591. The
-    # measured partition is #4672's, not a comment's guess.
+    # Stopgap (#4672): the tail shard's model check measured 726 s (attempt
+    # 1) and 714 s (attempt 2); its job wall clock stopped at 735 s and 726 s,
+    # past this cap's 720 s, so the shard was recorded `cancelled` after
+    # finishing its own work. Both wall-clock records are censored at the cap
+    # -- the job was cut off there, so its true completion time is unknown --
+    # and the measured population is every other tail on this same formal/
+    # tree plus that 735 s attempt. 20 minutes is 1.63x the worst tail, a 63%
+    # margin over it, and that identical formal/ content measured 398-735 s
+    # (1.85x) on the tail because the checker's pool is sized to the host CPU
+    # count, so the margin absorbs that spread without hiding a hang for a
+    # working day. #4672 owns the re-measured value: #3591's 2.0x was one
+    # single-job measurement, not a rule to copy.
     timeout-minutes: 20
     permissions:
       contents: read
