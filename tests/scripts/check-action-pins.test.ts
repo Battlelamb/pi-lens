@@ -381,6 +381,63 @@ describe("check-action-pins interpreter pins (#4666, shape 69)", () => {
 		]);
 	});
 
+	// PRRT_kwDORt8rec6uW1l7 / PRRT_kwDORt8rec6uXCpF: a flow mapping is a step
+	// wherever it stands — as the value of `steps:` as well as a list item —
+	// and its `uses` key may be quoted. Round 3 read only a line the block
+	// reader did not classify as a key, and let the quote branch consume a
+	// quoted key, so both spellings passed a floating pin. Shape 69: the
+	// walker does not read a flow step's `with:` keys, so it refuses the step.
+	it.each([
+		[
+			"a one-line flow sequence under steps:",
+			`jobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps: [{uses: ${USE}, with: {python-version: "3.x"}}]`,
+			4,
+		],
+		[
+			"a flow step whose uses key is double-quoted",
+			workflow(`- {"uses": ${USE}, with: {python-version: "3.x"}}`),
+			5,
+		],
+		[
+			"a flow step whose uses key is single-quoted",
+			workflow(`- {'uses': ${USE}, with: {python-version: "3.x"}}`),
+			5,
+		],
+	])("refuses %s", (_label, text, line) => {
+		expect(checkInterpreterPins(text, "fixture.yml")).toEqual([
+			`fixture.yml:${line}: ${SETUP_PYTHON} uses: is not a block-mapping step; the python-version pin cannot be read`,
+		]);
+	});
+
+	// PRRT_kwDORt8rec6uXCpP: a flow step's `with:` mapping holds the action's
+	// own inputs, and `uses` is one of them for a wrapper action. Only a key of
+	// the step's own mapping is its action, so the nested one is not read as a
+	// step and does not fail CI.
+	it("reads the step's own uses, not another action's nested input", () => {
+		const wrapper = `owner/action@${SETUP_PYTHON_REF}`;
+		expect(
+			checkInterpreterPins(
+				workflow(`- {uses: ${wrapper}, with: {uses: ${USE}}}`),
+				"fixture.yml",
+			),
+		).toEqual([]);
+		expect(
+			checkInterpreterPins(
+				workflow(`- {uses: ${wrapper}, with: {shell: bash}}`),
+				"fixture.yml",
+			),
+		).toEqual([]);
+		// The step's own key still decides when the nested input repeats it.
+		expect(
+			checkInterpreterPins(
+				workflow(`- {uses: ${USE}, with: {uses: ${USE}}}`),
+				"fixture.yml",
+			),
+		).toEqual([
+			`fixture.yml:5: ${SETUP_PYTHON} uses: is not a block-mapping step; the python-version pin cannot be read`,
+		]);
+	});
+
 	// PRRT_kwDORt8rec6uV23n: a value the walker has not fully read is not a
 	// value it read. Shape 69 refuses the form instead of listing spellings.
 	it("refuses a uses: value whose spelling it does not decode", () => {
@@ -500,6 +557,56 @@ describe("check-action-pins interpreter pins (#4666, shape 69)", () => {
 				"fixture.yml",
 			),
 		).toEqual([]);
+	});
+
+	// PRRT_kwDORt8rec6uXCo5: a block-scalar header carries an optional
+	// indentation and chomping indicator in either order, and a trailing
+	// comment beside them. Every form opens a literal block, so the shell body
+	// under it — a heredoc that writes a step — stays text and does not fail
+	// CI (shape 43).
+	it.each([
+		["a trailing comment", "| # build steps"],
+		["an indentation then chomping indicator", "|2-"],
+		["a chomping then indentation indicator", "|-2"],
+		["an indentation then keep indicator", "|2+"],
+		["a folded scalar with a comment", "> # fold the notes"],
+	])("leaves a block scalar's body alone with %s", (_label, header) => {
+		expect(
+			checkInterpreterPins(
+				workflow(
+					[
+						`- run: ${header}`,
+						`    cat > step.yml <<'EOF'`,
+						`    uses: ${USE}`,
+						`    with:`,
+						`      python-version: "3.x"`,
+						`    EOF`,
+						`  shell: bash`,
+					].join("\n"),
+				),
+				"fixture.yml",
+			),
+		).toEqual([]);
+	});
+
+	it("ends the scalar at its own key and still reads a later step", () => {
+		// The protection is a bound, not a blind spot: `shell:` sits at the
+		// step's column, so the body ends there and the next step is read.
+		expect(
+			checkInterpreterPins(
+				workflow(
+					[
+						`- run: | # build steps`,
+						`    echo "uses: ${USE}"`,
+						`  shell: bash`,
+						`- uses: ${USE}`,
+						`  with:`,
+						`    python-version: "3.x"`,
+					].join("\n"),
+				),
+				"fixture.yml",
+			),
+		).toEqual([notConcrete("3.x", 10)]);
 	});
 
 	// A blank line and a comment are not the step's keys, and a blank line's

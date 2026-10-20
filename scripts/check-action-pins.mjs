@@ -54,8 +54,20 @@ const SETUP_PYTHON = "actions/setup-python";
 const KEY_LINE =
 	/^(?:(-)[ \t]+)?(["']?)([A-Za-z0-9_-]+)\2[ \t]*:(?:[ \t]+(.*))?$/;
 // A value that opens a block scalar: the lines more indented below it are
-// literal text — shell or prose, never workflow structure (shape 43).
-const BLOCK_SCALAR = /^[|>][+-]?[0-9]?$/;
+// literal text — shell or prose, never workflow structure (shape 43). Its
+// header carries an optional indentation and chomping indicator, in either
+// order (`|2-` and `|-2` are the same block).
+const BLOCK_SCALAR = /^[|>](?:[1-9][+-]?|[+-][1-9]?)?$/;
+
+// A key's value as a block-scalar header: a trailing comment is copy, so
+// `run: | # build steps` opens the same literal block as `run: |` does. This
+// reads the value as written, not through `scalar()`, whose quoted form would
+// turn the string `"|"` into the header it is not.
+function blockHeader(value) {
+	const trimmed = value.trim();
+	const comment = trimmed.search(/[ \t]#/);
+	return (comment < 0 ? trimmed : trimmed.slice(0, comment)).trim();
+}
 
 // A key's scalar value: quotes stripped and a trailing comment dropped. `read`
 // is false for a value this walker does not fully read, and the value returned
@@ -146,7 +158,7 @@ function readBlock(text) {
 		entry.column =
 			indent +
 			(key[1] ? key[0].length - key[0].replace(/^-[\t ]+/, "").length : 0);
-		if (BLOCK_SCALAR.test(entry.value.trim())) literal = entry.column;
+		if (BLOCK_SCALAR.test(blockHeader(entry.value))) literal = entry.column;
 	}
 	return entries;
 }
@@ -173,15 +185,26 @@ function flowValueEnd(raw, start) {
 	return raw.length;
 }
 
+// A key inside a flow collection: a quoted or bare name and its colon.
+const FLOW_KEY = /^(["']?)([A-Za-z0-9_-]+)\1[ \t]*:[ \t]*/;
+
 /**
- * The `uses:` values written as keys inside a flow collection on one line, such
- * as `- {uses: x, with: {python-version: "3.x"}}`. A `uses` token counts only
- * where a key can stand — straight after `{`, `[` or `,` inside brackets — so
- * the prose in `run: echo uses: a/b@c` is text, not a step (shape 43).
+ * The `uses:` values named as keys of a flow mapping on one line, such as
+ * `- {uses: x, with: {…}}` or `steps: [{uses: x}]`. A `uses` token counts only
+ * where a key can stand — straight after `{`, `[` or `,` inside a collection —
+ * so the prose in `run: echo uses: a/b@c` is text, not a step (shape 43). A
+ * mapping opened by a `with:` key holds that step's inputs, where `uses` is one
+ * of the action's input names, so it is not the step's action
+ * (PRRT_kwDORt8rec6uXCpP); every other mapping's `uses` is, wherever the step is
+ * written, so no depth is left unread.
  */
 function flowUsesValues(raw) {
 	const values = [];
-	let depth = 0;
+	// The key that opened each open mapping. A `[` opens none of its own, so a
+	// step written as `steps: [{uses: …}]` carries its keys at the same level a
+	// list-item step `- {uses: …}` does.
+	const openers = [];
+	let lastKey = "";
 	let quote = "";
 	let keyNext = false;
 	for (let at = 0; at < raw.length; at += 1) {
@@ -194,35 +217,50 @@ function flowUsesValues(raw) {
 			if (char === quote) quote = "";
 			continue;
 		}
+		if (char === "#" && (at === 0 || /[ \t]/.test(raw[at - 1]))) break;
+		// A key may be quoted, so at a key position the key is read before the
+		// quote opens a string: `{"uses": x}` names the action as `{uses: x}`
+		// does (PRRT_kwDORt8rec6uW1l7 / PRRT_kwDORt8rec6uXCpF).
+		if (keyNext && openers.length > 0) {
+			const key = FLOW_KEY.exec(raw.slice(at));
+			if (key) {
+				keyNext = false;
+				lastKey = key[2].toLowerCase();
+				const start = at + key[0].length;
+				if (lastKey === "uses" && !openers.includes("with"))
+					values.push(raw.slice(start, flowValueEnd(raw, start)).trim());
+				at = start - 1;
+				continue;
+			}
+		}
 		if (char === '"' || char === "'") {
 			quote = char;
 			continue;
 		}
-		if (char === "#" && (at === 0 || /[ \t]/.test(raw[at - 1]))) break;
-		if (char === "{" || char === "[") {
-			depth += 1;
+		if (char === "{" || char === "[" || (char === "," && openers.length > 0)) {
+			if (char === "{") openers.push(lastKey);
 			keyNext = true;
 			continue;
 		}
-		if (char === "}" || char === "]") {
-			depth -= 1;
+		if (char === "}" || char === "]" || char === ",") {
+			if (char === "}") openers.pop();
 			keyNext = false;
-			continue;
 		}
-		if (char === "," && depth > 0) {
-			keyNext = true;
-			continue;
-		}
-		if (!keyNext || depth < 1) continue;
-		const key = /^(["']?)([A-Za-z0-9_-]+)\1[ \t]*:[ \t]*/.exec(raw.slice(at));
-		if (!key) continue;
-		keyNext = false;
-		const start = at + key[0].length;
-		if (key[2].toLowerCase() === "uses")
-			values.push(raw.slice(start, flowValueEnd(raw, start)).trim());
-		at = start - 1;
 	}
 	return values;
+}
+
+/**
+ * The text of one line that can hold a flow mapping: a line the block reader
+ * did not read as a key, or a key whose own value opens a flow collection
+ * (`steps: [{uses: …}]`). A flow value starts with `{` or `[`; anywhere else a
+ * brace is prose, so `run: echo {uses: …}` stays text (shape 43).
+ */
+function flowText(entry) {
+	if (entry.kind === "other") return entry.raw;
+	if (entry.kind !== "key") return "";
+	const value = entry.value.trimStart();
+	return value.startsWith("{") || value.startsWith("[") ? value : "";
 }
 
 /**
@@ -294,14 +332,16 @@ export function checkInterpreterPins(text, file = "<fixture>") {
 					`${file}:${valueLine}: ${step} python-version "${value}" is not a concrete x.y or x.y.z release`,
 				);
 	}
-	// A step written as a flow mapping (`- {uses: …}`) is not the block form
-	// this walker reads, so its pin is refused rather than passed: an unread
-	// spelling is never a green one. A block step is a `key` line and never
-	// reaches this pass, and the scan looks only where a `uses` key can stand,
-	// so a `run:` body that prints one is left alone (shape 43).
+	// A step written as a flow mapping (`- {uses: …}`, or `steps: [{…}]`) is
+	// not the block form this walker reads, so its pin is refused rather than
+	// passed: an unread spelling is never a green one. A block step reaches this
+	// pass only through a flow collection held by one of its keys, and the scan
+	// looks only where a `uses` key can stand, so a `run:` body that prints one
+	// is left alone (shape 43).
 	for (const entry of entries) {
-		if (entry.kind !== "other") continue;
-		for (const value of flowUsesValues(entry.raw)) {
+		const line = flowText(entry);
+		if (!line) continue;
+		for (const value of flowUsesValues(line)) {
 			const target = usesTarget(value);
 			if (!target.read)
 				errors.push(
