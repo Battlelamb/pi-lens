@@ -196,6 +196,47 @@ describe("LSPService project-trust gate (#1334 S5)", () => {
 		fs.rmSync(project, { recursive: true, force: true });
 	});
 
+	it("pins executesProjectCode on the rubyBin and dotnetTool servers and refuses them untrusted", async () => {
+		// Recurrence: removing executesProjectCode from a rubyBin/dotnetTool server
+		// would let an untrusted session run project code (refuted gap in the #4776
+		// review, kept by this pin). ruby resolves its binary through
+		// rubyBinCandidates; csharp and fsharp through dotnetToolCandidates. The
+		// real registry rows are read, and only their spawn is spied.
+		const { LSP_SERVERS } = await import("../../../clients/lsp/server.js");
+		const rows = [
+			{ id: "ruby", marker: "Gemfile", source: "app.rb" },
+			{ id: "csharp", marker: "App.csproj", source: "Program.cs" },
+			{ id: "fsharp", marker: "App.fsproj", source: "Program.fs" },
+		];
+		for (const { id, marker, source } of rows) {
+			const server = LSP_SERVERS.find((row) => row.id === id);
+			expect(server, `${id} is in the real registry`).toBeDefined();
+			expect(server?.executesProjectCode, id).toBe(true);
+
+			const project = fs.mkdtempSync(
+				path.join(os.tmpdir(), `pi-lens-${id}-trust-`),
+			);
+			fs.writeFileSync(path.join(project, marker), "");
+			fs.writeFileSync(path.join(project, source), "");
+			const { trust, service, spawn } = await setup();
+			getServersForFileWithConfig.mockReturnValue([{ ...server, spawn }]);
+			expect(trust.getProjectTrustState()).toBe("unknown");
+
+			const client = await service.getClientForFile(path.join(project, source));
+
+			expect(spawn, id).not.toHaveBeenCalled();
+			expect(client, id).toBeUndefined();
+			expect(logExtension, id).toHaveBeenCalledWith(
+				expect.objectContaining({
+					message:
+						"project-code LSP server refused: mark the project trusted in pi or upgrade pi",
+				}),
+			);
+			trust.resetProjectTrust();
+			fs.rmSync(project, { recursive: true, force: true });
+		}
+	});
+
 	it("refuses a project-local LSP binary for an adopted root", async () => {
 		const { LSPService } = await import("../../../clients/lsp/index.js");
 		const sessionRoot = fs.mkdtempSync(
